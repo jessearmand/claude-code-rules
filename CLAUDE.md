@@ -75,10 +75,28 @@ set -o pipefail && xcodebuild -workspace $PROJECT_NAME.xcodeproj/project.xcworks
 ```
 - Run test for iOS simulator target, where `-destination` argument value must be a concrete device given by `name=iPhone 16`. A Swift package typically have `-Package` suffix, resulting in `$SCHEME-Package` as a `-scheme` argument value
 ```
-xcodebuild -configuration Debug -scheme $SCHEME-Package -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 16" test | xcbeautify
+set -o pipefail && xcodebuild -configuration Debug -scheme $SCHEME-Package -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 16" test | xcbeautify
 ```
 - Run test for macOS target, where `-destination` argument value must be a concrete device given by `name=My Mac`. A Swift package typically have `-Package` suffix, resulting in `$SCHEME-Package` as a `-scheme` argument value
 ```
-xcodebuild -configuration Debug -scheme $SCHEME-Package -destination "platform=macOS,name=My Mac" test | xcbeautify
+set -o pipefail && xcodebuild -configuration Debug -scheme $SCHEME-Package -destination "platform=macOS,name=My Mac" test | xcbeautify
 ```
+- Run test for visionOS target where `-destination` argument value must be a concrete device given by `name="Apple Vision Pro`
+```
+set -o pipefail && xcodebuild -configuration Debug -scheme $SCHEME-Package -sdk xrsimulator -destination "platform=visionOS Simulator,name=Apple Vision Pro" test | xcbeautify
+```
+
+## Logging
+
+For logging inside a Swift module, use `Logger` according to the convention of the library, where `FileServer` can be a filename, `class` or `struct` where the `logger` is declared
+
+```
+import os
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FileServer", category: "FileSystemService")
+
+```
+
+- Prefer `debugPrint` over `print` when the purpose of printing is for debugging
+- When logging a command line tool written in Swift, prefer printing to `stdout` instead of Apple's unified logging
 
