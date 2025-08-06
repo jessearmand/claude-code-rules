@@ -43,8 +43,8 @@ _VALIDATION_RULES = [
         "Use 'rg --files | rg pattern' or 'rg --files -g pattern' instead of 'find -name' for better performance",
     ),
     (
-        r"^rg\b.*\*\.(swift|py|ts|rs)",
-        "Use 'sg -p pattern' or 'ast-grep -p pattern' instead of 'rg' for Swift, Python, TypeScript, or Rust source code",
+        r"^rg\b(?!.*\s--files\b(?:\s+-g\s+\S+)?).*(?:\*\.(swift|py|ts|js|jsx|tsx|rs|go|c|cpp|html|java|kt|rb|yaml|yml)\b|--type\s+(swift|python|typescript|javascript|rust|go|c|cpp|html|java|kotlin|ruby|yaml))",
+        "Use 'sg -p pattern' or 'ast-grep -p pattern' instead of 'rg' for Swift, Python, TypeScript, JavaScript, JSX, TSX, Rust, Go, C, C++, HTML, Java, Kotlin, Ruby, and YAML source code",
     )
 ]
 
