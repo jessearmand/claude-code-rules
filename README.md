@@ -46,10 +46,10 @@ This repository doesn't contain traditional build/test commands as it's primaril
 
 ```bash
 # Test bash command validator
-echo '{"tool_name": "Bash", "tool_input": {"command": "grep pattern file.txt"}}' | python3 hooks/bash_command_validator.py
+echo '{"tool_name": "Bash", "tool_input": {"command": "grep pattern file.txt"}}' | uv run hooks/bash_command_validator.py
 
 # Test file protection
-echo '{"tool_input": {"file_path": ".env"}}' | python3 hooks/file_protection.py
+echo '{"tool_input": {"file_path": ".env"}}' | uv run hooks/file_protection.py
 ```
 
 ## Tool Recommendations
