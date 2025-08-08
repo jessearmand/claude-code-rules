@@ -90,7 +90,47 @@ find ~/.local/share/mise -name "index.js" | grep server-filesystem/dist/index.js
 
 With this configuration, you should be able to successfully connect Claude MCP to your filesystem with version-managed Node installations.
 
-## Note
+## Playwright MCP: Why the Converter Fails and What To Do
 
-This converter will not work with playwright MCP server,
-in that case maybe run playwright with a docker container or mcp connector
+### Workaround Summary
+
+- Replaces `npx <pkg>` with direct Node execution:
+  - Installs the server globally: `npm install -g <package>`
+  - Locates `node` with `which node` or a fallback
+  - Resolves the server entrypoint by searching for `<pkg>/dist/index.js` under `~/.local/share/mise`
+  - Writes config using: `"command": "<absolute-node>"`, `"args": ["<absolute-.../dist/index.js>", ...]` (as shown above for `@modelcontextprotocol/server-filesystem`).
+
+### Why It Fails For Playwright MCP
+
+- Wrong entrypoint shape:
+  - The Playwright MCP package `@playwright/mcp` does not ship a `dist/index.js` server entry.
+  - It has:
+    - Default export: `index.js` (ESM) that only exports `createConnection` and does not start a server.
+    - CLI binary: `"bin": { "mcp-server-playwright": "cli.js" }`, which is the actual entry that parses flags and starts the server.
+  - A dist-based resolver cannot find a `dist/index.js` for this package, and pointing to `index.js` won’t start the server because it doesn’t run the CLI.
+- Missing runtime dependencies:
+  - Playwright requires system/browser dependencies. The Dockerfile/documentation shows commands like:
+    - `npx -y playwright-core install-deps chromium`
+    - `npx -y playwright-core install --no-shell chromium`
+  - The converter never installs these, so even the correct CLI would fail at runtime on a clean machine.
+- CLI semantics:
+  - Flags like `--executable-path` are handled by `cli.js`, not `index.js`. Passing them to `index.js` has no effect.
+
+### Evidence from docs/playwright-mcp.txt
+
+- `package.json` excerpts:
+  - `"exports": { ".": { "default": "./index.js" } }`
+  - `"bin": { "mcp-server-playwright": "cli.js" }`
+- `index.js` only re-exports `createConnection`.
+- Official docs and Docker examples emphasize installing Playwright deps and using the CLI (or container).
+
+### Recommended Paths
+
+- Use Docker
+  - Example MCP config: `"command": "docker"`, `"args": ["run", "-i", "--rm", "--init", "--pull=always", "mcr.microsoft.com/playwright/mcp"]`
+- Special-case the converter for `@playwright/mcp`
+  - Resolve `<global>/node_modules/@playwright/mcp/cli.js` (not `index.js`).
+  - Preinstall deps: run `playwright-core install-deps` and `playwright-core install` for the chosen browser (e.g. `chromium`).
+  - Then set `"command": "<node>"`, `"args": [".../cli.js", "--executable-path", "..."]`.
+- Alternatively, run it as a standalone server
+  - Start the Playwright MCP on a TCP port (e.g. `--port ...`) and point Claude to a `"url"` MCP config instead of `"command"/"args"`.
