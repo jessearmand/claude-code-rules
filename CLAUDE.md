@@ -12,15 +12,24 @@ Ask for clarifications if the task is unreasonable or infeasible, or if any of t
 - Only use `rg` for recursive search, manual or automatic filtering of plain text output
 - Use `gemini` to prompt for more understanding in large documents, images, or directory of files
 
-# Guidelines
+# Development and Coding Styles
 
 - Use 4-space indentation, unless project or editor settings is configured otherwise
 - Be precise and targeted in examining where changes need to be made
 - Avoid inline styles, create separate CSS files
 - Avoid creating a large file, split it into reusable modules
 - Refactor long functions into smaller, reusable functions
-- Follow development guidelines for files written in:
-  - python: @~/.claude/python-guidelines.md
+
+## Rust
+
+- Run `cargo check` after an implementation is ready to be tested
+- Run `cargo clippy` after `cargo check` or `cargo build` produced no errors
+- Refer to @~/.claude/clippy-usage.md
+
+## Swift, Python, TypeScript
+
+- Follow development guides for files written in:
+  - python: @~/.claude/python-guide.md
   - javascript / typescript: @~/.claude/typescript-guide.md
   - swift: @~/.claude/modern-swift.md
 
