@@ -3,7 +3,7 @@
 Perform comprehensive code quality and security checks.
 
 ## Primary Task:
-Run `npm run check` (or project-specific check command) and resolve any resulting errors.
+Run project-specific check command and resolve any resulting errors.
 
 ## Important:
 - DO NOT commit any code during this process
@@ -30,7 +30,7 @@ Run `npm run check` (or project-specific check command) and resolve any resultin
 5. Continue until all checks pass
 
 ## For Different Project Types:
-- **JavaScript/TypeScript**: `npm run check` or `yarn check`
+- **JavaScript/TypeScript**: `npm run check` or `yarn check` or `bun run check`, `bun run lint`
 - **Python**: `black`, `isort`, `flake8`, `mypy`
 - **Rust**: `cargo check`, `cargo clippy`
 - **Go**: `go vet`, `golint`
