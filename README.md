@@ -36,8 +36,28 @@ This script will:
 
 The configuration includes:
 - Hook integrations for bash command validation and file protection
-- Marketplace and plugin setup (including the explanatory-output-style plugin)
+- Local marketplace and plugin setup (including the explanatory-output-style plugin)
 - Environment variables and custom status line configuration
+
+### Plugin Structure
+
+This repository includes a local plugin marketplace for Claude Code customizations. The structure follows Claude Code's plugin system:
+
+```
+.claude-plugin/
+  marketplace.json          # Marketplace definition
+plugins/
+  explanatory-output-style/ # Plugin directory
+    .claude-plugin/
+      plugin.json           # Plugin metadata
+    hooks/
+      hooks.json            # Hook definitions
+    hooks-handlers/
+      session-start.sh      # SessionStart hook implementation
+    README.md               # Plugin documentation
+```
+
+All plugins are defined and maintained locally in this repository, making it easy to customize and extend functionality without depending on external repositories.
 
 ### Hook Configuration
 

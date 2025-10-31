@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-code-local-plugins",
+  "version": "1.0.0",
+  "description": "Local plugins for Claude Code development environment",
+  "owner": {
+    "name": "Claude Code",
+    "email": "noreply@example.com"
+  },
+  "plugins": [
+    {
+      "name": "explanatory-output-style",
+      "description": "Adds educational insights about implementation choices and codebase patterns (mimics the deprecated Explanatory output style)",
+      "version": "1.0.0",
+      "author": {
+        "name": "Dickson Tsai",
+        "email": "dickson@anthropic.com"
+      },
+      "source": "./plugins/explanatory-output-style",
+      "category": "productivity"
+    }
+  ]
+}

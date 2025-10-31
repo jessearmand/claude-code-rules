@@ -1,9 +1,4 @@
 {
-  "permissions": {
-    "additionalDirectories": [
-      "${HOME}/Develop/claude-code-plugins/"
-    ]
-  },
   "env": {
     "RIPGREP_CONFIG_PATH": "${HOME}/.ripgreprc"
   },
@@ -36,14 +31,14 @@
   "alwaysThinkingEnabled": false,
   "marketplaces": [
     {
-      "name": "claude-code-plugins",
-      "source": "${HOME}/Develop/claude-code-plugins/"
+      "name": "claude-code-local-plugins",
+      "source": "${HOME}/Develop/claude-code/"
     }
   ],
   "plugins": [
     {
       "name": "explanatory-output-style",
-      "marketplace": "claude-code-plugins"
+      "marketplace": "claude-code-local-plugins"
     }
   ]
 }
