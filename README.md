@@ -18,9 +18,30 @@ The repository implements Claude Code's hook system for validating and enhancing
 ### Configuration Files
 - **ast-grep-rule.md**: Comprehensive documentation for ast-grep pattern syntax, including meta variables, pattern matching, and advanced usage examples
 
-## Hook Configuration
+## Setup
 
-To use these hooks in your Claude Code setup, add to your settings file:
+### Initial Configuration
+
+This repository includes a `.claude/settings.json` template that uses `${HOME}` substitution variables for portability. To set up the configuration on your machine:
+
+```bash
+# Run the setup script to replace ${HOME} with your actual home directory
+uv run scripts/update_settings_paths.py
+```
+
+This script will:
+- Create a backup of the original settings file (`.claude/settings.json.backup`)
+- Replace all `${HOME}` variables with your actual home directory path
+- Update the settings file with machine-specific paths
+
+The configuration includes:
+- Hook integrations for bash command validation and file protection
+- Marketplace and plugin setup (including the explanatory-output-style plugin)
+- Environment variables and custom status line configuration
+
+### Hook Configuration
+
+The settings file configures these hooks for your Claude Code setup:
 
 ```json
 {
@@ -31,7 +52,16 @@ To use these hooks in your Claude Code setup, add to your settings file:
         "hooks": [
           {
             "type": "command",
-            "command": "uv run $HOME/Develop/claude-code/hooks/bash_command_validator.py"
+            "command": "uv run ${HOME}/Develop/claude-code/hooks/bash_command_validator.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run ${HOME}/Develop/claude-code/hooks/file_protection.py"
           }
         ]
       }

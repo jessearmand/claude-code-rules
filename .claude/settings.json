@@ -1,0 +1,49 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "${HOME}/Develop/claude-code-plugins/"
+    ]
+  },
+  "env": {
+    "RIPGREP_CONFIG_PATH": "${HOME}/.ripgreprc"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run ${HOME}/Develop/claude-code/hooks/bash_command_validator.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run ${HOME}/Develop/claude-code/hooks/file_protection.py"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "${HOME}/.claude/statusline-command.sh"
+  },
+  "alwaysThinkingEnabled": false,
+  "marketplaces": [
+    {
+      "name": "claude-code-plugins",
+      "source": "${HOME}/Develop/claude-code-plugins/"
+    }
+  ],
+  "plugins": [
+    {
+      "name": "explanatory-output-style",
+      "marketplace": "claude-code-plugins"
+    }
+  ]
+}
