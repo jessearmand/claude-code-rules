@@ -1,14 +1,7 @@
 ## Building and running TypeScript / JavaScript projects
 
-Before submitting any changes, it is crucial to validate them by running the full preflight check. This command will build the repository, run all tests, check for type errors, and lint the code.
-
-To run the full suite of checks, execute the following command:
-
-```bash
-npm run preflight
-```
-
-This single command ensures that your changes meet all the quality gates of the project. While you can run the individual steps (`build`, `test`, `typecheck`, `lint`) separately, it is highly recommended to use `npm run preflight` to ensure a comprehensive validation.
+Before submitting any changes, it is crucial to validate them by running checks. Build the repository, run all tests, check for type errors, and lint the code.
+To run the full suite of checks, the first step is to review the `package.json` of a project, the next step is to find the minimum number of scripts needed to perform all the steps.
 
 ## Writing Tests
 
