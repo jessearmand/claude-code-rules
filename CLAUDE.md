@@ -8,7 +8,6 @@ Ask for clarifications if the task is unreasonable or infeasible, or if any of t
 
 # Tool Use
 
-- Use `ast-grep` or `sg` for code structural search, lint or rewriting, cheatsheet: @~/.claude/ast-grep-rule.md
 - Only use `rg` for recursive search, manual or automatic filtering of plain text output
 - Use `gemini` to prompt for more understanding in large documents, images, or directory of files
 
@@ -51,15 +50,6 @@ gemini -p "Explain the functions on @path/to/source_file.rs, and what do they ac
 
 ```
 gemini -p "Analyze this document @path/to/document"
-```
-
-## ast-grep
-
-`ast-grep` or `sg` is available as CLI tool for code structural search, lint, and rewriting
-
-ast-grep has following form
-```
-sg --pattern 'var code = $PATTERN' --rewrite 'let code = new $PATTERN' --lang ts
 ```
 
 ## ripgrep
