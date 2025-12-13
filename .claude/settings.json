@@ -28,17 +28,19 @@
     "type": "command",
     "command": "${HOME}/.claude/statusline-command.sh"
   },
-  "alwaysThinkingEnabled": false,
+  "alwaysThinkingEnabled": true,
+  "enabledPlugins": {
+    "frontend-design@claude-code-plugins": true,
+    "commit-commands@claude-code-plugins": true,
+    "ast-grep@ast-grep-marketplace": true,
+    "explanatory-output-style@claude-code-plugins": true,
+    "security-guidance@claude-code-plugins": true
+  },
   "marketplaces": [
     {
       "name": "claude-code-local-plugins",
       "source": "${HOME}/Develop/claude-code/"
     }
   ],
-  "plugins": [
-    {
-      "name": "explanatory-output-style",
-      "marketplace": "claude-code-local-plugins"
-    }
-  ]
+  "plugins": []
 }
