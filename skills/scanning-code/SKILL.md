@@ -1,9 +1,9 @@
 ---
-name: ast-search
+name: scanning-code
 description: Structural code search using ast-grep. Use `kind` for "all X" queries, `pattern` for specific code. See languages/ for language-specific examples.
 ---
 
-# ast-search: Structural Code Search
+# scanning-code: Structural Code Search
 
 ## When to Use `kind` vs `pattern`
 
