@@ -70,4 +70,4 @@ struct CounterView: View {
 
 - [Patterns](patterns.md) - State, async, and composition patterns
 - [Logging](logging.md) - Swift logging conventions
-- [Concurrency](concurrency.md) - Swift 6 strict concurrency and data race safety
+- [Concurrency](references/concurrency.md) - Swift 6 strict concurrency and data race safety

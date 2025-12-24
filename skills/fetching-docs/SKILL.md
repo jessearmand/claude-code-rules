@@ -5,16 +5,22 @@ description: Fetch library documentation and analyze Git repositories. Use Conte
 
 # Fetching Documentation
 
-## Context7 MCP (Library/API Docs)
+Use this skill to quickly gather trustworthy information needed to implement or debug code.
 
-Use Context7 MCP tools when working with library/API documentation:
+## General Workflow
 
-1. **Resolve library ID**: `mcp__context7__resolve-library-id`
-2. **Get documentation**: `mcp__context7__get-library-docs`
+1. Identify the exact question (API surface, config, version constraints, examples).
+2. Prefer primary sources: official docs, release notes, and the library’s own repository.
+3. Cross-check version compatibility with the target project.
+4. Keep provenance: URLs, versions, and/or commit hashes for anything non-obvious.
 
-Automatically use these tools when generating new code, setup steps, or configuration from library documentation.
+## Library/API Documentation
 
-## gitingest (Git Repository Analysis)
+- If your agent/runtime provides a documentation retrieval tool, use it to fetch the relevant API pages for the exact library + version you need.
+- If you have Context7 available, the common flow is:
+  - Resolve a library ID (e.g., `mcp__context7__resolve-library-id`)
+  - Fetch focused docs (e.g., `mcp__context7__get-library-docs`)
+- Otherwise, use the library’s official docs site (or web search) and verify the version matches the project.
 
 Transform Git repositories into LLM-friendly text digests:
 
@@ -41,7 +47,10 @@ uv tool run gitingest https://github.com/user/repo --token $GITHUB_TOKEN
 
 ## grepgithub (Cross-Repository Code Search)
 
-Be as specific as possible when using `grepgithub` because it enables searching across half a million GitHub repositories using the grep.app API. Useful for finding usage examples, implementation patterns, and how other projects solve similar problems.
+Use cross-repo search to find real-world usage patterns (configuration snippets, migration examples, gotchas).
+
+- Be specific: search for exact imports, error messages, or function names.
+- Expect rate limits and result caps; refine queries iteratively.
 
 ```bash
 # Basic search

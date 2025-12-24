@@ -1,6 +1,7 @@
 ---
 name: lang-python
-description: Python development with uv package management, ruff linting, and ty type checking. Use when writing or reviewing Python code.
+description: Python development with modern linting and type checking. Use when writing or reviewing Python code.
+compatibility: Examples use uv+ruff+ty; adapt to pip/poetry and mypy/pyright as needed.
 ---
 
 # Python Development
@@ -24,6 +25,27 @@ uvx ruff format
 
 # 2. Type check
 uvx ty check
+```
+
+## If uv/ruff/ty Aren’t Available
+
+Translate the workflow to whatever the repository uses:
+
+- Package management: `python -m pip`, Poetry, PDM
+- Lint/format: Ruff, Black, Flake8
+- Type checking: `ty`, mypy, pyright
+
+Example equivalents:
+
+```bash
+# Install tools (one option)
+python -m pip install ruff mypy
+
+# Lint/format
+ruff check && ruff format
+
+# Type check
+mypy .
 ```
 
 ## Package Management with uv
