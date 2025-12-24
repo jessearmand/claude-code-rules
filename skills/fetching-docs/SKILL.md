@@ -22,6 +22,18 @@ Use this skill to quickly gather trustworthy information needed to implement or 
   - Fetch focused docs (e.g., `mcp__context7__get-library-docs`)
 - Otherwise, use the library’s official docs site (or web search) and verify the version matches the project.
 
+## Repository Analysis
+
+### Local repositories
+
+- Use fast code search (e.g., `rg`, `git grep`, IDE search) to find relevant symbols.
+- Read `README`, `CHANGELOG`, and `docs/` before diving into implementation.
+
+### Remote repositories (no local checkout)
+
+- If you have a “repo-to-text” ingester (e.g., `gitingest`), generate a digest to reduce context switching.
+- Otherwise, clone the repository locally and inspect it with normal tooling.
+
 Transform Git repositories into LLM-friendly text digests:
 
 ```bash
