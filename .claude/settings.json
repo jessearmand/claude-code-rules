@@ -30,11 +30,16 @@
   },
   "alwaysThinkingEnabled": true,
   "enabledPlugins": {
-    "frontend-design@claude-code-plugins": true,
-    "commit-commands@claude-code-plugins": true,
     "ast-grep@ast-grep-marketplace": true,
-    "explanatory-output-style@claude-code-plugins": true,
-    "security-guidance@claude-code-plugins": true
+    "frontend-design@claude-plugins-official": true,
+    "lua-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "swift-lsp@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true,
+    "explanatory-output-style@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true
   },
   "marketplaces": [
     {
