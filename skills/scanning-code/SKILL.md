@@ -1,6 +1,6 @@
 ---
 name: scanning-code
-description: Structural code search using ast-grep. Use `kind` for "all X" queries, `pattern` for specific code. See languages/ for language-specific examples.
+description: Structural code search using ast-grep. Use `kind` for "all X" queries, `pattern` for specific code. See languages/ for language-specific examples. Use ast-grep on Linux instead of sg.
 ---
 
 # scanning-code: Structural Code Search
