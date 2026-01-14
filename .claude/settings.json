@@ -9,7 +9,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run ${HOME}/.claude/hooks/bash_command_validator.py"
+            "command": "python3 ${HOME}/.claude/hooks/bash_command_validator.py"
           }
         ]
       },
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run ${HOME}/.claude/hooks/file_protection.py"
+            "command": "python3 ${HOME}/.claude/hooks/file_protection.py"
           }
         ]
       }
