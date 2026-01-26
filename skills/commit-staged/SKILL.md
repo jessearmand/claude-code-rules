@@ -9,12 +9,6 @@ allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(git c
 
 Commit staged changes with clear title and description.
 
-## Context
-
-This is the current staged diff:
-
-!`git diff --staged`
-
 ## Primary Task
 
 Review the staged changes above, then commit with a clear title and description.
@@ -50,4 +44,5 @@ Refs: #412
 1. Perform checks with /check or refer to project setup for running checks, tests, or linting
 2. After checks are resolved, proceed with reviewing the staged diff above
 3. Review modified files from the process of checking, ONLY add those modified files
-4. Run `git diff --staged`, then ONLY commit the staged changes
+4. Run git diff --staged and review the output
+5. ONLY commit the staged changes
