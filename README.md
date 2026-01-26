@@ -1,19 +1,32 @@
 ## Repository Overview
 
-This repository contains Claude Code hooks and configuration files designed to enhance the development experience when using Claude Code. The repository serves as a collection of utilities and validation tools rather than a traditional application codebase.
+This repository contains Claude Code skills, hooks, and configuration files designed to enhance the development experience when using Claude Code. The repository serves as a collection of reusable skills, validation hooks, and utilities rather than a traditional application codebase.
 
 ## Architecture
 
+### Skills
+
+Skills are invocable via `/skill-name` in Claude Code and provide structured workflows. Each skill lives in `skills/<name>/SKILL.md` with YAML frontmatter for metadata.
+
+- **commit-staged** (`/commit-staged`): Commits staged changes using Conventional Commits format. Runs `/check` first, then reviews the staged diff and creates a well-structured commit message. User-initiated only (`disable-model-invocation: true`).
+
+- **check** (`/check`): Runs project-specific code quality and security checks (linting, type checking, tests, formatting, builds). Can be invoked directly or by other skills like `commit-staged`. Supports JavaScript/TypeScript, Python, Rust, Go, and Swift projects.
+
+- **marimo-check** (`/marimo-check <notebook>`): Runs `uvx marimo check --fix` on a marimo notebook and fixes any issues found. Accepts a notebook path as an argument. See [Marimo Check: Hook vs Skill](#marimo-check-hook-vs-skill) for how this relates to the automatic hook.
+
 ### Hook System
+
 The repository implements Claude Code's hook system for validating and enhancing tool usage:
 
-- **bash_command_validator.py**: A PreToolUse hook for the Bash tool that validates commands and suggests better alternatives:
+- **bash_command_validator.py** (PreToolUse): Validates Bash commands and suggests better alternatives:
   - Recommends `rg` (ripgrep) over `grep`
   - Suggests `rg --files` patterns over `find -name`
   - Recommends `ast-grep` for source code searching in Swift, Python, TypeScript, and Rust files
 
-- **file_protection.py**: A file protection hook that prevents modification of sensitive files:
+- **file_protection.py** (PreToolUse): Prevents modification of sensitive files:
   - Blocks editing of `.env`, lock files (`package-lock.json`, `Package.resolved`, `bun.lock`, `Cargo.lock`), and `.git/` directory contents
+
+- **marimo-check.sh** (PostToolUse): Automatically runs `uvx marimo check` after any Edit or Write operation on marimo notebooks. Blocks the tool if checks fail, prompting Claude to fix the issues. Located at `skills/marimo-check/scripts/marimo-check.sh` (co-located with the marimo-check skill for maintainability). See [Marimo Check: Hook vs Skill](#marimo-check-hook-vs-skill) for details.
 
 ### Configuration Files
 - **ast-grep-rule.md**: Comprehensive documentation for ast-grep pattern syntax, including meta variables, pattern matching, and advanced usage examples
@@ -85,10 +98,38 @@ The settings file configures these hooks for your Claude Code setup:
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/Develop/claude-code/skills/marimo-check/scripts/marimo-check.sh"
+          }
+        ]
+      }
     ]
   }
 }
 ```
+
+## Marimo Check: Hook vs Skill
+
+The marimo-check functionality has two complementary components that serve different purposes:
+
+| Concern | Hook (`marimo-check.sh`) | Skill (`/marimo-check`) |
+|---------|--------------------------|------------------------|
+| Trigger | Automatic on every Edit/Write | Manual invocation |
+| Purpose | Guard: catch issues immediately | Fix: run `marimo check --fix` |
+| Scope | All marimo notebooks, always | Specific file via argument |
+| Configuration | PostToolUse hook in settings.json | Invoked with `/marimo-check <path>` |
+
+**The hook** runs automatically after every Edit or Write operation. It detects whether the modified file is a marimo notebook (by checking for `import marimo` and `@app.cell`) and runs `uvx marimo check`. If the check fails (non-zero exit), it blocks the operation and tells Claude to fix the issue.
+
+**The skill** is invoked manually when you want to run `uvx marimo check --fix` on a specific notebook. It shows the check output and, only if issues are found, reads the file and applies fixes.
+
+Both are needed: the hook provides always-on validation, while the skill provides on-demand fixing. The hook script is co-located at `skills/marimo-check/scripts/marimo-check.sh` for maintainability, but must be configured as a PostToolUse hook in `settings.json` to function (see [Hook Configuration](#hook-configuration)).
 
 ## Development Commands
 
