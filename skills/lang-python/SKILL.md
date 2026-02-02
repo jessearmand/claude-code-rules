@@ -10,9 +10,17 @@ Write type-safe Python code with modern tooling.
 
 ## Core Principles
 
-- Prefer `uv` for package management
 - Prefer `httpx` over `requests` for HTTP
 - Use types everywhere possible
+- Follow project conventions for tooling
+
+## Tooling Reference
+
+For detailed documentation on Python tooling, see the Astral skills:
+
+- **`astral:uv`** - Package and project management (replaces pip, pipx, poetry, pyenv)
+- **`astral:ruff`** - Linting and formatting (replaces flake8, black, isort)
+- **`astral:ty`** - Type checking (replaces mypy, pyright)
 
 ## Validation Workflow
 
@@ -20,102 +28,19 @@ After implementing Python code:
 
 ```bash
 # 1. Lint and format
-uvx ruff check
+uvx ruff check --fix
 uvx ruff format
 
 # 2. Type check
 uvx ty check
 ```
 
-## If uv/ruff/ty Aren’t Available
+## Fallback for Non-Astral Projects
 
-Translate the workflow to whatever the repository uses:
+If uv/ruff/ty aren't available, translate to project tooling:
 
-- Package management: `python -m pip`, Poetry, PDM
-- Lint/format: Ruff, Black, Flake8
-- Type checking: `ty`, mypy, pyright
-
-Example equivalents:
-
-```bash
-# Install tools (one option)
-python -m pip install ruff mypy
-
-# Lint/format
-ruff check && ruff format
-
-# Type check
-mypy .
-```
-
-## Package Management with uv
-
-### Initialize Project
-
-```bash
-uv init example
-cd example
-uv add ruff
-```
-
-### Add Dependencies
-
-```bash
-uv add httpx
-uv add --dev pytest
-```
-
-### Run Scripts
-
-```bash
-uv run script.py
-
-# With ad-hoc dependency
-uv run --with rich script.py
-
-# With version constraint
-uv run --with 'rich>12,<13' script.py
-```
-
-### Lock & Sync
-
-```bash
-uv lock
-uv sync
-```
-
-## Linting with ruff
-
-```bash
-# Check for issues
-uvx ruff check
-
-# Auto-fix
-uvx ruff check --fix
-
-# Format code
-uvx ruff format
-```
-
-## Type Checking with ty
-
-```bash
-# Check all files
-uvx ty check
-
-# Check specific file
-uvx ty check example.py
-```
-
-`ty` runs on all Python files in the working directory or project (starting from `pyproject.toml`).
-
-## Quick Reference
-
-| Task | Command |
-|------|---------|
-| New project | `uv init project_name` |
-| Add package | `uv add package_name` |
-| Run script | `uv run script.py` |
-| Lint | `uvx ruff check` |
-| Format | `uvx ruff format` |
-| Type check | `uvx ty check` |
+| Astral Tool | Alternatives |
+|-------------|-------------|
+| `uv` | pip, poetry, pdm |
+| `ruff` | black + flake8 + isort |
+| `ty` | mypy, pyright |

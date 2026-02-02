@@ -18,6 +18,16 @@
       },
       "source": "./plugins/explanatory-output-style",
       "category": "productivity"
+    },
+    {
+      "name": "python-ruff",
+      "description": "Python language server with ruff for linting, formatting, and code actions",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jeese Armand"
+      },
+      "source": "./plugins/python-ruff",
+      "category": "languages"
     }
   ]
 }

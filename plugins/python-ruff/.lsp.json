@@ -1,0 +1,10 @@
+{
+    "ruff": {
+        "command": "ruff",
+        "args": ["server"],
+        "extensionToLanguage": {
+            ".py": "python",
+            ".pyi": "python"
+        }
+    }
+}

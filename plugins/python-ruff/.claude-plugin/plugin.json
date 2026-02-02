@@ -1,0 +1,9 @@
+{
+    "name": "python-ruff",
+    "version": "0.1.0",
+    "description": "Python language server with ruff for linting, formatting, and code actions",
+    "author": {
+        "name": "Jeese Armand"
+    },
+    "keywords": ["python", "ruff", "linting", "formatting", "lsp"]
+}
