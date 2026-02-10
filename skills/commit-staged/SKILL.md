@@ -1,17 +1,17 @@
 ---
 name: commit-staged
-description: Commit staged changes with clear title and description using Conventional Commits format.
+description: Commit staged changes with clear description and body using Conventional Commits format.
 disable-model-invocation: true
 allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(git commit:*), Bash(git add:*), Read, Glob, Grep, Skill(check)
 ---
 
 # Commit Staged
 
-Commit staged changes with clear title and description.
+Commit staged changes with clear description and body
 
 ## Primary Task
 
-Review the staged changes above, then commit with a clear title and description.
+Review the staged changes above, then commit with a clear description and body.
 Describe the purpose of the changes, prioritize clarity, readability, and minimize ambiguity.
 
 ## Commit Message Guidelines (Conventional Commits)
