@@ -9,7 +9,8 @@ Ask for clarifications if the task is unreasonable or infeasible, or if any of t
 # Tool Use
 
 - Only use `rg` for recursive search, manual or automatic filtering of plain text output
-- Use the `gemini-agent` skill for large context analysis (1M token window)
+- Do not use `/tmp` as a scratchpad, create a `scratchpad` directory in the current working directory of a project
+- If you don't have write access to the current working directory, ask the user to create scratchpad directory with proper permission
 
 # Development and Coding Styles
 
@@ -27,25 +28,6 @@ Language-specific guidance is provided via skills that are loaded when relevant:
 - `xcode-build` - Xcode build, test, and profiling
 
 # Available Tools
-
-## gemini-cli
-
-Use the `gemini-agent` skill for large context analysis with Gemini's 1M token window.
-
-**Capabilities:**
-- Codebase analysis (entire projects, 100KB+ files)
-- Image and document understanding (PDFs, screenshots)
-- Built-in web search
-- Headless mode for scripting
-
-**Quick reference:**
-```bash
-gemini -p "@path/to/file Explain this"    # Include file
-gemini -p "@src/ Analyze architecture"    # Include directory
-cat file | gemini -p "Summarize this"     # Pipe input
-```
-
-See skill documentation for detailed usage patterns.
 
 ## ripgrep
 
