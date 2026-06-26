@@ -52,6 +52,84 @@ The configuration includes:
 - Local marketplace and plugin setup (including the explanatory-output-style plugin)
 - Environment variables and custom status line configuration
 
+### Linking Hooks on Windows
+
+The hook commands in `settings.json` reference `${HOME}/.claude/hooks/*.py`, but the
+hook sources live in this repository under `hooks/`. Rather than copying the files,
+link `~/.claude/hooks` to the repo's `hooks/` directory (the same approach used for
+skills) so edits in the repo take effect immediately.
+
+On Windows, prefer a **directory junction** over a symbolic link: a junction needs no
+Administrator rights and no Developer Mode, and behaves identically for a local
+directory. A symbolic link requires elevation or Developer Mode.
+
+**PowerShell (recommended — directory junction):**
+
+```powershell
+$link   = "$env:USERPROFILE\.claude\hooks"
+$target = "$env:USERPROFILE\claude-code-rules\hooks"
+# Remove any existing (empty) directory or stale link first
+if (Test-Path $link) { Remove-Item $link -Recurse -Force }
+New-Item -ItemType Junction -Path $link -Target $target
+```
+
+**cmd.exe alternative (also no elevation needed):**
+
+```cmd
+mklink /J "%USERPROFILE%\.claude\hooks" "%USERPROFILE%\claude-code-rules\hooks"
+```
+
+**Symbolic link (requires Administrator or Developer Mode):**
+
+```powershell
+New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\hooks" -Target "$env:USERPROFILE\claude-code-rules\hooks"
+```
+
+Verify the link resolves the hook scripts:
+
+```powershell
+Get-Item "$env:USERPROFILE\.claude\hooks" | Select-Object LinkType, Target
+Test-Path "$env:USERPROFILE\.claude\hooks\bash_command_validator.py"  # -> True
+```
+
+> **Note:** `New-Item -ItemType Junction` fails if the target path already exists, so
+> the `Remove-Item` step above is required even when `~/.claude/hooks` is an empty
+> directory. If the hooks fail with `can't open file '.../.claude/hooks/...py'`, the
+> link is missing or points at the wrong target.
+
+The same junction approach links the other repo directories that Claude Code reads
+from `~/.claude`:
+
+```powershell
+foreach ($d in "skills","agents","hooks") {
+    $link   = "$env:USERPROFILE\.claude\$d"
+    $target = "$env:USERPROFILE\claude-code-rules\$d"
+    if (Test-Path $link) { Remove-Item $link -Recurse -Force }
+    New-Item -ItemType Junction -Path $link -Target $target
+}
+```
+
+### Linking Single Files on Windows
+
+Junctions only work for **directories**. To mirror an individual file — for example
+`~/claude-edit.cmd` pointing at this repo's `scripts/claude-edit.cmd` — use a
+**hard link** instead. Like a junction, a hard link needs no elevation, but it
+requires the link and target to live on the **same volume**:
+
+```powershell
+$link   = "$env:USERPROFILE\claude-edit.cmd"
+$target = "$env:USERPROFILE\claude-code-rules\scripts\claude-edit.cmd"
+if (Test-Path $link) { Remove-Item $link -Force }
+New-Item -ItemType HardLink -Path $link -Target $target
+```
+
+> **Caveat:** A hard link is a second name for the same file data, so editing through
+> either path updates both. However, if an editor saves by *replacing* the file
+> (write-to-temp then rename) rather than editing in place, the two names diverge —
+> re-run the command to relink. If you need replace-safe behavior, use a file
+> symbolic link instead (`New-Item -ItemType SymbolicLink`), which requires
+> Administrator rights or Developer Mode.
+
 ### Plugin Structure
 
 This repository includes a local plugin marketplace for Claude Code customizations. The structure follows Claude Code's plugin system:
