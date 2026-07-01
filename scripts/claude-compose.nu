@@ -20,14 +20,41 @@
 # Canonical copy lives in claude-code-rules/scripts/; the invocation path
 # ~/claude-compose.nu is a hardlink to this file (see claude-edit.cmd pattern).
 
-let prompt = ($nu.home-path | path join ".claude-prompt.md")
-let log_file = ($nu.home-path | path join ".claude-compose.log")
+# nushell renamed `$nu.home-path` -> `$nu.home-dir`; fall back to USERPROFILE
+# so this keeps working across nu versions (both nu installs on this machine
+# expose `home-dir`). Using the old name threw column_not_found and made the
+# pane close before anything could run or log.
+let home = ($nu.home-dir? | default ($env.USERPROFILE? | default ($env.HOME? | default ".")))
+let prompt = ($home | path join ".claude-prompt.md")
+let log_file = ($home | path join ".claude-compose.log")
 let logit = {|msg: string|
     $"(date now | format date '%Y-%m-%d %H:%M:%S') ($msg)\n" | save --append $log_file
 }
 
-# 1) compose in nvim (blocks until the editor exits)
-^nvim -c 'setlocal fileformat=unix nofixeol noeol' $prompt
+# Resolve nvim to a concrete program. A herdr custom pane inherits herdr's
+# launch PATH (apply_pane_base_env only injects HERDR_SOCKET_PATH), so if herdr
+# was started from a shell whose PATH lacks Neovim's dir, a bare `nvim` would
+# not resolve — and in nushell a failed external command aborts the script
+# before we can log anything (the pane just flashes and closes). Pin the known
+# install path when present, then fall back to PATH lookup, then bare name.
+let nvim = (
+    ["C:/Program Files/Neovim/bin/nvim.exe"]
+    | append (which nvim | get path)
+    | where {|p| $p | path exists }
+    | append "nvim"
+    | first
+)
+
+do $logit $"start: nvim=($nvim) socket=($env.HERDR_SOCKET_PATH? | default '<unset>') active_cwd=($env.HERDR_ACTIVE_PANE_CWD? | default '<unset>')"
+
+# 1) compose in nvim (blocks until the editor exits). Guard the call so a
+#    spawn/exit failure is logged instead of silently aborting the script.
+try {
+    ^$nvim -c 'setlocal fileformat=unix nofixeol noeol' $prompt
+} catch {|err|
+    do $logit $"nvim failed: ($err.msg)"
+    exit 1
+}
 
 # 2) read the composed text
 let text = (try { open --raw $prompt | decode utf-8 } catch { "" })
