@@ -79,5 +79,16 @@ if ($match | is-empty) {
 }
 
 let target = ($match | first | get pane_id)
-let res = (herdr pane send-text $target $text | complete)
+
+# Wrap the text in bracketed-paste markers ourselves. `pane send-text` writes
+# the bytes RAW to the pane's PTY (unlike interactive paste / `pane run`, which
+# wrap when the app has DECSET 2004 on). Raw bursts reach Claude Code re-chunked
+# by the ConPTY input path into ~1KB pieces, and its paste heuristic ingests
+# each chunk as a separate fragment — the composed prompt shows up truncated /
+# split in the input box. Claude Code keeps bracketed paste enabled at its
+# prompt, so with the markers the whole text lands as ONE atomic paste
+# (newlines preserved, nothing auto-submitted).
+let esc = (char -u '1b')
+let payload = $"($esc)[200~($text)($esc)[201~"
+let res = (herdr pane send-text $target $payload | complete)
 do $logit $"send-text -> ($target) exit=($res.exit_code) len=($text | str length) err=($res.stderr)"
