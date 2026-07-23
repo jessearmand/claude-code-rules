@@ -138,7 +138,14 @@ if ($backend -eq 'herdr') {
 
     # send-paste takes base64 (newline/quote-safe through the control protocol);
     # psmux adds the bracketed-paste markers itself when the app enabled DECSET 2004.
-    $payload = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($text))
+    # Same two fixes as the herdr branch: normalize newlines to bare CR (psmux
+    # writes the decoded bytes as-is, and the file is LF), and send the identical
+    # paste TWICE (~120ms apart) so Claude Code expands it instead of leaving the
+    # first paste collapsed as a [Pasted text] placeholder.
+    $textCr  = $text.Replace("`r`n", "`r").Replace("`n", "`r")
+    $payload = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($textCr))
     psmux send-paste -t $target $payload | Out-Null
-    Write-Log ("psmux send-paste -> {0} exit={1} len={2}" -f $target, $LASTEXITCODE, $text.Length)
+    Start-Sleep -Milliseconds 120
+    psmux send-paste -t $target $payload | Out-Null
+    Write-Log ("psmux send-paste x2 -> {0} exit={1} len={2}" -f $target, $LASTEXITCODE, $text.Length)
 }
