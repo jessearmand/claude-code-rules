@@ -1,9 +1,10 @@
 # claude-compose.nu — "compose Claude Code prompt" helper for herdr AND psmux.
 #
 # Launched by:
-#   herdr  custom command:  /bin/sh -c "exec nu <this>"
-#          (herdr hardcodes /bin/sh for custom commands even on Windows; we
-#          provide C:\bin\sh.exe. `nu` is found on PATH.)
+#   herdr  custom command:  cmd.exe /d /c "nu <this>"
+#          (since upstream #1041 herdr runs Windows custom commands via cmd.exe,
+#          NOT /bin/sh; `nu` is found on PATH. Config: command = "nu <this>".)
+#          A PowerShell port lives beside this as claude-compose.ps1.
 #   psmux  prefix+C-e:      split-window -v "claude-compose-launch.cmd"
 #          (the launcher runs this script when nu is installed, else falls
 #          back to the legacy claude-edit.cmd nvim+OSC52 clipboard flow.)
@@ -123,10 +124,24 @@ if $backend == "herdr" {
     # keeps bracketed paste enabled at its prompt, so with the markers the
     # whole text lands as ONE atomic paste (newlines preserved, nothing
     # auto-submitted).
+    # Normalize newlines to bare CR (\r): a real terminal paste delivers \r, and
+    # herdr encodes Enter as \r too; the composed file is LF (\n). This makes the
+    # injection a proper terminal-style paste (so Claude Code collapses it).
     let esc = (char -u '1b')
-    let payload = $"($esc)[200~($text)($esc)[201~"
+    let text_cr = ($text | str replace --all "\r\n" "\r" | str replace --all "\n" "\r")
+    let payload = $"($esc)[200~($text_cr)($esc)[201~"
+
+    # Claude Code's "paste again to expand": the FIRST paste of some content only
+    # produces a collapsed [Pasted text] placeholder; pasting the SAME content a
+    # second time is what expands it. A single injection therefore stays collapsed
+    # forever, and a later Cmd+V doesn't match it (different bytes) so it makes a
+    # new block instead. Send the identical payload TWICE — the two bursts are
+    # byte-identical by construction, so the second matches the first and expands
+    # it. They must land as separate paste events, hence the gap.
+    herdr pane send-text $target $payload | complete
+    sleep 120ms
     let res = (herdr pane send-text $target $payload | complete)
-    do $logit $"herdr send-text -> ($target) exit=($res.exit_code) len=($text | str length) err=($res.stderr)"
+    do $logit $"herdr send-text x2 -> ($target) exit=($res.exit_code) len=($text | str length) err=($res.stderr)"
 } else {
     # psmux: this script runs in the split pane created by the keybind, so
     # TMUX_PANE is the split itself; the originating (Claude) pane is the
