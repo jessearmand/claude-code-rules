@@ -173,7 +173,18 @@ if $backend == "herdr" {
     # paste markers when the target app enabled DECSET 2004 (Claude Code
     # does), so the prompt lands as ONE atomic paste without auto-submit.
     # `-t` temp-focuses the target for the write and restores focus.
-    let payload = ($text | encode base64)
+    #
+    # Same two fixes as the herdr branch (Claude Code sees the same PTY input):
+    #   - Normalize newlines to bare CR (\r): psmux writes the decoded bytes
+    #     as-is (src/input.rs write_paste_chunked), and the composed file is LF,
+    #     so without this the paste is not byte-identical to a real terminal paste.
+    #   - Send the identical paste TWICE (~120ms apart): the first paste only
+    #     collapses to a [Pasted text] placeholder; an identical second paste is
+    #     what expands it. One injection stays collapsed forever.
+    let text_cr = ($text | str replace --all "\r\n" "\r" | str replace --all "\n" "\r")
+    let payload = ($text_cr | encode base64)
+    psmux send-paste -t $target $payload | complete
+    sleep 120ms
     let res = (psmux send-paste -t $target $payload | complete)
-    do $logit $"psmux send-paste -> ($target) exit=($res.exit_code) len=($text | str length) err=($res.stderr)"
+    do $logit $"psmux send-paste x2 -> ($target) exit=($res.exit_code) len=($text | str length) err=($res.stderr)"
 }
