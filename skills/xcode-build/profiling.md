@@ -73,18 +73,34 @@ xcrun xctrace export \
 
 ## Profile iOS Simulator App
 
-```bash
-# Get simulator app path
-SIMULATOR_ID=$(xcrun simctl list devices booted -j | jq -r '.devices[][] | select(.state=="Booted") | .udid' | head -1)
-APP_PATH=$(xcrun simctl get_app_container $SIMULATOR_ID com.example.app)
+`get_app_container … app` already returns the `.app` bundle path — do not append the bundle name
+again:
 
-# Profile
+```bash
+SIMULATOR_ID=$(xcrun simctl list devices booted -j \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"];
+print(next(x["udid"] for v in d.values() for x in v if x["state"]=="Booted"))')
+
+APP_PATH=$(xcrun simctl get_app_container $SIMULATOR_ID com.example.app app)   # → …/MyApp.app
+
 xcrun xctrace record \
     --template "Time Profiler" \
     --device $SIMULATOR_ID \
     --output profile.trace \
-    --launch -- $APP_PATH/MyApp.app/MyApp
+    --launch "$APP_PATH"
 ```
+
+To profile an app that is already running, attach by pid instead — launching a second copy
+through `xctrace` restarts it and loses the state you wanted to measure:
+
+```bash
+PID=$(xcrun simctl spawn $SIMULATOR_ID launchctl list | rg com.example.app | awk '{print $1}')
+xcrun xctrace record --template "Time Profiler" --output profile.trace --attach $PID
+```
+
+Simulator numbers are indicative only — the app runs on the Mac's CPU with a different GPU and
+memory system. Use the simulator to find algorithmic hot spots, and a real device for anything
+you intend to quote.
 
 ## Build for Profiling
 
@@ -94,11 +110,14 @@ Build with Release configuration and debug symbols:
 set -o pipefail && xcodebuild \
     -scheme $SCHEME \
     -configuration Release \
-    -destination "platform=iOS Simulator,name=iPhone 16" \
-    SWIFT_OPTIMIZATION_LEVEL=-O \
+    -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
     DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
     build | xcbeautify
 ```
+
+`-configuration Release` already sets `SWIFT_OPTIMIZATION_LEVEL=-O`; overriding it separately is
+redundant. If the project uses custom configuration names, check `xcodebuild -list` for the
+release-equivalent name (`Release-dev`, `Profile`, …) rather than assuming `Release` exists.
 
 ## Tips
 

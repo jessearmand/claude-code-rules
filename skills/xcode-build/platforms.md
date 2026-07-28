@@ -2,86 +2,95 @@
 
 Configure `-destination` for different Apple platforms.
 
+**Do not pass `-sdk` alongside `-destination`** — it is redundant and the two can contradict each
+other. `-destination` alone is enough.
+
+**Do not hardcode simulator names.** They change with every Xcode release (`iPhone 16` →
+`iPhone 17`, `iPad Pro (12.9-inch)` → `iPad Pro 13-inch (M5)`, and so on) and vary per machine.
+Query the installed set, then pass the UDID:
+
+```bash
+xcrun simctl list devices available          # all installed simulators
+xcrun simctl list devices booted             # currently booted
+-destination "platform=iOS Simulator,id=<UDID>"
+```
+
+Names are fine for throwaway commands you are about to run and read yourself; use `id=` in
+anything scripted or reused.
+
 ## iOS Simulator
 
 ```bash
--sdk iphonesimulator \
--destination "platform=iOS Simulator,name=iPhone 16"
+-destination "platform=iOS Simulator,id=$DEVICE_ID"
+# or, by name, when you have just confirmed it exists:
+-destination "platform=iOS Simulator,name=iPhone 17 Pro"
 ```
 
-Common device names: `iPhone 16`, `iPhone 16 Pro`, `iPhone 16 Pro Max`, `iPad Pro (12.9-inch)`
+## iOS device
+
+```bash
+-destination "platform=iOS,id=<device-udid>"
+-destination "generic/platform=iOS"          # build without a specific device attached
+```
 
 ## macOS
 
 ```bash
--destination "platform=macOS,name=My Mac"
+-destination "platform=macOS"
+-destination "platform=macOS,arch=arm64"     # pin the architecture
 ```
 
-## visionOS Simulator
+## visionOS / watchOS / tvOS Simulator
 
 ```bash
--sdk xrsimulator \
--destination "platform=visionOS Simulator,name=Apple Vision Pro"
+-destination "platform=visionOS Simulator,id=$DEVICE_ID"
+-destination "platform=watchOS Simulator,id=$DEVICE_ID"
+-destination "platform=tvOS Simulator,id=$DEVICE_ID"
 ```
 
-## watchOS Simulator
+These simulators are optional Xcode components and are frequently not installed. Confirm with
+`xcrun simctl list devices available` before assuming a destination exists — a missing runtime
+fails with an unhelpful "Unable to find a device matching the provided destination specifier".
+
+## Resolving a UDID in a script
 
 ```bash
--sdk watchsimulator \
--destination "platform=watchOS Simulator,name=Apple Watch Series 10 (46mm)"
+DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+import json, sys
+devices = json.load(sys.stdin)["devices"]
+print(next(d["udid"] for runtime in devices.values() for d in runtime
+           if "iPad" in d["name"]))')
 ```
 
-## tvOS Simulator
+Prefer a `booted` device when one exists, so builds and UI automation target the same simulator.
 
-```bash
--sdk appletvsimulator \
--destination "platform=tvOS Simulator,name=Apple TV 4K (3rd generation)"
-```
+## Complete examples
 
-## Finding Available Simulators
-
-List all available simulators:
-
-```bash
-xcrun simctl list devices available
-```
-
-List booted simulators:
-
-```bash
-xcrun simctl list devices booted
-```
-
-## Complete Examples
-
-### iOS Test
+### iOS test on a resolved simulator
 
 ```bash
 set -o pipefail && xcodebuild \
-    -configuration Debug \
-    -scheme $SCHEME-Package \
-    -sdk iphonesimulator \
-    -destination "platform=iOS Simulator,name=iPhone 16" \
+    -project MyApp.xcodeproj \
+    -scheme $SCHEME \
+    -destination "platform=iOS Simulator,id=$DEVICE_ID" \
     test | xcbeautify
 ```
 
-### macOS Test
+### macOS test
 
 ```bash
 set -o pipefail && xcodebuild \
-    -configuration Debug \
-    -scheme $SCHEME-Package \
-    -destination "platform=macOS,name=My Mac" \
+    -scheme $SCHEME \
+    -destination "platform=macOS" \
     test | xcbeautify
 ```
 
-### visionOS Test
+### Multiple destinations in one invocation
 
 ```bash
 set -o pipefail && xcodebuild \
-    -configuration Debug \
-    -scheme $SCHEME-Package \
-    -sdk xrsimulator \
-    -destination "platform=visionOS Simulator,name=Apple Vision Pro" \
+    -scheme $SCHEME \
+    -destination "platform=iOS Simulator,id=$IPHONE_ID" \
+    -destination "platform=iOS Simulator,id=$IPAD_ID" \
     test | xcbeautify
 ```
