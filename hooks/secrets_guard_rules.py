@@ -102,6 +102,19 @@ _READERS = r"(?:cat|bat|less|more|head|tail|view|nl|od|xxd|strings|open)"
 _EDITORS = r"(?:nano|vi|vim|nvim|emacs|code|codium|subl|atom|gedit|micro|helix|hx)"
 _SEG = r"[^;|&\n]*"  # stay inside one simple command
 
+# A command name only counts when it sits in a command position: the start of a
+# statement (secrets_guard puts one per line), after a pipe, inside a command
+# substitution, or behind a wrapper such as sudo/xargs/find -exec.
+#
+# Without this, any command carrying prose matches — an MR titled
+# "rm -rf guard, and split secrets from ..." looked exactly like `rm <secret>`,
+# and every gh/glab/git invocation with a description was a candidate.
+_HEAD = (
+    r"(?:^|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*"
+    r"|\b(?:sudo|doas|env|command|builtin|exec|time|nohup|nice|ionice|xargs)\s+(?:-\S+\s+)*"
+    r"|-exec(?:dir)?\s+)"
+)
+
 _ENV_SAFE_HINT = (
     "Do not read the file. If you need to know which keys exist, ask the user to name them, "
     "or have the user run the command themselves by typing `! <command>` in the prompt. "
@@ -179,15 +192,15 @@ SECRET_FILES: tuple[FileRule, ...] = (
 
 SECRET_COMMANDS: tuple[CommandRule, ...] = (
     # ---- critical: direct reads ----
-    CommandRule("read-env", CRITICAL, _rx(rf"\b{_READERS}\s+{_SEG}\.env\b"),
+    CommandRule("read-env", CRITICAL, _rx(rf"{_HEAD}{_READERS}\s+{_SEG}\.env\b"),
                 "Reading a .env file exposes secrets", _ENV_SAFE_HINT),
     CommandRule("read-private-key", CRITICAL,
-                _rx(rf"\b{_READERS}\s+{_SEG}(?:id_rsa|id_ed25519|id_ecdsa|id_dsa|\.pem|\.key)\b"),
+                _rx(rf"{_HEAD}{_READERS}\s+{_SEG}(?:id_rsa|id_ed25519|id_ecdsa|id_dsa|\.pem|\.key)\b"),
                 "Reading private key material"),
     CommandRule("read-cloud-creds", CRITICAL,
-                _rx(rf"\b{_READERS}\s+{_SEG}(?:\.aws/credentials|\.kube/config|\.azure/)"),
+                _rx(rf"{_HEAD}{_READERS}\s+{_SEG}(?:\.aws/credentials|\.kube/config|\.azure/)"),
                 "Reading cloud credentials"),
-    CommandRule("edit-env", CRITICAL, _rx(rf"\b{_EDITORS}\s+{_SEG}\.env\b"),
+    CommandRule("edit-env", CRITICAL, _rx(rf"{_HEAD}{_EDITORS}\s+{_SEG}\.env\b"),
                 "Opening a .env file in an editor", _ENV_WRITE_HINT),
 
     # ---- high: environment exposure ----
@@ -195,53 +208,53 @@ SECRET_COMMANDS: tuple[CommandRule, ...] = (
                 "Dumping the environment may expose secrets",
                 "Check for one specific variable instead, e.g. `test -n \"${KEY:-}\" && echo set`."),
     CommandRule("echo-secret-var", HIGH,
-                _rx(r"\b(?:echo|printf|print)\b[^;|&]*\$\{?[A-Za-z_]*"
+                _rx(rf"{_HEAD}(?:echo|printf|print)\b[^;|&]*\$\{{?[A-Za-z_]*"
                     r"(?:SECRET|APIKEY|API_KEY|KEY|TOKEN|PASSWORD|PASSWD|PASS|CREDENTIAL|AUTH|PRIVATE|SALT)"
                     r"[A-Za-z_]*\}?"),
                 "Echoing a secret-looking variable",
                 "Test whether it is set without printing it: `[ -n \"${VAR:-}\" ]`."),
     CommandRule("read-secrets-file", HIGH,
-                _rx(rf"\b{_READERS}\s+{_SEG}(?:credentials?|secrets?)\.(?:json|ya?ml|toml|ini)\b"),
+                _rx(rf"{_HEAD}{_READERS}\s+{_SEG}(?:credentials?|secrets?)\.(?:json|ya?ml|toml|ini)\b"),
                 "Reading a secrets file"),
-    CommandRule("read-netrc", HIGH, _rx(rf"\b{_READERS}\s+{_SEG}(?:\.netrc|\.npmrc|\.pypirc|\.pgpass)\b"),
+    CommandRule("read-netrc", HIGH,
+                _rx(rf"{_HEAD}{_READERS}\s+{_SEG}(?:\.netrc|\.npmrc|\.pypirc|\.pgpass)\b"),
                 "Reading a credentials dotfile"),
     CommandRule("source-env", HIGH,
-                _rx(rf"\bsource\s+{_SEG}\.env\b|(?:^|[;|&]\s*)\.\s+{_SEG}\.env\b"),
+                _rx(rf"{_HEAD}source\s+{_SEG}\.env\b|(?:^|[;|&]\s*)\.\s+{_SEG}\.env\b"),
                 "Sourcing a .env file loads secrets into the shell"),
     CommandRule("proc-environ", HIGH, _rx(r"/proc/[^/\s]*/environ"),
                 "Reading a process environment block"),
 
     # ---- high: search that would print secret contents ----
-    CommandRule("grep-env", HIGH, _rx(rf"\b(?:grep|rg|ag|ack|sift|ugrep)\b{_SEG}\.env\b"),
+    CommandRule("grep-env", HIGH, _rx(rf"{_HEAD}(?:grep|rg|ag|ack|sift|ugrep)\b{_SEG}\.env\b"),
                 "Grepping a .env file prints matching secret lines",
                 _ENV_SAFE_HINT),
-    CommandRule("find-env", HIGH, _rx(rf"\bfind\b{_SEG}-name\s+['\"]?\.env"),
+    CommandRule("find-env", HIGH, _rx(rf"{_HEAD}find\b{_SEG}-name\s+['\"]?\.env"),
                 "Locating .env files as a prelude to reading them",
                 "If you only need to know whether one exists, use `test -f .env`."),
     CommandRule("xargs-read-secret", HIGH,
-                _rx(rf"\bxargs\b{_SEG}\b{_READERS}\b{_SEG}{_SECRET_TOKEN}"
-                    rf"|{_SECRET_TOKEN}{_SEG}\|{_SEG}\bxargs\b{_SEG}{_READERS}"),
+                _rx(rf"{_HEAD}xargs\s+(?:-\S+\s+)*{_READERS}\b{_SEG}{_SECRET_TOKEN}"
+                    rf"|{_SECRET_TOKEN}{_SEG}\|{_SEG}xargs\b{_SEG}{_READERS}\b"),
                 "Reading secret files through xargs"),
     CommandRule("find-exec-read-secret", HIGH,
-                _rx(rf"\bfind\b{_SEG}{_SECRET_TOKEN}{_SEG}-exec"
-                    rf"|\bfind\b{_SEG}-exec\s+{_READERS}{_SEG}{_SECRET_TOKEN}"),
+                _rx(rf"{_HEAD}find\b{_SEG}{_SECRET_TOKEN}{_SEG}-exec"
+                    rf"|{_HEAD}find\b{_SEG}-exec\s+{_READERS}{_SEG}{_SECRET_TOKEN}"),
                 "Reading secret files through find -exec"),
 
     # ---- high: exfiltration ----
+    # Requires the secret to be an actual file argument (`@file`, --upload-file,
+    # -T, or a redirect). Matching any POST that merely mentions "credentials"
+    # blocked ordinary secrets-manager API calls and caught nothing real.
     CommandRule("curl-upload-secret", HIGH,
-                _rx(rf"\bcurl\b{_SEG}(?:-d\s*@|-F\s*[^=]+=@|--data[^=]*=@|--upload-file\s+)"
-                    rf"{_SEG}{_SECRET_TOKEN}"),
+                _rx(rf"{_HEAD}curl\b{_SEG}(?:@|--upload-file\s+|-T\s+|<\s*)\S*{_SECRET_TOKEN}"),
                 "Uploading a secret file via curl"),
-    CommandRule("curl-post-secret", HIGH,
-                _rx(rf"\bcurl\b{_SEG}-X\s*POST{_SEG}{_SECRET_TOKEN}"),
-                "POSTing secrets via curl"),
-    CommandRule("wget-post-secret", HIGH, _rx(rf"\bwget\b{_SEG}--post-file{_SEG}{_SECRET_TOKEN}"),
+    CommandRule("wget-post-secret", HIGH, _rx(rf"{_HEAD}wget\b{_SEG}--post-file{_SEG}{_SECRET_TOKEN}"),
                 "POSTing secrets via wget"),
-    CommandRule("scp-secret", HIGH, _rx(rf"\bscp\b{_SEG}{_SECRET_TOKEN}{_SEG}\S+:"),
+    CommandRule("scp-secret", HIGH, _rx(rf"{_HEAD}scp\b{_SEG}{_SECRET_TOKEN}{_SEG}\S+:"),
                 "Copying secrets to a remote host via scp"),
-    CommandRule("rsync-secret", HIGH, _rx(rf"\brsync\b{_SEG}{_SECRET_TOKEN}{_SEG}\S+:"),
+    CommandRule("rsync-secret", HIGH, _rx(rf"{_HEAD}rsync\b{_SEG}{_SECRET_TOKEN}{_SEG}\S+:"),
                 "Syncing secrets to a remote host via rsync"),
-    CommandRule("nc-secret", HIGH, _rx(rf"\b(?:nc|ncat|netcat|socat)\b{_SEG}<{_SEG}{_SECRET_TOKEN}"),
+    CommandRule("nc-secret", HIGH, _rx(rf"{_HEAD}(?:nc|ncat|netcat|socat)\b{_SEG}<{_SEG}{_SECRET_TOKEN}"),
                 "Exfiltrating secrets via netcat"),
     CommandRule("pipe-secret-to-clipboard", HIGH,
                 _rx(rf"{_SECRET_TOKEN}{_SEG}\|{_SEG}\b(?:pbcopy|xclip|xsel|wl-copy)\b"),
@@ -250,33 +263,33 @@ SECRET_COMMANDS: tuple[CommandRule, ...] = (
     # ---- high: mutating secret files ----
     CommandRule("write-env-redirect", HIGH, _rx(r">>?\s*\S*\.env\b"),
                 "Redirecting output into a .env file", _ENV_WRITE_HINT),
-    CommandRule("tee-env", HIGH, _rx(rf"\btee\b{_SEG}\S*\.env\b"),
+    CommandRule("tee-env", HIGH, _rx(rf"{_HEAD}tee\b{_SEG}\S*\.env\b"),
                 "Writing a .env file via tee", _ENV_WRITE_HINT),
-    CommandRule("sed-inplace-env", HIGH, _rx(rf"\bsed\b{_SEG}-i{_SEG}\.env\b"),
+    CommandRule("sed-inplace-env", HIGH, _rx(rf"{_HEAD}sed\b{_SEG}-i{_SEG}\.env\b"),
                 "Editing a .env file in place", _ENV_WRITE_HINT),
-    CommandRule("copy-secret", HIGH, _rx(rf"\bcp\b{_SEG}{_SECRET_TOKEN}"),
+    CommandRule("copy-secret", HIGH, _rx(rf"{_HEAD}cp\b{_SEG}{_SECRET_TOKEN}"),
                 "Copying a secret file"),
-    CommandRule("move-secret", HIGH, _rx(rf"\bmv\b{_SEG}{_SECRET_TOKEN}"),
+    CommandRule("move-secret", HIGH, _rx(rf"{_HEAD}mv\b{_SEG}{_SECRET_TOKEN}"),
                 "Moving a secret file"),
-    CommandRule("touch-env", HIGH, _rx(rf"\btouch\b{_SEG}\S*\.env\b"),
+    CommandRule("touch-env", HIGH, _rx(rf"{_HEAD}touch\b{_SEG}\S*\.env\b"),
                 "Creating a .env file", _ENV_WRITE_HINT),
     CommandRule("delete-secret", HIGH,
-                _rx(rf"\brm\b{_SEG}{_SECRET_TOKEN}|\brm\b{_SEG}authorized_keys"),
+                _rx(rf"{_HEAD}rm\b{_SEG}{_SECRET_TOKEN}|{_HEAD}rm\b{_SEG}authorized_keys"),
                 "Deleting a secret file",
                 "Losing these is unrecoverable. Confirm with the user first."),
     CommandRule("truncate-secret", HIGH,
-                _rx(rf"\btruncate\b{_SEG}\.(?:env|pem|key)\b|(?:^|[;|&]\s*)>\s*\S*\.env\b"),
+                _rx(rf"{_HEAD}truncate\b{_SEG}\.(?:env|pem|key)\b|(?:^|[;|&]\s*)>\s*\S*\.env\b"),
                 "Truncating a secret file"),
 
     # ---- strict ----
     CommandRule("grep-for-secrets", STRICT,
-                _rx(r"\b(?:grep|rg)\b[^|;]*(?:-r|-R|--recursive)[^|;]*"
+                _rx(rf"{_HEAD}(?:grep|rg)\b[^|;]*(?:-r|-R|--recursive)[^|;]*"
                     r"(?:password|passwd|secret|api.?key|token|credential|private.?key)"),
                 "Recursive grep for secrets would print them",
                 "Search for the variable *name* only, e.g. `rg -l 'API_KEY'`, and read no values."),
-    CommandRule("base64-secret", STRICT, _rx(rf"\bbase64\b{_SEG}{_SECRET_TOKEN}"),
+    CommandRule("base64-secret", STRICT, _rx(rf"{_HEAD}base64\b{_SEG}{_SECRET_TOKEN}"),
                 "Base64-encoding a secret file"),
-    CommandRule("history-grep", STRICT, _rx(r"\bhistory\b[^|;]*\|[^|;]*\b(?:grep|rg)\b"),
+    CommandRule("history-grep", STRICT, _rx(rf"{_HEAD}history\b[^|;]*\|[^|;]*(?:grep|rg)\b"),
                 "Shell history may contain pasted secrets"),
 )
 
