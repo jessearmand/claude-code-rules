@@ -9,7 +9,22 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python3 ~/.claude/hooks/rm_rf_guard.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "python3 ${HOME}/.claude/hooks/bash_command_validator.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/secrets_guard.py",
+            "timeout": 10
           }
         ]
       },
