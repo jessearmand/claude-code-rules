@@ -1,11 +1,38 @@
 ---
 name: lang-typescript
-description: TypeScript/JavaScript development with Vitest testing, React patterns, and functional programming best practices. Use when writing or reviewing TypeScript/JavaScript code.
+description: TypeScript/JavaScript development with Vitest testing, React patterns, and functional programming best practices. Use when writing or reviewing TypeScript/JavaScript code, or when choosing among Oxlint, Oxfmt, and Biome.
 ---
 
 # TypeScript/JavaScript Development
 
 Write functional, type-safe TypeScript/JavaScript code.
+
+## Package Managers
+
+`npm`, `bun`, and `pnpm` are managed by [mise](https://mise.jdx.dev/). Do not install them with Homebrew, a standalone installer, or Corepack unless the project already does.
+
+Detect the project manager from lockfiles and config, then use that CLI:
+
+| Signal | Manager |
+|--------|---------|
+| `pnpm-lock.yaml`, `pnpm-workspace.yaml` | `pnpm` |
+| `bun.lock`, `bun.lockb` | `bun` |
+| `package-lock.json` | `npm` |
+| `mise.toml` / `.tool-versions` lists `pnpm` / `bun` / `npm` | that tool |
+
+If none of those exist, check `packageManager` in `package.json`, then fall back to whatever mise already provides on `PATH`.
+
+Typical mise pins:
+
+```toml
+[tools]
+node = "24"
+pnpm = "10"
+# or: bun = "1"
+# or: npm = "11"
+```
+
+Run project binaries through the manager (`pnpm exec`, `bunx`, `npx`). Prefer `package.json` scripts over ad-hoc tool invocations.
 
 ## Validation Workflow
 
@@ -15,138 +42,39 @@ Before submitting changes:
 2. Build the repository
 3. Run all tests
 4. Check for type errors
-5. Lint with Biome: `bunx --bun biome check` (or `npx @biomejs/biome check`)
+5. Lint and format with the project's toolchain (see below)
 
-## Linting with Biome
+## Lint and Format
 
-Biome is the recommended linter for TypeScript/JavaScript projects. It provides 419+ lint rules, formatting, and assist actions in a single fast tool.
+Follow the project's existing toolchain. Do not add a second linter or formatter beside the one already configured.
 
-### Quick Commands
+| Project signals | Toolchain | Reference |
+|-----------------|-----------|-----------|
+| `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts`, `oxlint.config.mts` | Oxlint | [references/oxlint.md](references/oxlint.md) |
+| `.oxfmtrc.json`, `.oxfmtrc.jsonc`, `oxfmt.config.ts`, `oxfmt.config.mts` | Oxfmt | [references/oxfmt.md](references/oxfmt.md) |
+| `biome.json`, `biome.jsonc` | Biome | [references/biome.md](references/biome.md) |
 
-```bash
-# Check for lint errors and formatting issues
-bunx --bun biome check ./src
+Oxlint and Oxfmt are separate tools and often appear together. Biome covers lint + format in one binary.
 
-# Fix safe issues automatically
-bunx --bun biome check --write ./src
+When adding a toolchain to a new project:
 
-# Fix all issues including unsafe fixes (review changes)
-bunx --bun biome check --write --unsafe ./src
+- Dedicated linter + dedicated formatter: Oxlint + Oxfmt
+- Single integrated tool: Biome
 
-# Lint only (no formatting)
-bunx --bun biome lint ./src
+Stay on ESLint or Prettier only when the project still depends on plugin behavior the replacements do not cover.
 
-# Format only
-bunx --bun biome format --write ./src
-```
-
-### Configuration
-
-Create `biome.json` in project root:
-
-```json
-{
-    "$schema": "https://biomejs.dev/schemas/2.0.5/schema.json",
-    "linter": {
-        "enabled": true,
-        "rules": {
-            "recommended": true,
-            "suspicious": {
-                "noExplicitAny": "error"
-            }
-        }
-    },
-    "formatter": {
-        "enabled": true,
-        "indentStyle": "space",
-        "indentWidth": 4
-    },
-    "assist": {
-        "enabled": true,
-        "actions": {
-            "source": {
-                "organizeImports": "on"
-            }
-        }
-    },
-    "javascript": {
-        "formatter": {
-            "quoteStyle": "single",
-            "semicolons": "always"
-        }
-    }
-}
-```
-
-### Rule Groups
-
-- **correctness**: Catches guaranteed bugs (enabled by default)
-- **suspicious**: Detects likely bugs or useless code
-- **style**: Enforces consistent code style (warnings by default)
-- **complexity**: Identifies overly complex code
-- **security**: Detects potential security flaws
-- **a11y**: Accessibility rules for React/HTML
-
-### Assist Actions
-
-Biome Assist provides safe code transformations that improve code quality. Unlike lint rules, assist actions always offer a code fix.
-
-Available actions in the `source` group:
-- **organizeImports**: Sort and group import statements
-- **useSortedKeys**: Sort object keys alphabetically (useful for JSON/config files)
+Quick commands once the matching reference is loaded:
 
 ```bash
-# Run assist actions only
-bunx --bun biome check --formatter-enabled=false --linter-enabled=false
+# Oxlint / Oxfmt
+oxlint
+oxlint --fix
+oxfmt
+oxfmt --check
 
-# Run all checks including assist (default behavior)
-bunx --bun biome check --write ./src
-```
-
-### Suppressing Rules
-
-```typescript
-// Suppress specific rule for next line
-// biome-ignore lint/suspicious/noExplicitAny: external API requires any
-const data: any = externalApi.getData();
-
-// Suppress formatting
-// biome-ignore format: matrix alignment
-const matrix = [
-    [1, 0, 0],
-    [0, 1, 0],
-];
-```
-
-### Editor Integration
-
-VS Code settings for Biome:
-
-```json
-{
-    "editor.defaultFormatter": "biomejs.biome",
-    "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-        "source.fixAll.biome": "explicit",
-        "source.organizeImports.biome": "explicit",
-        "source.action.useSortedKeys.biome": "explicit"
-    }
-}
-```
-
-Code action codes for assist:
-- `source.fixAll.biome` - Apply all safe lint fixes
-- `source.organizeImports.biome` - Sort and organize imports
-- `source.action.useSortedKeys.biome` - Sort object keys
-
-### Migrating from ESLint
-
-```bash
-# Migrate ESLint config to Biome
-bunx --bun biome migrate eslint
-
-# Suppress existing violations during migration
-bunx --bun biome lint --write --unsafe --suppress="suppressed due to migration"
+# Biome
+pnpm exec biome check ./src
+pnpm exec biome check --write ./src
 ```
 
 ## Core Principles
@@ -221,3 +149,6 @@ Only write high-value comments. Avoid talking to the user through comments.
 
 - [Testing](testing.md) - Vitest patterns and mocking conventions
 - [React](react.md) - React best practices with React Compiler focus
+- [Oxlint](references/oxlint.md) - dedicated JS/TS linter
+- [Oxfmt](references/oxfmt.md) - dedicated Prettier-compatible formatter
+- [Biome](references/biome.md) - integrated lint + format toolchain

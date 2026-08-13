@@ -1,9 +1,7 @@
----
-name: extract-images
-description: Extracting images with pypdf
----
+# Extract Images (pypdf)
 
-# Extract Images
+Examples for extracting embedded images from PDFs using `pypdf`.
+
 
 In order to use the following code you need to install dependencies, such as `Pillow`
 
@@ -11,18 +9,14 @@ In order to use the following code you need to install dependencies, such as `Pi
 pip install pypdf[image]
 ```
 
-For JBIG2 support, you need to install a global OS-level package as well: jbig2dec The installation procedure depends on our operating system
+For JBIG2 support, you need to install a global OS-level package as well: jbig2dec The installation procedure depends on your operating system
 
 Every page of a PDF document can contain an arbitrary number of images.
 The names of the files may not be unique.
 
-```{testsetup}
-pypdf_test_setup("user/extract-images", {
-    "example.pdf": "../resources/example.pdf",
-})
-```
+Assumes the input PDF exists on disk.
 
-```{testcode}
+```python
 from pypdf import PdfReader
 
 reader = PdfReader("example.pdf")
@@ -40,7 +34,7 @@ Some other objects can contain images, such as stamp annotations.
 
 You can extract the image from the annotation with the following code:
 
-```{testcode}
+```python
 from pypdf import PdfReader
 
 reader = PdfReader("example.pdf")

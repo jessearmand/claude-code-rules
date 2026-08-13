@@ -1,24 +1,13 @@
----
-name: merging-pdfs
-description: Merging PDF files with pypdf
----
+# Merging PDF Files (pypdf)
 
-# Merging PDF files
+Examples for merging PDFs using `pypdf` in Python.
+
 
 ## Basic Example
 
-```{testsetup}
-pypdf_test_setup("user/merging-pdfs", {
-    "example.pdf": "../resources/example.pdf",
-    "hello-world.pdf": "../resources/hello-world.pdf",
-    "jpeg.pdf": "../resources/jpeg.pdf",
-    "GeoBase_NHNC1_Data_Model_UML_EN.pdf": "../resources/GeoBase_NHNC1_Data_Model_UML_EN.pdf",
-    "Seige_of_Vicksburg_Sample_OCR.pdf": "../resources/Seige_of_Vicksburg_Sample_OCR.pdf",
-    "two-different-pages.pdf": "../resources/two-different-pages.pdf",
-})
-```
+Assumes the input PDFs exist on disk.
 
-```{testcode}
+```python
 from pypdf import PdfWriter
 
 merger = PdfWriter()
@@ -33,21 +22,21 @@ For more details, see an excellent answer on
 [StackOverflow](https://stackoverflow.com/questions/3444645/merge-pdf-files)
 by Paul Rooney.
 
-````{note}
+> Note:
+
 Dealing with large PDF files might reach the recursion limit of the current
 Python interpreter. In these cases, increasing the limit might help:
 
-```{testcode}
+```python
 import sys
 
 # Example: Increase the current limit by factor 5.
 sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 ```
-````
 
 ## Showing more merging options
 
-```{testcode}
+```python
 from pypdf import PdfWriter
 
 merger = PdfWriter()
@@ -72,11 +61,11 @@ with (
 
 ## append
 
-`append` has been slightly extended in `PdfWriter`. See {func}`~pypdf.PdfWriter.append` for more details.
+`append` has been slightly extended in `PdfWriter`. See the `pypdf.PdfWriter.append` docs for details.
 
 ### Examples
 
-```{testcode}
+```python
 from pypdf import PdfWriter, PdfReader
 
 writer = PdfWriter()
@@ -97,7 +86,7 @@ During merging, the relevant named destination will also be imported.
 If you want to insert pages in the middle of the destination, use `merge` (which provides an insertion position).
 You can insert the same page multiple times, if necessary, even using a list-based syntax:
 
-```{testcode}
+```python
 # Insert pages 2 and 3, with page 1 before, between, and after
 writer.append(reader, [0, 1, 0, 2, 0])
 ```
@@ -137,7 +126,7 @@ To prevent side effects between pages/objects and all objects linked cloning is 
 This process will be automatically applied if you use `PdfWriter.append/merge/add_page/insert_page`.
 If you want to clone an object before attaching it "manually", use the `clone` method of any *PdfObject*:
 
-```{testcode}
+```python
 from pypdf.generic import NameObject, NumberObject, StreamObject
 
 stream_object = StreamObject()
@@ -147,13 +136,13 @@ cloned_object = stream_object.clone(writer)
 
 If you try to clone an object already belonging to the writer, it will return the same object:
 
-```{testcode}
+```python
 assert cloned_object == stream_object.clone(writer)
 ```
 
 The same holds true if you try to clone an object twice. It will return the previously cloned object:
 
-```{testcode}
+```python
 assert stream_object.clone(writer) == stream_object.clone(writer)
 ```
 
@@ -165,16 +154,16 @@ This means that you may copy lots of objects which will be saved in the output P
 
 To prevent this, you can provide the list of fields in the dictionaries to be ignored:
 
-```{testcode}
+```python
 new_page = writer.add_page(reader.pages[0], excluded_keys=["/B"])
 ```
 
 ### Merging rotated pages
 
-If you are working with rotated pages, you might want to call {func}`~pypdf._page.PageObject.transfer_rotation_to_content` on the page
+If you are working with rotated pages, you might want to call `pypdf._page.PageObject.transfer_rotation_to_content` on the page
 before merging to avoid wrongly rotated results:
 
-```{testcode}
+```python
 background = PdfReader("jpeg.pdf").pages[0]
 
 for page in writer.pages:

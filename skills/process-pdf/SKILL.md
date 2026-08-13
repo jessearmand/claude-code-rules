@@ -1,6 +1,6 @@
 ---
-name: process-pdf 
-description: Extract text, tables, form values, images, merge PDFs. Use when working with PDF files, forms, or document extraction. Requires pypdf and pdfplumber packages.
+name: process-pdf
+description: Extract text, tables, form values, images, and merge PDFs. Use when working with PDF files, forms, or document extraction. Requires Python 3 and pdfplumber+pypdf (install via pip/uv).
 ---
 
 # PDF Processing
@@ -22,7 +22,11 @@ For reference on pypdf:
 
 ## Requirements
 
-Packages must be installed in your environment:
+Packages must be installed in your environment (choose one):
+
 ```bash
+python -m pip install pypdf pdfplumber
+
+# or, if you use uv
 uv pip install pypdf pdfplumber
 ```

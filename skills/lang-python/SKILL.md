@@ -1,7 +1,6 @@
 ---
 name: lang-python
-description: Python development with modern linting and type checking. Use when writing or reviewing Python code.
-compatibility: Examples use uv+ruff+ty; adapt to pip/poetry and mypy/pyright as needed.
+description: Python development with modern linting and type checking. Use when writing or reviewing Python code. Examples use uv+ruff+ty; adapt to pip/poetry and mypy/pyright as needed.
 ---
 
 # Python Development
@@ -10,9 +9,9 @@ Write type-safe Python code with modern tooling.
 
 ## Core Principles
 
+- Prefer `uv` for package management
 - Prefer `httpx` over `requests` for HTTP
 - Use types everywhere possible
-- Follow project conventions for tooling
 
 ## Tooling Reference
 
@@ -28,19 +27,30 @@ After implementing Python code:
 
 ```bash
 # 1. Lint and format
-uvx ruff check --fix
+uvx ruff check
 uvx ruff format
 
 # 2. Type check
 uvx ty check
 ```
 
-## Fallback for Non-Astral Projects
+## If uv/ruff/ty Aren't Available
 
-If uv/ruff/ty aren't available, translate to project tooling:
+Translate the workflow to whatever the repository uses:
 
-| Astral Tool | Alternatives |
-|-------------|-------------|
-| `uv` | pip, poetry, pdm |
-| `ruff` | black + flake8 + isort |
-| `ty` | mypy, pyright |
+- Package management: `python -m pip`, Poetry, PDM
+- Lint/format: Ruff, Black, Flake8
+- Type checking: `ty`, mypy, pyright
+
+Example equivalents:
+
+```bash
+# Install tools (one option)
+python -m pip install ruff mypy
+
+# Lint/format
+ruff check && ruff format
+
+# Type check
+mypy .
+```

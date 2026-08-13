@@ -1,7 +1,6 @@
----
-name: reference
-description: pdfplumber usage with CLI, python library, visual debugging, extracting text, tables, and form values
----
+# pdfplumber Reference
+
+This is a condensed reference for `pdfplumber` CLI and Python usage.
 
 ## Table of Contents
 
@@ -146,9 +145,9 @@ Each object is represented as a simple Python `dict`, with the following propert
 |`matrix`| The "current transformation matrix" for this character. (See below for details.)|
 |`mcid`| The [marked content](https://ghostscript.com/~robin/pdf_reference17.pdf#page=850) section ID for this character if any (otherwise `None`). *Experimental attribute.*|
 |`tag`| The [marked content](https://ghostscript.com/~robin/pdf_reference17.pdf#page=850) section tag for this character if any (otherwise `None`). *Experimental attribute.*|
-|`ncs`|TKTK|
-|`stroking_pattern`|TKTK|
-|`non_stroking_pattern`|TKTK|
+|`ncs`|Non-stroking color space|
+|`stroking_pattern`|Stroking pattern, if any|
+|`non_stroking_pattern`|Non-stroking pattern, if any|
 |`stroking_color`|The color of the character's outline (i.e., stroke).|
 |`non_stroking_color`|The character's interior color.|
 |`object_type`| "char"|
@@ -285,9 +284,7 @@ For instance:
 im = my_pdf.pages[0].to_image(resolution=150)
 ```
 
-From a script or REPL, `im.show()` will open the image in your local image viewer. But `PageImage` objects also play nicely with Jupyter notebooks; they automatically render as cell outputs. For example:
-
-![Visual debugging in Jupyter](examples/screenshots/visual-debugging-in-jupyter.png "Visual debugging in Jupyter")
+From a script or REPL, `im.show()` will open the image in your local image viewer. But `PageImage` objects also play nicely with Jupyter notebooks; they automatically render as cell outputs.
 
 *Note*: `.to_image(...)` works as expected with `Page.crop(...)`/`CroppedPage` instances, but is unable to incorporate changes made via `Page.filter(...)`/`FilteredPage` instances.
 

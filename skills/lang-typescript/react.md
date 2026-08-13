@@ -80,7 +80,7 @@ const handleSubmit = () => {
 
 - Include all dependencies
 - Return cleanup functions
-- Don't suppress Biome lint rules (e.g., `useExhaustiveDependencies`)
+- Don't suppress exhaustive-deps / hook lint rules (Biome `useExhaustiveDependencies`, Oxlint `react/exhaustive-deps`)
 
 ## Rules of Hooks
 

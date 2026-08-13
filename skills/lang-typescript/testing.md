@@ -89,23 +89,21 @@ afterEach(() => {
 
 ## Commonly Mocked Modules
 
-- **Node.js**: `fs`, `fs/promises`, `os`, `path`, `child_process`
-- **External SDKs**: `@google/genai`, `@modelcontextprotocol/sdk`
-- **Internal modules**: Dependencies from other packages
+- **Node.js built-ins**: `fs`, `fs/promises`, `os`, `path`, `child_process`
+- **Third-party SDKs**: HTTP clients (`axios`, `node-fetch`) and external service SDKs
+- **Internal modules**: sibling packages in a monorepo
 
-## React Component Testing (Ink)
+## React Component Testing
+
+Component tests need a DOM environment (`jsdom` or `happy-dom`) in `vitest.config.ts`.
 
 ```typescript
-import { render } from 'ink-testing-library';
+import { render, screen } from '@testing-library/react';
+import { MyComponent } from './MyComponent';
 
-it('renders correctly', () => {
-    const { lastFrame } = render(
-        <Context.Provider value={mockValue}>
-            <MyComponent />
-        </Context.Provider>
-    );
-
-    expect(lastFrame()).toContain('Expected text');
+it('renders the expected content', () => {
+    render(<MyComponent />);
+    expect(screen.getByText('Expected text')).toBeTruthy();
 });
 ```
 

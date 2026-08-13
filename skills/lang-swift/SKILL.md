@@ -71,3 +71,4 @@ struct CounterView: View {
 - [Patterns](patterns.md) - State, async, and composition patterns
 - [Logging](logging.md) - Swift logging conventions
 - [Concurrency](references/concurrency.md) - Swift 6 strict concurrency and data race safety
+- Build, test, and profiling workflow: see the `xcode-build` skill

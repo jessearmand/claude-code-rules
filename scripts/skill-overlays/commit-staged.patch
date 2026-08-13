@@ -1,0 +1,49 @@
+diff -ruN a/SKILL.md b/SKILL.md
+--- a/SKILL.md	2026-08-14 01:08:58
++++ b/SKILL.md	2026-08-14 01:08:58
+@@ -1,15 +1,21 @@
+ ---
+ name: commit-staged
+-description: Perform commit on staged changes with clear description and body
++description: Commit staged changes with clear description and body using Conventional Commits format.
++disable-model-invocation: true
++allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(git commit:*), Bash(git add:*), Read, Glob, Grep, Skill(check)
+ ---
+ 
++# Commit Staged
++
+ Commit staged changes with clear description and body
+ 
+-Primary Task:
+-Run `git diff --staged`, review the changes, commit the staged changes with clear description and body.
++## Primary Task
++
++Run `git diff --staged`, review the changes, then commit the staged changes with a clear description and body.
+ Describe the purpose of the changes, prioritize clarity, readability, and minimize ambiguity.
+ 
+-Commit message guidelines (Conventional Commits):
++## Commit Message Guidelines (Conventional Commits)
++
+ - Use the format `<type>[optional scope][!]: <description>`.
+ - Use `feat` for new features and `fix` for bug fixes; other allowed types include `docs`, `refactor`, `chore`, `test`, `perf`, `ci`, `build`, and `style`.
+ - Add a scope in parentheses when it clarifies the area affected, e.g. `feat(parser):`.
+@@ -27,13 +33,15 @@
+ Refs: #412
+ ```
+ 
+-Important:
++## Important
++
+ - DO NOT add any other files that are not staged
+ - Focus on the staged changes identified by the output of `git diff --staged`
+ - EXCEPTION: when there are modified files from the process of checking, ONLY add those modified files
+ 
+-Process:
+-1. Run the repository's check workflow by following the `check` skill and any project setup
+-2. After checks are resolved, proceed with reviewing the output of `git diff`
++## Process
++
++1. Perform checks with /check or refer to project setup for running checks, tests, or linting
++2. After checks are resolved, proceed with reviewing the output of `git diff --staged`
+ 3. Review modified files from the process of checking, ONLY add those modified files
+ 4. Run `git diff --staged`, then ONLY commit the staged changes
