@@ -1,16 +1,22 @@
 # Browser mode — driving the grep.app frontend
 
-Use the **chrome-devtools** MCP tools to operate https://grep.app/ as a real
-browser. This is the way to get the interactive UI (facet sidebar, full-file
-context, links to GitHub) and the only reliable way to reach the JSON API from
-outside the MCP server, because grep.app's WAF blocks plain HTTP clients but allows
-`fetch()` issued from within a grep.app page.
+Use browser automation to operate https://grep.app/ as a real user. This gives you
+the interactive UI (facet sidebar, full-file context, links to GitHub) and is a
+reliable way to reach the JSON API when grep.app's WAF blocks plain HTTP clients
+but allows `fetch()` issued from within a grep.app page.
+
+Works with any browser automation your agent supports:
+
+- **chrome-devtools MCP** — `navigate_page`, `evaluate_script`
+- **agent-browser CLI** — `agent-browser open`, `agent-browser eval`
+- **Playwright / Puppeteer** — `page.goto`, `page.evaluate`
+- **browser-use** or similar agent browser tools
 
 ## A. Structured results via in-page fetch (recommended)
 
 1. Navigate to any grep.app page (so the origin is loaded):
-   `navigate_page` → `https://grep.app/`
-2. Run the query with `evaluate_script`:
+   `https://grep.app/`
+2. Run the query with JavaScript evaluation in the page context:
 
    ```js
    async () => {
@@ -30,6 +36,13 @@ outside the MCP server, because grep.app's WAF blocks plain HTTP clients but all
    See `references/grep-api.md` for the response shape and how to turn each hit's
    HTML `content.snippet` into `(line, code)` pairs and a GitHub blob URL.
 
+### agent-browser example
+
+```bash
+agent-browser open https://grep.app/
+agent-browser eval "fetch('https://grep.app/api/search?q=' + encodeURIComponent('createServer(') + '&f.lang=TypeScript').then(r => r.json())"
+```
+
 ## B. Visual UI navigation
 
 - Search by URL: `https://grep.app/search?q=<url-encoded-query>` (the textbox is
@@ -44,8 +57,8 @@ outside the MCP server, because grep.app's WAF blocks plain HTTP clients but all
   (`https://github.com/{repo}/blob/{branch}/{path}`) for full context.
 - A view selector toggles result density (e.g. "Compact").
 
-Prefer `take_snapshot` over screenshots to read results as text. Result pages can
-be large; read snapshots in chunks if truncated.
+Prefer accessibility snapshots or DOM text extraction over screenshots when reading
+results. Result pages can be large; read output in chunks if truncated.
 
 ## Notes
 

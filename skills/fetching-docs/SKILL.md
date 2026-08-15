@@ -59,4 +59,4 @@ uv tool run gitingest https://github.com/user/repo --token $GITHUB_TOKEN
 
 ## Cross-Repository Code Search
 
-Use the dedicated `grep-code-search` skill for grep.app searches. The `scripts/grepgithub.py` helper in this skill is a legacy fallback only.
+Use the dedicated `grep-code-search` skill for grep.app searches.

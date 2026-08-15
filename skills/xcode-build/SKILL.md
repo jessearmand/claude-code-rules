@@ -11,8 +11,8 @@ description: Build, test, and run iOS/macOS/visionOS projects using the Xcode MC
 `RunSomeTests`). It builds the scheme, configuration, and destination Xcode has selected, so the
 product lands where the app you are testing comes from, and results come back structured.
 
-**Otherwise (CI, headless, deliberate overrides) → `xcodebuild`,** always piped through
-`xcbeautify`:
+**Otherwise (CI, headless, deliberate overrides) → `xcodebuild`,** piped through `xcbeautify`
+for readable output (`brew install xcbeautify`; the examples assume it is installed):
 
 ```bash
 set -o pipefail && xcodebuild [flags] | xcbeautify
@@ -64,10 +64,11 @@ set -o pipefail && xcodebuild \
 ```
 
 Write the full log to a file when you need to inspect it — `| tail -N` drops the compile lines
-that tell you whether your file was actually rebuilt:
+that tell you whether your file was actually rebuilt. Tee the *raw* output: xcbeautify
+reformats lines, so patterns like `Compiling MyFile` won't match its formatted output.
 
 ```bash
-set -o pipefail && xcodebuild … | xcbeautify > build.log; echo "exit=$?"
+set -o pipefail && xcodebuild … 2>&1 | tee build.log | xcbeautify; echo "exit=$?"
 rg 'Compiling MyFile|error:' build.log
 ```
 

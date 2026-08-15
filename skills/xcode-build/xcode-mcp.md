@@ -60,10 +60,11 @@ builds exactly what Xcode is set to build.
   `archive` / `-exportArchive`, `-testPlan`, custom build-setting overrides.
 
 Always pipe it through `xcbeautify` (`set -o pipefail && xcodebuild … | xcbeautify`), and write
-the **full** log to a file rather than tailing it:
+the **full** log to a file rather than tailing it. Tee the *raw* output: xcbeautify reformats
+lines, so patterns like `Compiling MyFile` won't match its formatted output.
 
 ```bash
-set -o pipefail && xcodebuild … | xcbeautify > build.log; echo "exit=$?"
+set -o pipefail && xcodebuild … 2>&1 | tee build.log | xcbeautify; echo "exit=$?"
 rg 'Compiling MyFile|error:' build.log      # then query the file
 ```
 

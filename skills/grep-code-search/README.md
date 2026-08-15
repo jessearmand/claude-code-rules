@@ -19,8 +19,8 @@ grep-code-search/
 │   └── package.sh            # build the distributable .zip
 └── references/
     ├── grep-api.md           # JSON API contract
-    ├── mcp-setup.md          # connect the MCP server in Desktop / Cowork
-    └── browser-mode.md       # drive the grep.app UI with chrome-devtools
+    ├── mcp-setup.md          # connect the MCP server in any agent runtime
+    └── browser-mode.md       # drive the grep.app UI with browser automation
 ```
 
 ## Install
@@ -39,8 +39,9 @@ grep-code-search/
 ### Claude Code (local)
 
 Place the `grep-code-search/` folder under `.claude/skills/` in your project (or
-`~/.claude/skills/` for all projects). The MCP server is already declared in this
-repo's `.mcp.json` as `gh-grep`.
+`~/.claude/skills/` for all projects). Connect the MCP server separately — either
+`claude mcp add --transport http grep https://mcp.grep.app` or a project `.mcp.json`
+(see `references/mcp-setup.md`).
 
 ## Quick try
 

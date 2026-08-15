@@ -3,11 +3,13 @@
 ## Project Structure & Module Organization
 - `hooks/`: Claude Code hooks (Python) for command validation and file protection.
 - `docs/`: Internal guides (ast-grep, TypeScript, Python, Swift, MCP notes).
-- `commands/`: Quick how-to docs for common CLI tasks.
+- `skills/`: Agent skills. Most mirror the canonical harness-neutral copies in the `agent-config`
+  repo; see "Skills sync" below.
 - `agents/`: Role/specialist prompts (e.g., code review, debugging, research) used as subagents.
 - `plugins/`: Local Claude Code plugins (e.g., `explanatory-output-style`) with marketplace metadata under each plugin's `.claude-plugin/` directory.
 - `.claude/`: Local Claude settings and template that integrates hooks and local marketplace.
-- `scripts/`: Utility scripts (e.g., `update_settings_paths.py`).
+- `scripts/`: Utility scripts (e.g., `update_settings_paths.py`, `sync-skills.sh` and the
+  overlay patches under `scripts/skill-overlays/`).
 - Root files: `README.md`, `CLAUDE.md`, `claude_desktop_mcp_config_converter.py`.
 
 ## Build, Test, and Development Commands
@@ -18,15 +20,27 @@
   - `echo '{"tool_input":{"file_path":".env"}}' | uv run hooks/file_protection.py`
 - Convert Claude Desktop MCP config:
   - `uv run claude_desktop_mcp_config_converter.py > /dev/null`
+- Sync skills from the canonical `agent-config` repo (override the source with `AGENT_CONFIG=`):
+  - `./scripts/sync-skills.sh`
 - Source search:
-  - Structural: `sg --pattern 'func $NAME($$) {$$}' --lang ts`
+  - Structural: `ast-grep run --pattern 'function $NAME($$$) { $$$ }' --lang ts`
   - Text: `rg "pattern" path/ -n --hidden -g '!node_modules'`
-- Checks (project-dependent; see `commands/check.md` for process):
-  - JavaScript/TypeScript: `npm run check` / `yarn check` / `bun run check`, `bun run lint`
-  - Python: `black`, `isort`, `flake8`, `mypy`
-  - Rust: `cargo check`, `cargo clippy`
-  - Go: `go vet`, `golint`
-  - Swift: `swift-format`, `swiftlint`
+- Checks: follow the `check` skill; language tooling lives in the `lang-*` skills
+  (`lang-python`, `lang-rust`, `lang-swift`, `lang-typescript`).
+
+## Skills Sync
+- `agent-config/skills/` is the canonical, harness-neutral source. Edit shared skill content
+  there, then run `./scripts/sync-skills.sh` here; do not hand-edit a mirrored skill.
+- `scripts/sync-skills.sh` mirrors each listed skill with `rsync --delete`, then re-applies the
+  Claude Code overlays in `scripts/skill-overlays/<skill>.patch` (frontmatter such as
+  `allowed-tools`/`disable-model-invocation`, plugin-skill pointers, and Claude-only files such
+  as `xcode-build/xcode-mcp.md`). Running it twice is a no-op.
+- Rules-only files inside a mirrored skill are listed in the script's `skill_excludes` so
+  `--delete` keeps them (e.g. `grep-code-search/README.md`, `grep-code-search/scripts/package.sh`).
+- Skills that exist only here (`anywidget-generator`, `marimo-check`) are untouched by the sync.
+- If a patch fails to apply, the canonical skill changed inside an overlaid region: resolve
+  `skills/<skill>` by hand, then regenerate the patch with
+  `diff -ruN <agent-config>/skills/<skill> skills/<skill> > scripts/skill-overlays/<skill>.patch`.
 
 ## Coding Style & Naming Conventions
 - Indentation: 4 spaces.
@@ -44,7 +58,7 @@
 - Implement general-purpose, robust solutions; do not hard-code to tests.
 - Ask for clarification if requirements are ambiguous or infeasible.
 - Prefer principled algorithms and maintainable design over quick hacks.
-- Use `rg` for text searches and `ast-grep/sg` for structural searches.
+- Use `rg` for text searches and `ast-grep` for structural searches.
 - Follow language guides in `docs/` (Python/TypeScript/Swift) and use formatters/linters where applicable.
 
 ## Commit & Pull Request Guidelines
@@ -57,7 +71,7 @@
 
 ## Security & Configuration Tips
 - File protection hook blocks edits to `.env`, lockfiles, and `.git/`.
-- Prefer `rg` over `grep`; use `ast-grep/sg` for language-aware code search.
+- Prefer `rg` over `grep`; use `ast-grep` for language-aware code search.
 - Keep secrets out of the repo; reference via env vars or local config.
 
 ## Subagents and Plugins

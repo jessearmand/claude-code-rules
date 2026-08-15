@@ -360,7 +360,7 @@ page = pdf.pages[0]
 page.extract_table()
 ```
 
-[Click here for a more detailed example.](examples/notebooks/extract-table-ca-warn-report.ipynb)
+[Click here for a more detailed example.](https://github.com/jsvine/pdfplumber/blob/stable/examples/notebooks/extract-table-ca-warn-report.ipynb)
 
 ### Table-extraction settings
 

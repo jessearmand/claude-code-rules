@@ -82,7 +82,7 @@ export default defineConfig({
 Common fields:
 
 - `printWidth` — default 100 (Prettier is 80)
-- `tabWidth` — default 2; use 4 to match this repo's indent rule
+- `tabWidth` — default 2 (the examples above use 4)
 - `useTabs`, `semi`, `singleQuote`, `trailingComma`
 - `ignorePatterns`
 - `sortImports` — off by default

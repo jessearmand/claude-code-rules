@@ -225,7 +225,7 @@ echo '{"tool_input": {"file_path": ".env"}}' | uv run hooks/file_protection.py
 
 The hooks enforce these tool preferences:
 - Use `rg` (ripgrep) instead of `grep` for text searching
-- Use `ast-grep` or `sg` for structural code searching and refactoring
+- Use `ast-grep` for structural code searching and refactoring (the `sg` alias was dropped upstream)
 - Use `rg --files` patterns instead of `find -name` for file discovery
 - Leverage ast-grep for language-aware code analysis in Swift, Python, TypeScript, and Rust
 

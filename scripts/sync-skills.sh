@@ -14,12 +14,13 @@
 #                    (a patch may also create Claude-only files, e.g.
 #                    xcode-build/xcode-mcp.md)
 #
-# Skills not listed are left untouched:
-#   - skills that exist only in this repo (e.g. anywidget-generator,
-#     marimo-check)
-#   - grep-code-search, whose Claude-flavored wording is maintained here while
-#     agent-config maintains the harness-generic wording; the substantive
-#     content (scripts/, API reference) is kept aligned manually
+# A skill in either mode may also declare KEEP paths (see skill_excludes):
+# files that exist only in this repo and must survive rsync --delete. Prefer a
+# KEEP entry over a patch for whole standalone files, since patch does not
+# preserve the executable bit.
+#
+# Skills not listed are left untouched: those that exist only in this repo
+# (e.g. anywidget-generator, marimo-check).
 #
 # If a patch fails to apply, the canonical skill changed in an overlaid
 # region. Resolve skills/<skill> by hand, then regenerate the overlay:
@@ -33,8 +34,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DST="$ROOT/skills"
 OVERLAYS="$ROOT/scripts/skill-overlays"
 
-COPY_SKILLS=(check fetching-docs lang-rust lang-swift lang-typescript process-pdf)
+COPY_SKILLS=(check fetching-docs grep-code-search lang-rust lang-swift lang-typescript process-pdf)
 OVERLAY_SKILLS=(commit-staged lang-python xcode-build)
+
+# Paths (relative to the skill directory) that exist only in this repo and must
+# not be deleted by the mirror step.
+skill_excludes() {
+    case "$1" in
+        grep-code-search) printf '%s\n' 'README.md' 'scripts/package.sh' ;;
+    esac
+}
 
 if [[ ! -d "$SRC" ]]; then
     echo "error: canonical skills directory not found: $SRC" >&2
@@ -43,9 +52,12 @@ if [[ ! -d "$SRC" ]]; then
 fi
 
 sync_skill() {
-    rsync -a --delete \
-        --exclude '__pycache__' --exclude '*.pyc' --exclude '.DS_Store' \
-        "$SRC/$1/" "$DST/$1/"
+    local skill="$1" keep
+    local -a excludes=(--exclude '__pycache__' --exclude '*.pyc' --exclude '.DS_Store')
+    while IFS= read -r keep; do
+        [[ -n "$keep" ]] && excludes+=(--exclude "/$keep")
+    done < <(skill_excludes "$skill")
+    rsync -a --delete "${excludes[@]}" "$SRC/$skill/" "$DST/$skill/"
 }
 
 for skill in "${COPY_SKILLS[@]}"; do

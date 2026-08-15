@@ -103,9 +103,13 @@ import { MyComponent } from './MyComponent';
 
 it('renders the expected content', () => {
     render(<MyComponent />);
-    expect(screen.getByText('Expected text')).toBeTruthy();
+    expect(screen.getByText('Expected text')).toBeInTheDocument();
 });
 ```
+
+`toBeInTheDocument()` comes from `@testing-library/jest-dom` — register it in the Vitest
+setup file with `import '@testing-library/jest-dom/vitest'`. For Ink CLI components there is
+no DOM; use `ink-testing-library` and assert on `lastFrame()` output instead.
 
 ## Async Testing
 

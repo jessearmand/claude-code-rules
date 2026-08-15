@@ -35,7 +35,7 @@ Common Checks Include:
 
 ## For Different Project Types
 
-- **JavaScript/TypeScript**: lockfile package manager (`pnpm`, `bun`, or `npm`; all managed by mise) plus `lang-typescript` (Oxlint, Oxfmt, or Biome)
+- **JavaScript/TypeScript**: lockfile package manager (`pnpm`, `bun`, or `npm`) plus `lang-typescript` (mise-managed installs, Oxlint, Oxfmt, or Biome)
 - **Python**: see `lang-python` for `uv`/`ruff`/`ty`; fall back to the repo's own linter/type checker
 - **Rust**: `cargo check`, `cargo clippy` (see `lang-rust`)
 - **Go**: `go vet`, `staticcheck`

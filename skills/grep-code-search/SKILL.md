@@ -1,6 +1,6 @@
 ---
 name: grep-code-search
-description: Search real-world code across 1M+ public GitHub repositories using Grep by Vercel (grep.app). Use when you need real usage examples for an API/library, want to verify correct syntax or configuration, look for implementation patterns, or find how developers actually use a function, hook, or snippet. Searches literal code patterns (grep-style) and regular expressions, with filters for language, repository, and file path. Provides three access paths: the grep.app MCP server, browser automation of grep.app, and a direct API helper script.
+description: Search real-world code across 1M+ public GitHub repositories using Grep by Vercel (grep.app). Use when you need real usage examples for an API/library, want to verify correct syntax or configuration, look for implementation patterns, or find how developers actually use a function, hook, or snippet. Searches literal code patterns (grep-style) and regular expressions, with filters for language, repository, and file path. Works in any coding agent via the grep.app MCP server, browser automation, or a zero-dependency Python CLI.
 ---
 
 # Grep Code Search
@@ -43,17 +43,19 @@ Pick the first one available in your environment. They hit the same backend.
 The grep.app MCP server exposes a single tool, **`searchGitHub`**. It is the most
 reliable programmatic path and needs no browser.
 
-- Endpoint: `https://mcp.grep.app` (StreamableHTTP transport).
+- Endpoint: `https://mcp.grep.app` (HTTP / StreamableHTTP transport).
 - Tool: `searchGitHub` with arguments
   `{ query, matchCase, matchWholeWords, useRegexp, repo, path, language[] }`.
-- If the tool is connected, just call it. To connect it in Claude Desktop / Cowork,
-  see `references/mcp-setup.md`.
+- If the tool is already connected in your agent, call it directly.
+- To add it, see `references/mcp-setup.md` for your runtime (Cursor, Codex, Grok,
+  Claude Code, VS Code, Windsurf, etc.).
 
 ### 2. Browser mode (the grep.app frontend)
 
 Use when you want the interactive UI, full-file context, the language/repo/path
 facet sidebar, or to follow results to GitHub — or when direct HTTP is blocked
-(see note below). Drive a real browser via the **chrome-devtools** MCP tools.
+(see note below). Drive a real browser with whatever automation your agent provides
+(chrome-devtools MCP, `agent-browser`, Playwright, Puppeteer, etc.).
 
 - Navigate the UI directly with query in the URL:
   `https://grep.app/search?q=<url-encoded-query>`
@@ -61,7 +63,7 @@ facet sidebar, or to follow results to GitHub — or when direct HTTP is blocked
   grep.app's WAF, which blocks plain HTTP clients):
 
   ```js
-  // chrome-devtools: evaluate_script on a grep.app page
+  // Run via browser evaluate_script / page.evaluate on a grep.app tab
   async () => {
     const r = await fetch('https://grep.app/api/search?q=' +
       encodeURIComponent('createServer(') + '&f.lang=TypeScript');
@@ -74,7 +76,9 @@ See `references/browser-mode.md` for UI selectors and the full recipe.
 ### 3. Direct API script (best-effort)
 
 `scripts/grep_search.py` queries the JSON API directly using only the Python
-standard library (3.8+), so it runs anywhere without `pip install`.
+standard library (3.8+), so it runs anywhere without `pip install`. Resolve the
+script path relative to this skill directory (e.g. `skills/grep-code-search/scripts/`
+or `~/.agents/skills/grep-code-search/scripts/`).
 
 ```bash
 # Literal search, limited to TypeScript
@@ -108,5 +112,5 @@ Flags: `--regexp`, `--case`, `--words`, `--lang` (repeatable), `--repo`, `--path
 ## Reference files
 
 - `references/grep-api.md` — JSON API contract: endpoint, parameters, response shape.
-- `references/mcp-setup.md` — connecting the grep.app MCP server in Claude Desktop / Cowork.
-- `references/browser-mode.md` — driving the grep.app UI with chrome-devtools.
+- `references/mcp-setup.md` — connecting the grep.app MCP server in any agent runtime.
+- `references/browser-mode.md` — driving the grep.app UI with browser automation.
