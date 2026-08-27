@@ -1,4 +1,24 @@
 {
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_NO_FLICKER": "1"
+  },
+  "skillOverrides": {
+    "acpx": "off",
+    "anywidget-generator": "off",
+    "agent-browser": "off",
+    "browser-use": "off",
+    "check": "off",
+    "fetching-docs": "off",
+    "find-skills": "off",
+    "gemini-api-dev": "off",
+    "gemini-interactions-api": "off",
+    "grep-code-search": "off",
+    "process-pdf": "off",
+    "qmd": "off",
+    "scanning-code": "off",
+    "xurl": "off"
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -41,15 +61,82 @@
     "command": "${HOME}/.claude/statusline-command.sh"
   },
   "enabledPlugins": {
-    "frontend-design@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": false,
     "typescript-lsp@claude-plugins-official": true,
-    "learning-output-style@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true,
-    "feature-dev@claude-plugins-official": true,
-    "code-review@claude-plugins-official": true,
-    "pr-review-toolkit@claude-plugins-official": true,
+    "learning-output-style@claude-plugins-official": false,
+    "feature-dev@claude-plugins-official": false,
+    "code-review@claude-plugins-official": false,
+    "pr-review-toolkit@claude-plugins-official": false,
+    "commit-commands@claude-plugins-official": true,
+    "agent-browser@agent-browser": false,
     "code-simplifier@claude-plugins-official": true,
-    "commit-commands@claude-plugins-official": true
+    "security-guidance@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "discord@claude-plugins-official": false,
+    "astral@astral-sh": true,
+    "obsidian@obsidian-skills": true,
+    "codex@openai-codex": true,
+    "claude-md-management@claude-plugins-official": false,
+    "skill-creator@claude-plugins-official": false,
+    "claude-code-setup@claude-plugins-official": false,
+    "plugin-dev@claude-plugins-official": false,
+    "hookify@claude-plugins-official": true,
+    "remember@claude-plugins-official": true,
+    "mcp-server-dev@claude-plugins-official": false,
+    "qmd@qmd": false,
+    "lua-lsp@claude-plugins-official": false,
+    "chrome-devtools-mcp@chrome-devtools-plugins": false,
+    "huggingface-skills@claude-plugins-official": false,
+    "chrome-devtools-mcp@claude-plugins-official": true,
+    "cloudflare@claude-plugins-official": false,
+    "session-report@claude-plugins-official": false,
+    "pydantic-ai@claude-plugins-official": false,
+    "vercel@claude-plugins-official": true,
+    "pydantic@pydantic-skills": true
+  },
+  "extraKnownMarketplaces": {
+    "qmd": {
+      "source": {
+        "source": "github",
+        "repo": "tobi/qmd"
+      }
+    },
+    "huggingface-skills": {
+      "source": {
+        "source": "github",
+        "repo": "huggingface/skills"
+      }
+    },
+    "obsidian-skills": {
+      "source": {
+        "source": "github",
+        "repo": "kepano/obsidian-skills"
+      }
+    },
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
+    },
+    "chrome-devtools-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "ChromeDevTools/chrome-devtools-mcp"
+      }
+    },
+    "cloudflare": {
+      "source": {
+        "source": "github",
+        "repo": "cloudflare/skills"
+      }
+    },
+    "pydantic-skills": {
+      "source": {
+        "source": "github",
+        "repo": "pydantic/skills"
+      }
+    }
   },
   "alwaysThinkingEnabled": true,
   "marketplaces": [

@@ -328,3 +328,6 @@ dist
 
 # End of https://www.toptal.com/developers/gitignore/api/node
 
+
+# Written by scripts/update_settings_paths.py when it materializes ${HOME}
+.claude/settings.json.backup
