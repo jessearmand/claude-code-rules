@@ -1,16 +1,12 @@
 {
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CLAUDE_CODE_NO_FLICKER": "1"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
   },
   "skillOverrides": {
-    "acpx": "off",
     "anywidget-generator": "off",
     "agent-browser": "off",
     "browser-use": "off",
     "check": "off",
-    "fetching-docs": "off",
-    "find-skills": "off",
     "gemini-api-dev": "off",
     "gemini-interactions-api": "off",
     "grep-code-search": "off",
