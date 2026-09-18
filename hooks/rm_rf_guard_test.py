@@ -130,7 +130,8 @@ def main() -> int:
         )
         _check(analyze_target("/usr", tmp).severity == "critical", "/usr is critical", failures)
         _check(
-            analyze_target("..", "/Users/jeesearmand/Develop/claude-code").severity == "critical",
+            analyze_target("..", os.path.join(os.path.expanduser("~"), "Develop", "claude-code")).severity
+            == "critical",
             ".. from cwd is critical (ancestor of cwd)",
             failures,
         )

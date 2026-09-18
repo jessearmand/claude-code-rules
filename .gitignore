@@ -331,3 +331,6 @@ dist
 
 # Written by scripts/update_settings_paths.py when it materializes ${HOME}
 .claude/settings.json.backup
+
+# Temporary work files
+scratchpad/

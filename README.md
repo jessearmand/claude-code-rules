@@ -26,7 +26,38 @@ The repository implements Claude Code's hook system for validating and enhancing
 - **file_protection.py** (PreToolUse): Prevents modification of sensitive files:
   - Blocks editing of `.env`, lock files (`package-lock.json`, `Package.resolved`, `bun.lock`, `Cargo.lock`), and `.git/` directory contents
 
+- **bash_risk_judge.py** (PreToolUse, opt-in): Model-assisted second opinion for Bash commands the regex guards do not enumerate (`git clean -xdf`, `find -delete`, `shutil.rmtree`, `curl -d @file`, ...). Asks TypeSafe's Jev evaluation model typed questions through `ai evaluate` (vercel-labs/ai-cli 0.5+) and escalates to an `ask` prompt when P(destructive) or P(exfiltrates) crosses a threshold. It can only escalate, never allow or deny, and every failure path (CLI missing, old `ai` without `evaluate`, no key, timeout, bad JSON) defers to the normal permission flow, so with `HOOK_JEV_ENABLE` unset it is a no-op. Credentials come from `AI_GATEWAY_API_KEY` in the environment or, failing that, `fnox exec` (optionally pointed at `HOOK_JEV_FNOX_CONFIG`). A verb pre-filter keeps most commands off the network and secret-looking values are redacted before anything is sent. Shared plumbing lives in `jev_client.py`. See [Jev-augmented hooks](#jev-augmented-hooks).
 - **marimo-check.sh** (PostToolUse): Automatically runs `uvx marimo check` after any Edit or Write operation on marimo notebooks. Blocks the tool if checks fail, prompting Claude to fix the issues. Located at `skills/marimo-check/scripts/marimo-check.sh` (co-located with the marimo-check skill for maintainability). See [Marimo Check: Hook vs Skill](#marimo-check-hook-vs-skill) for details.
+
+### Jev-augmented hooks
+
+`bash_risk_judge.py` is the first hook that consults a model. The rules it follows:
+
+1. Deterministic hooks decide first and alone. `rm_rf_guard.py` and `secrets_guard.py` are unchanged and still emit `deny`; a `deny` from any hook wins over an `ask` from this one.
+2. The model can only raise the bar. The hook emits `ask` or `{}`; it never emits `allow` or `deny`.
+3. Fallback is the status quo. Any failure to get a well-formed answer inside the timeout produces `{}`.
+
+Enable it per shell or in the `env` block of `settings.json`:
+
+```bash
+export HOOK_JEV_ENABLE=1                  # off by default
+export HOOK_JEV_TIMEOUT=5                 # seconds; hook timeout is 10
+export HOOK_JEV_FNOX_CONFIG=~/Develop/fnox.toml   # only if AI_GATEWAY_API_KEY is not exported
+export BASH_RISK_JUDGE_ASK_THRESHOLD=0.7  # P(true) that triggers an ask
+export HOOK_JEV_DEBUG=1                   # print why a call fell back
+```
+
+Requirements: `ai` (ai-cli) 0.5.0 or newer on PATH, which adds the `evaluate` subcommand; `ai models jev` shows the model. Verify with:
+
+```bash
+printf 'cwd: /tmp\ncommand:\ngit clean -xdf\n' | fnox exec -- ai evaluate --boolean "d=Is this destructive?"
+python3 hooks/bash_risk_judge_test.py   # exercises every fallback with a shim, no network
+```
+
+Two companions keep the evaluation honest:
+
+- `python3 hooks/settings_wiring_test.py` checks that `.claude/settings.json` routes every hook each tool it handles. The per-hook suites call scripts directly and cannot see a missing matcher.
+- `python3 hooks/jev_calibrate.py --repeat 3` replays the deterministic suites' 232 labelled cases through Jev. It reports agreement per corpus, which risky commands the pre-filter would actually send, and which verdicts flip between identical runs. It needs network access and is a benchmark, not a correctness test: labels are the regex hooks' policy, not ground truth.
 
 ### Configuration Files
 - **ast-grep-rule.md**: Comprehensive documentation for ast-grep pattern syntax, including meta variables, pattern matching, and advanced usage examples

@@ -28,6 +28,11 @@
           {
             "type": "command",
             "command": "python3 ${HOME}/.claude/hooks/bash_command_validator.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ${HOME}/.claude/hooks/bash_risk_judge.py",
+            "timeout": 10
           }
         ]
       },
@@ -42,7 +47,7 @@
         ]
       },
       {
-        "matcher": "Edit|MultiEdit|Write",
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",
