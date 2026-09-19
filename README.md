@@ -56,7 +56,7 @@ python3 hooks/bash_risk_judge_test.py   # exercises every fallback with a shim, 
 
 Two companions keep the evaluation honest:
 
-- `python3 hooks/settings_wiring_test.py` checks that `.claude/settings.json` routes every hook each tool it handles. The per-hook suites call scripts directly and cannot see a missing matcher.
+- `python3 hooks/settings_wiring_test.py` checks that `settings.template.json` routes every hook each tool it handles. The per-hook suites call scripts directly and cannot see a missing matcher.
 - `python3 hooks/jev_calibrate.py --repeat 3` replays the deterministic suites' 232 labelled cases through Jev. It reports agreement per corpus, which risky commands the pre-filter would actually send, and which verdicts flip between identical runs. It needs network access and is a benchmark, not a correctness test: labels are the regex hooks' policy, not ground truth.
 
 ### Configuration Files
@@ -66,17 +66,20 @@ Two companions keep the evaluation honest:
 
 ### Initial Configuration
 
-This repository includes a `.claude/settings.json` template that uses `${HOME}` substitution variables for portability. To set up the configuration on your machine:
+This repository includes a `settings.template.json` template that uses `${HOME}` substitution variables for portability. It lives at the repo root rather than under `.claude/` so Claude Code does not load it as this project's settings, which would run every hook twice alongside `~/.claude/settings.json`. To set up the configuration on your machine:
 
 ```bash
-# Run the setup script to replace ${HOME} with your actual home directory
+# Print the template with ${HOME} replaced by your actual home directory
 uv run scripts/update_settings_paths.py
+
+# Or write it out; an existing file is kept as settings.json.backup
+uv run scripts/update_settings_paths.py --output ~/.claude/settings.json
 ```
 
 This script will:
-- Create a backup of the original settings file (`.claude/settings.json.backup`)
+- Leave `settings.template.json` untouched
 - Replace all `${HOME}` variables with your actual home directory path
-- Update the settings file with machine-specific paths
+- With `--output`, back up any existing file at that path before writing
 
 The configuration includes:
 - Hook integrations for bash command validation and file protection
@@ -183,7 +186,7 @@ All plugins are defined and maintained locally in this repository, making it eas
 
 ### Hook Configuration
 
-The settings file configures these hooks for your Claude Code setup:
+`settings.template.json` wires the PreToolUse hooks like this. Commands point at `${HOME}/.claude/hooks/`, where each script is a link back to this repo's `hooks/` directory, and every matcher lists all the tools its hook handles (`python3 hooks/settings_wiring_test.py` checks that):
 
 ```json
 {
@@ -192,30 +195,55 @@ The settings file configures these hooks for your Claude Code setup:
       {
         "matcher": "Bash",
         "hooks": [
-          {
-            "type": "command",
-            "command": "uv run ${HOME}/Develop/claude-code/hooks/bash_command_validator.py"
-          }
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/rm_rf_guard.py", "timeout": 10 },
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/bash_command_validator.py" },
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/bash_risk_judge.py", "timeout": 10 }
         ]
       },
       {
-        "matcher": "Edit|MultiEdit|Write",
+        "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob|Bash",
         "hooks": [
-          {
-            "type": "command",
-            "command": "uv run ${HOME}/Develop/claude-code/hooks/file_protection.py"
-          }
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/secrets_guard.py", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/file_protection.py" }
         ]
       }
-    ],
+    ]
+  }
+}
+```
+
+Wire the hooks in one place only, normally `~/.claude/settings.json`. Claude Code merges hooks from user and project settings, so a second copy under a project's `.claude/settings.json` runs each hook twice per tool call.
+
+`bash_risk_judge.py` is wired but stays a no-op until it is enabled. To turn it on everywhere, add its variables to the `env` block of the same file:
+
+```json
+{
+  "env": {
+    "HOOK_JEV_ENABLE": "1",
+    "HOOK_JEV_FNOX_CONFIG": "/absolute/path/to/fnox.toml",
+    "BASH_RISK_JUDGE_ASK_THRESHOLD": "0.5"
+  }
+}
+```
+
+- `HOOK_JEV_FNOX_CONFIG` is needed whenever `AI_GATEWAY_API_KEY` is not exported. Without it `fnox` searches upward from the session's working directory, so the key is only found in projects under the directory holding `fnox.toml`, and the hook silently defers everywhere else.
+- The default threshold is 0.7. The hook sends the working directory and asks about scope along with the command, and Jev discounts commands confined to the working directory: `git clean -xdf` scores about 0.56 through the hook against 0.93 for a bare "is this destructive?". Use 0.5 to be prompted for that class of command. Scores for each call are in `~/.claude/hooks-logs/`.
+
+The marimo check is a PostToolUse hook and is not part of the template. Add it if you work with marimo notebooks:
+
+```json
+{
+  "hooks": {
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [
-          {
-            "type": "command",
-            "command": "${HOME}/Develop/claude-code/skills/marimo-check/scripts/marimo-check.sh"
-          }
+          { "type": "command", "command": "<path-to-this-repo>/skills/marimo-check/scripts/marimo-check.sh" }
         ]
       }
     ]

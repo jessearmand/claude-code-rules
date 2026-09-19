@@ -7,13 +7,13 @@
   repo; see "Skills sync" below.
 - `agents/`: Role/specialist prompts (e.g., code review, debugging, research) used as subagents.
 - `plugins/`: Local Claude Code plugins (e.g., `explanatory-output-style`) with marketplace metadata under each plugin's `.claude-plugin/` directory.
-- `.claude/`: Local Claude settings and template that integrates hooks and local marketplace.
+- `settings.template.json`: Claude settings template that integrates hooks and local marketplace. It is not loaded by Claude Code; render it with `scripts/update_settings_paths.py`.
 - `scripts/`: Utility scripts (e.g., `update_settings_paths.py`, `sync-skills.sh` and the
   overlay patches under `scripts/skill-overlays/`).
 - Root files: `README.md`, `CLAUDE.md`, `claude_desktop_mcp_config_converter.py`.
 
 ## Build, Test, and Development Commands
-- Update local Claude settings paths from template (`.claude/settings.json.backup` → `.claude/settings.json`):
+- Render the settings template with `${HOME}` expanded (stdout, or `--output <path>` which backs up an existing file):
   - `uv run scripts/update_settings_paths.py`
 - Run hooks locally (uses uv):
   - `echo '{"tool_name":"Bash","tool_input":{"command":"grep foo file"}}' | uv run hooks/bash_command_validator.py`
@@ -76,5 +76,5 @@
 
 ## Subagents and Plugins
 - Subagents live in `agents/` (e.g., `researcher.md`, `debugger.md`, `reviewer.md`, and specialist variants). Use them as role references or to generate task-specific assistants.
-- Local plugin marketplace is configured in `.claude/settings.json` under `marketplaces` and `plugins`. See `README.md` for structure and development details.
-- Example plugin: `plugins/explanatory-output-style` provides an Explanatory output style via a SessionStart hook. Enable/disable via `.claude/settings.json`.
+- Local plugin marketplace is configured in `settings.template.json` under `marketplaces` and `plugins`. See `README.md` for structure and development details.
+- Example plugin: `plugins/explanatory-output-style` provides an Explanatory output style via a SessionStart hook. Enable/disable via `settings.template.json`.

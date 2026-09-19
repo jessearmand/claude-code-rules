@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests that .claude/settings.json routes each hook every tool it handles.
+"""Tests that settings.template.json routes each hook every tool it handles.
 
 Run: python3 hooks/settings_wiring_test.py
 
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hook_protocol import READ_TOOLS, WRITE_TOOLS  # noqa: E402
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
-_SETTINGS = os.path.join(os.path.dirname(_HOOKS_DIR), ".claude", "settings.json")
+_SETTINGS = os.path.join(os.path.dirname(_HOOKS_DIR), "settings.template.json")
 
 # The tools each hook acts on. A hook's matcher must admit all of them.
 HANDLED_TOOLS = {
