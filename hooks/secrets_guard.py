@@ -51,9 +51,9 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from hook_protocol import (  # noqa: E402
     READ_TOOLS,
     WRITE_TOOLS,
+    Decision,
     action_verb,
-    decide,
-    defer,
+    emit,
     env_flag,
     log_event,
     paths_from,
@@ -218,28 +218,19 @@ def build_reason(rule: FileRule | CommandRule, tool_name: str, target: str) -> s
     return "\n".join(lines)
 
 
-def main() -> None:
+def run(data: dict) -> Decision | None:
+    """Return the secrets policy decision for one tool call."""
     if env_flag("SECRETS_GUARD_DISABLE"):
-        defer()
-        return
+        return None
 
-    data = read_input(HOOK_NAME)
     tool_name = data.get("tool_name", "")
     if tool_name not in HANDLED_TOOLS:
-        defer()
-        return
+        return None
 
     threshold = safety_level()
-    try:
-        finding = evaluate(tool_name, tool_input(data), threshold)
-    except re.error as error:  # a malformed rule must not block real work
-        log_event(HOOK_NAME, {"outcome": "rule-error", "error": str(error), "tool": tool_name})
-        print(f"secrets_guard: rule error: {error}", file=sys.stderr)
-        sys.exit(1)
-
+    finding = evaluate(tool_name, tool_input(data), threshold)
     if not finding:
-        defer()
-        return
+        return None
 
     rule, target = finding
     decision = "ask" if asks_for(rule.level) else "deny"
@@ -258,11 +249,29 @@ def main() -> None:
         },
         log_dir_env=("SECRETS_GUARD_LOG_DIR",),
     )
-    decide(
+    return Decision(
         decision,
         build_reason(rule, tool_name, target),
         f"secrets-guard [{rule.rule_id}]: {rule.reason}",
+        HOOK_NAME,
     )
+
+
+def main() -> None:
+    data = read_input(HOOK_NAME)
+    try:
+        emit(run(data))
+    except re.error as error:  # a malformed rule must not block real work
+        log_event(
+            HOOK_NAME,
+            {
+                "outcome": "rule-error",
+                "error": str(error),
+                "tool": data.get("tool_name", ""),
+            },
+        )
+        print(f"secrets_guard: rule error: {error}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

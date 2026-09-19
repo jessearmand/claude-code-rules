@@ -42,7 +42,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-from hook_protocol import decide, defer, env_flag, log_event, read_input, tool_input, truncate  # noqa: E402
+from hook_protocol import (  # noqa: E402
+    Decision,
+    emit,
+    env_flag,
+    log_event,
+    read_input,
+    tool_input,
+    truncate,
+)
 from jev_client import Question, evaluate  # noqa: E402
 
 HOOK_NAME = "bash-risk-judge"
@@ -156,22 +164,19 @@ def escalation_reason(evaluation, threshold: float) -> str | None:
     )
 
 
-def main() -> None:
-    data = read_input(HOOK_NAME)
+def run(data: dict) -> Decision | None:
+    """Return an advisory model decision for one Bash tool call."""
     if env_flag("BASH_RISK_JUDGE_DISABLE") or data.get("tool_name") != "Bash":
-        defer()
-        return
+        return None
 
     command = tool_input(data).get("command", "")
     if not isinstance(command, str) or not command.strip() or not is_candidate(command):
-        defer()
-        return
+        return None
 
     cwd = os.path.normpath(data.get("cwd") or os.getcwd())
     evaluation = evaluate(build_state(command, cwd), QUESTIONS)
     if evaluation is None:
-        defer()
-        return
+        return None
 
     threshold = ask_threshold()
     reason = escalation_reason(evaluation, threshold)
@@ -186,9 +191,17 @@ def main() -> None:
         log_dir_env=("BASH_RISK_JUDGE_LOG_DIR",),
     )
     if reason is None:
-        defer()
-        return
-    decide("ask", reason, system_message="bash-risk-judge flagged a risky command; Claude will confirm with you.")
+        return None
+    return Decision(
+        "ask",
+        reason,
+        "bash-risk-judge flagged a risky command; Claude will confirm with you.",
+        HOOK_NAME,
+    )
+
+
+def main() -> None:
+    emit(run(read_input(HOOK_NAME)))
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 DEFAULT_LOG_DIR = os.path.join(os.path.expanduser("~"), ".claude", "hooks-logs")
@@ -37,6 +38,16 @@ ACTION_VERBS = {
     "NotebookEdit": "modify",
     "Bash": "run",
 }
+
+
+@dataclass(frozen=True)
+class Decision:
+    """A hook verdict. None from run() means defer."""
+
+    decision: str
+    reason: str
+    system_message: str | None = None
+    hook: str = ""
 
 
 def env_flag(name: str) -> bool:
@@ -93,17 +104,31 @@ def decide(decision: str, reason: str, system_message: str | None = None) -> Non
     sys.stdout.write("\n")
 
 
+def emit(result: Decision | None) -> None:
+    """Emit a hook result using the Claude Code decision protocol."""
+    if result is None:
+        defer()
+        return
+    decide(result.decision, result.reason, result.system_message)
+
+
 def log_event(hook: str, payload: dict, log_dir_env: tuple[str, ...] = ()) -> None:
     """Append one JSONL record. Never raises — logging must not break a hook."""
     directory = next(
-        (os.environ[name] for name in log_dir_env if os.environ.get(name)),
+        (
+            os.environ[name]
+            for name in (*log_dir_env, "HOOKS_LOG_DIR")
+            if os.environ.get(name)
+        ),
         DEFAULT_LOG_DIR,
     )
     try:
         os.makedirs(directory, exist_ok=True)
         now = datetime.now(timezone.utc)
         record = {"ts": now.isoformat(), "hook": hook, **payload}
-        with open(os.path.join(directory, f"{now:%Y-%m-%d}.jsonl"), "a", encoding="utf-8") as handle:
+        with open(
+            os.path.join(directory, f"{now:%Y-%m-%d}.jsonl"), "a", encoding="utf-8"
+        ) as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass

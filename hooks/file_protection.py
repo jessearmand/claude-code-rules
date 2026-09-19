@@ -44,9 +44,9 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from hook_protocol import (  # noqa: E402
     WRITE_TOOLS,
+    Decision,
     action_verb,
-    decide,
-    defer,
+    emit,
     env_flag,
     log_event,
     paths_from,
@@ -184,16 +184,14 @@ def build_reason(rule: ProtectedFile, tool_name: str, path: str) -> str:
     )
 
 
-def main() -> None:
+def run(data: dict) -> Decision | None:
+    """Return the generated-file policy decision for one tool call."""
     if env_flag("FILE_PROTECTION_DISABLE"):
-        defer()
-        return
+        return None
 
-    data = read_input(HOOK_NAME)
     tool_name = data.get("tool_name", "")
     if tool_name not in WRITE_TOOLS:
-        defer()
-        return
+        return None
 
     finding = next(
         (
@@ -204,8 +202,7 @@ def main() -> None:
         None,
     )
     if not finding:
-        defer()
-        return
+        return None
 
     rule, path = finding
     decision = "ask" if env_flag("FILE_PROTECTION_ASK") else "deny"
@@ -223,11 +220,16 @@ def main() -> None:
         },
         log_dir_env=("FILE_PROTECTION_LOG_DIR",),
     )
-    decide(
+    return Decision(
         decision,
         build_reason(rule, tool_name, path),
         f"file-protection [{rule.rule_id}]: {rule.reason}",
+        HOOK_NAME,
     )
+
+
+def main() -> None:
+    emit(run(read_input(HOOK_NAME)))
 
 
 if __name__ == "__main__":

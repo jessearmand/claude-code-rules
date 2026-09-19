@@ -39,12 +39,15 @@ Wire-up (~/.claude/settings.json):
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
 import sys
 from dataclasses import dataclass, field
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from hook_protocol import Decision, decide, read_input  # noqa: E402
 
 # Tokens that terminate one simple command and begin another. `rm` is looked
 # for at the head of each resulting segment, so `echo rm -rf x` is ignored
@@ -375,40 +378,32 @@ def build_denial_reason(invocations: list[RmInvocation], cwd: str, unparseable: 
     return "\n".join(sections)
 
 
-def _emit_denial(reason: str) -> None:
-    payload = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        },
-        "systemMessage": "rm-rf-guard blocked an `rm -rf`. Claude will ask you how to proceed.",
-    }
-    json.dump(payload, sys.stdout)
-    sys.stdout.write("\n")
+def run(data: dict) -> Decision | None:
+    """Return a denial for recursive forced removal commands."""
+    if data.get("tool_name") != "Bash":
+        return None
 
-
-def main() -> None:
-    try:
-        input_data = json.load(sys.stdin)
-    except json.JSONDecodeError as error:
-        print(f"rm_rf_guard: invalid JSON input: {error}", file=sys.stderr)
-        sys.exit(1)
-
-    if input_data.get("tool_name") != "Bash":
-        sys.exit(0)
-
-    command = input_data.get("tool_input", {}).get("command", "")
+    command = data.get("tool_input", {}).get("command", "")
     if not command:
-        sys.exit(0)
+        return None
 
     invocations, unparseable = find_recursive_force_invocations(command)
     if not invocations:
-        sys.exit(0)
+        return None
 
-    cwd = os.path.normpath(input_data.get("cwd") or os.getcwd())
-    _emit_denial(build_denial_reason(invocations, cwd, unparseable))
-    sys.exit(0)
+    cwd = os.path.normpath(data.get("cwd") or os.getcwd())
+    return Decision(
+        "deny",
+        build_denial_reason(invocations, cwd, unparseable),
+        "rm-rf-guard blocked an `rm -rf`. Claude will ask you how to proceed.",
+        "rm-rf-guard",
+    )
+
+
+def main() -> None:
+    result = run(read_input("rm_rf_guard"))
+    if result:
+        decide(result.decision, result.reason, result.system_message)
 
 
 if __name__ == "__main__":

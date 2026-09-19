@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sync skills/ from the canonical agent-config repo, then re-apply the
-# Claude Code-specific overlays.
+# Sync skills/ and hooks/ from the canonical agent-config repo, then re-apply
+# the Claude Code-specific skill overlays.
 #
 # Canonical source: agent-config/skills (harness-neutral; see its AGENTS.md
 # "Skill conventions"). This repo is a downstream overlay: most skills mirror
@@ -21,6 +21,10 @@
 #
 # Skills not listed are left untouched: those that exist only in this repo
 # (e.g. anywidget-generator, marimo-check).
+#
+# hooks/ mirrors the shared policy hooks from agent-config/hooks. Files that
+# exist only here (HOOK_KEEPS) survive the mirror; omp-only files in the
+# canonical tree (HOOK_SKIPS) are never copied.
 #
 # If a patch fails to apply, the canonical skill changed in an overlaid
 # region. Resolve skills/<skill> by hand, then regenerate the overlay:
@@ -74,5 +78,16 @@ for skill in "${OVERLAY_SKILLS[@]}"; do
     fi
     echo "overlay $skill"
 done
+HOOKS_SRC="${AGENT_CONFIG:-$HOME/Develop/agent-config}/hooks"
+# Claude Code-only hook files that must survive the mirror.
+HOOK_KEEPS=(bash_command_validator.py settings_wiring_test.py)
+# omp-only hook files that stay in agent-config.
+HOOK_SKIPS=(omp_guard.py omp_guard_test.py)
+hook_excludes=(--exclude '__pycache__' --exclude '*.pyc' --exclude '.DS_Store')
+for name in "${HOOK_KEEPS[@]}" "${HOOK_SKIPS[@]}"; do
+    hook_excludes+=(--exclude "/$name")
+done
+rsync -a --delete "${hook_excludes[@]}" "$HOOKS_SRC/" "$ROOT/hooks/"
+echo "synced  hooks/"
 
-echo "Done. Review with: git -C $ROOT status skills/"
+echo "Done. Review with: git -C $ROOT status skills/ hooks/"
