@@ -51,7 +51,7 @@ from hook_protocol import (  # noqa: E402
     tool_input,
     truncate,
 )
-from jev_client import Question, evaluate  # noqa: E402
+from jev_client import Question, evaluate, last_error  # noqa: E402
 
 HOOK_NAME = "bash-risk-judge"
 DEFAULT_ASK_THRESHOLD = 0.7
@@ -176,6 +176,20 @@ def run(data: dict) -> Decision | None:
     cwd = os.path.normpath(data.get("cwd") or os.getcwd())
     evaluation = evaluate(build_state(command, cwd), QUESTIONS)
     if evaluation is None:
+        # Opt-out leaves no error; a genuine failure (timeout, missing key,
+        # bad JSON) must be visible in the audit log, not just on stderr.
+        error = last_error()
+        if error is not None:
+            log_event(
+                HOOK_NAME,
+                {
+                    "decision": "defer",
+                    "outcome": "fallback",
+                    "command": truncate(redact(command)),
+                    "error": error,
+                },
+                log_dir_env=("BASH_RISK_JUDGE_LOG_DIR",),
+            )
         return None
 
     threshold = ask_threshold()

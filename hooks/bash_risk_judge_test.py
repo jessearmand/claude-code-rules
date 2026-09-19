@@ -225,6 +225,32 @@ def main() -> None:
         if out != {}:
             failures.append(f"fallback '{name}' should defer, got {out}")
 
+    # A genuine fallback is recorded in the audit log with its cause; opting
+    # out is not (it would otherwise log every deferred command).
+    def _fallback_records(shim_body: str, extra_env: dict[str, str]) -> list[dict]:
+        with tempfile.TemporaryDirectory() as bindir:
+            logs = os.path.join(bindir, "logs")
+            _shim(bindir, shim_body)
+            env = {**os.environ, "HOOK_JEV_ENABLE": "1", "AI_GATEWAY_API_KEY": "test-key", "HOOK_JEV_TIMEOUT": "1"}
+            env["BASH_RISK_JUDGE_LOG_DIR"] = logs
+            env["PATH"] = bindir + os.pathsep + env["PATH"]
+            env.update(extra_env)
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git clean -xdf"}, "cwd": "/tmp/proj"})
+            subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, env=env, check=False)
+            if not os.path.isdir(logs):
+                return []
+            records: list[dict] = []
+            for name in os.listdir(logs):
+                with open(os.path.join(logs, name), encoding="utf-8") as handle:
+                    records.extend(json.loads(line) for line in handle if line.strip())
+            return [record for record in records if record.get("outcome") == "fallback"]
+
+    timed_out = _fallback_records("sleep 3; printf '%s' '" + SUCCESS_JSON + "'", {})
+    if len(timed_out) != 1 or "did not complete" not in timed_out[0].get("error", "") or timed_out[0].get("decision") != "defer":
+        failures.append(f"timeout fallback should leave one defer record naming the cause, got {timed_out}")
+    if _fallback_records("printf '%s' '" + SUCCESS_JSON + "'", {"HOOK_JEV_ENABLE": "0"}):
+        failures.append("opting out via HOOK_JEV_ENABLE=0 must not write a fallback record")
+
     # Non-Bash tool -> defer.
     payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "x"}})
     completed = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, check=False)
