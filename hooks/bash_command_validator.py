@@ -18,7 +18,7 @@ Make sure to change your path to your actual script.
         "hooks": [
           {
             "type": "command",
-            "command": "uv run $HOME/Develop/claude-code/hooks/bash_command_validator.py"
+            "command": "uv run $HOME/Develop/claude-code-rules/hooks/bash_command_validator.py"
           }
         ]
       }
