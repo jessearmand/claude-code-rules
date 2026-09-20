@@ -1,101 +1,43 @@
-# Swift Implementation Patterns
+# SwiftUI implementation patterns
 
-Common patterns for SwiftUI development.
+Use for SwiftUI ownership, composition, and asynchronous behavior. Preserve the
+project's deployment targets and model architecture; these are decision criteria,
+not a requirement to restructure existing views.
 
-## State Ownership
+## State ownership
 
-- Views own local state unless sharing is required
-- State flows down, actions flow up
-- Keep state close to where it's used
-- Extract shared state only when multiple views need it
+Place state where its lifetime and sharing requirements belong. A view can own
+local state, while a feature model, application model, or injected service can own
+longer-lived state. Sharing is not the only reason to separate a model from a view.
 
-## Shared State with @Observable
+For Observation-based models, use `@Observable` and select ownership, environment,
+and binding APIs according to the target platform. For publisher-based models,
+retain `ObservableObject` with the appropriate `@StateObject`, `@ObservedObject`,
+or `@EnvironmentObject` wrapper. Do not change model systems during unrelated work.
 
-```swift
-@Observable
-class UserSession {
-    var isAuthenticated = false
-    var currentUser: User?
+## Asynchronous loading
 
-    func signIn(user: User) {
-        currentUser = user
-        isAuthenticated = true
-    }
-}
+Choose view-lifecycle tasks, user-action tasks, or service-owned work according to
+how long the operation should live. For view work, consider `.task` or `.task(id:)`
+when loading should follow appearance or a changing input.
 
-struct MyApp: App {
-    @State private var session = UserSession()
+- Represent loading, success, and failure states deliberately; decide whether a
+  refresh retains existing data or clears it.
+- Treat cancellation as a lifecycle event when appropriate, not automatically as
+  an error to display. Avoid letting an old request overwrite newer results.
+- Keep UI updates within the required actor isolation. Do not assume an `async`
+  function automatically runs expensive work off the main actor.
+- Preserve Combine-based flows where their publishers and subscriptions fit the
+  feature. Adopt async sequences or async/await when a change actually calls for it.
 
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environment(session)
-        }
-    }
-}
-```
+## Composition and validation
 
-## Async Data Loading
+Extract views, modifiers, and model operations when they clarify responsibility
+or support reuse. Keep the repository's file organization and testing framework.
+Test state transitions, cancellation, and error behavior where affected. Previews
+help inspect appearance but do not replace tests of behavior or platform integration.
 
-```swift
-struct ProfileView: View {
-    @State private var profile: Profile?
-    @State private var isLoading = false
-    @State private var error: Error?
+## Sources
 
-    var body: some View {
-        Group {
-            if isLoading {
-                ProgressView()
-            } else if let profile {
-                ProfileContent(profile: profile)
-            } else if let error {
-                ErrorView(error: error)
-            }
-        }
-        .task {
-            await loadProfile()
-        }
-    }
-
-    private func loadProfile() async {
-        isLoading = true
-        defer { isLoading = false }
-
-        do {
-            profile = try await ProfileService.fetch()
-        } catch {
-            self.error = error
-        }
-    }
-}
-```
-
-## Async Patterns
-
-- Use `async/await` as default for async operations
-- Leverage `.task` modifier for lifecycle-aware work
-- Avoid Combine unless absolutely necessary
-- Handle errors with `try/catch`
-
-## View Composition
-
-- Build UI with small, focused views
-- Extract reusable components naturally
-- Use view modifiers to encapsulate styling
-- Prefer composition over inheritance
-
-## Code Organization
-
-- Organize by feature, not by type
-- Avoid `Views/`, `Models/`, `ViewModels/` folders
-- Keep related code together
-- Use extensions to organize large files
-
-## Testing Strategy
-
-- Unit test business logic and data transformations
-- Use SwiftUI Previews for visual testing
-- Test `@Observable` classes independently
-- Keep tests simple and focused
-- Don't sacrifice clarity for testability
+- [Managing model data](https://developer.apple.com/documentation/swiftui/managing-model-data-in-your-app)
+- [Migrating observation models](https://developer.apple.com/documentation/swiftui/migrating-from-the-observable-object-protocol-to-the-observable-macro): use for an intentional migration, not routine edits.

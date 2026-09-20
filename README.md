@@ -8,6 +8,8 @@ This repository contains Claude Code skills, hooks, and configuration files desi
 
 Skills are invocable via `/skill-name` in Claude Code and provide structured workflows. Each skill lives in `skills/<name>/SKILL.md` with YAML frontmatter for metadata.
 
+- **commit** (`/commit`): Creates a focused commit from the requested working-tree or staged changes while leaving unrelated work untouched. Owns the shared Conventional Commits rules and the staged-tree validation procedure (`references/staged-tree-validation.md`) that `commit-staged` follows.
+
 - **commit-staged** (`/commit-staged`): Commits staged changes using Conventional Commits format. Runs `/check` first, then reviews the staged diff and creates a well-structured commit message. User-initiated only (`disable-model-invocation: true`).
 
 - **check** (`/check`): Runs project-specific code quality and security checks (linting, type checking, tests, formatting, builds). Can be invoked directly or by other skills like `commit-staged`. Supports JavaScript/TypeScript, Python, Rust, Go, and Swift projects.

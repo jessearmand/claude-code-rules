@@ -1,12 +1,15 @@
 # React Best Practices
 
-Write efficient, optimizable React code with React Compiler in mind.
+Follow the project's React architecture and rendering framework. Apply the
+compiler section only when React Compiler is enabled; do not migrate existing
+components or data-fetching infrastructure during unrelated work.
 
 ## Core Guidelines
 
 ### Use Functional Components with Hooks
 
-- No class components
+- Prefer function components for new code; preserve existing classes and use them
+  where framework or library contracts require them
 - Manage state with `useState` or `useReducer`
 - Side effects in `useEffect` or event handlers
 
@@ -79,7 +82,7 @@ const handleSubmit = () => {
 ### Always:
 
 - Include all dependencies
-- Return cleanup functions
+- Clean up subscriptions, timers, and other resources when the effect acquires them
 - Don't suppress exhaustive-deps / hook lint rules (Biome `useExhaustiveDependencies`, Oxlint `react/exhaustive-deps`)
 
 ## Rules of Hooks
@@ -105,7 +108,8 @@ Use `useRef` sparingly:
 
 With React Compiler enabled:
 
-- Skip `useMemo`, `useCallback`, `React.memo`
+- Avoid adding manual memoization by default; assess existing memoization before
+  removing it, including any behavior that depends on stable identity
 - Write clear, simple components
 - Let the compiler optimize
 - Focus on correct data flow
@@ -137,7 +141,8 @@ setCount(count + 1);
 
 ## User Experience
 
-- Skeleton screens over spinners
+- Choose skeletons or spinners to fit the existing UI and loading behavior
 - Graceful error handling with boundaries
 - Render partial data as available
-- Declarative loading states with Suspense
+- Use the framework's supported loading patterns; do not introduce Suspense as
+  an unrelated infrastructure change

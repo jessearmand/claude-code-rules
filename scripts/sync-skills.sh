@@ -38,7 +38,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DST="$ROOT/skills"
 OVERLAYS="$ROOT/scripts/skill-overlays"
 
-COPY_SKILLS=(check fetching-docs grep-code-search lang-rust lang-swift lang-typescript process-pdf)
+COPY_SKILLS=(check commit fetching-docs grep-code-search lang-rust lang-swift lang-typescript process-pdf)
 OVERLAY_SKILLS=(commit-staged lang-python xcode-build)
 
 # Paths (relative to the skill directory) that exist only in this repo and must

@@ -1,154 +1,71 @@
 ---
 name: lang-typescript
-description: TypeScript/JavaScript development with Vitest testing, React patterns, and functional programming best practices. Use when writing or reviewing TypeScript/JavaScript code, or when choosing among Oxlint, Oxfmt, and Biome.
+description: Write or review TypeScript and JavaScript using the project's architecture, package manager, and validation tools.
 ---
 
 # TypeScript/JavaScript Development
 
-Write functional, type-safe TypeScript/JavaScript code.
+Follow the project's runtime, framework, and architectural conventions. Keep tool
+or framework migrations separate unless the task requires them.
 
-## Package Managers
+## Package manager and tooling
 
-`npm`, `bun`, and `pnpm` are managed by [mise](https://mise.jdx.dev/). Do not install them with Homebrew, a standalone installer, or Corepack unless the project already does.
+Use repository instructions, `packageManager` in `package.json`, lockfiles, and
+CI scripts to identify the package manager and pinned version. Resolve conflicting
+signals before installing dependencies or changing lockfiles.
 
-Detect the project manager from lockfiles and config, then use that CLI:
+| Lockfile | Manager |
+|----------|---------|
+| `pnpm-lock.yaml` | pnpm |
+| `bun.lock` or `bun.lockb` | Bun |
+| `package-lock.json` | npm |
 
-| Signal | Manager |
-|--------|---------|
-| `pnpm-lock.yaml`, `pnpm-workspace.yaml` | `pnpm` |
-| `bun.lock`, `bun.lockb` | `bun` |
-| `package-lock.json` | `npm` |
-| `mise.toml` / `.tool-versions` lists `pnpm` / `bun` / `npm` | that tool |
+`npm`, `bun`, and `pnpm` are managed by mise. Use existing mise configuration;
+do not install package managers through another mechanism unless the project
+explicitly requires it. If the repository specifies no manager, use an appropriate
+one already provided by mise.
 
-If none of those exist, check `packageManager` in `package.json`, then fall back to whatever mise already provides on `PATH`.
+Prefer project scripts and installed project binaries. Do not introduce another
+linter, formatter, test framework, or package manager during unrelated work.
+Keep existing ESLint and Prettier setups when that is the repository's toolchain.
 
-Typical mise pins:
+For a requested new toolchain, consider Oxlint with Oxfmt or Biome, accounting for
+required plugins, framework support, and repository preferences. Read only the
+matching reference when configuring or troubleshooting that tool:
 
-```toml
-[tools]
-node = "24"
-pnpm = "10"
-# or: bun = "1"
-# or: npm = "11"
-```
+- [Oxlint](references/oxlint.md): `.oxlintrc.json`, `.oxlintrc.jsonc`, or `oxlint.config.*`.
+- [Oxfmt](references/oxfmt.md): `.oxfmtrc.json`, `.oxfmtrc.jsonc`, or `oxfmt.config.*`.
+- [Biome](references/biome.md): `biome.json` or `biome.jsonc`.
 
-Run project binaries through the manager (`pnpm exec`, `bunx`, `npx`). Prefer `package.json` scripts over ad-hoc tool invocations.
+## Validation
 
-## Validation Workflow
+Inspect project scripts and required repository checks. Run affected tests and
+appropriate type, lint, and format checks for the changed package or behavior.
+Run a build when bundling, packaging, configuration, or integration behavior needs
+verification. Broaden to the full suite when shared changes, failures, or repository
+requirements justify it; do not require it for every edit.
 
-Before submitting changes:
+Reuse passing checks for unchanged state. After a fix, rerun affected checks.
+Distinguish pre-existing failures and environment limitations from regressions;
+do not fix unrelated issues or claim checks passed when they did not run.
 
-1. Review `package.json` for available scripts
-2. Build the repository
-3. Run all tests
-4. Check for type errors
-5. Lint and format with the project's toolchain (see below)
+## Implementation choices
 
-## Lint and Format
+- Prefer precise types and narrow `unknown` at untrusted boundaries. Use `any` or
+  assertions only when justified by an API constraint or an invariant the type
+  system cannot express; keep those exceptions localized.
+- Prefer plain objects for data and module exports for module APIs. Use classes
+  where framework contracts, encapsulated behavior, or existing architecture call
+  for them; do not rewrite classes merely to follow a stylistic preference.
+- Choose array methods or loops for clarity, control flow, and performance in the
+  actual code. Avoid unnecessary intermediate collections or clever reductions.
+- Test observable behavior through supported interfaces. Do not export internals
+  or introduce abstractions solely to make implementation details easier to mock.
 
-Follow the project's existing toolchain. Do not add a second linter or formatter beside the one already configured.
+## Framework-specific references
 
-| Project signals | Toolchain | Reference |
-|-----------------|-----------|-----------|
-| `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts`, `oxlint.config.mts` | Oxlint | [references/oxlint.md](references/oxlint.md) |
-| `.oxfmtrc.json`, `.oxfmtrc.jsonc`, `oxfmt.config.ts`, `oxfmt.config.mts` | Oxfmt | [references/oxfmt.md](references/oxfmt.md) |
-| `biome.json`, `biome.jsonc` | Biome | [references/biome.md](references/biome.md) |
-
-Oxlint and Oxfmt are separate tools and often appear together. Biome covers lint + format in one binary.
-
-When adding a toolchain to a new project:
-
-- Dedicated linter + dedicated formatter: Oxlint + Oxfmt
-- Single integrated tool: Biome
-
-Stay on ESLint or Prettier only when the project still depends on plugin behavior the replacements do not cover.
-
-Quick commands once the matching reference is loaded:
-
-```bash
-# Oxlint / Oxfmt
-oxlint
-oxlint --fix
-oxfmt
-oxfmt --check
-
-# Biome
-pnpm exec biome check ./src
-pnpm exec biome check --write ./src
-```
-
-## Core Principles
-
-### Prefer Plain Objects over Classes
-
-- Use TypeScript interfaces/types with plain objects
-- Classes add complexity that doesn't fit React's model
-- Plain objects are easier to serialize, test, and reason about
-
-```typescript
-// Prefer this
-interface User {
-    id: string;
-    name: string;
-}
-const user: User = { id: '1', name: 'Alice' };
-
-// Avoid this
-class User {
-    constructor(public id: string, public name: string) {}
-}
-```
-
-### ES Module Encapsulation
-
-Use `import`/`export` for public API definition instead of class members:
-
-- Exported = public API
-- Not exported = private to module
-- Test public APIs, not internals
-
-### Type Safety
-
-**Avoid `any`**:
-- Loses type safety
-- Masks underlying issues
-- Reduces readability
-
-**Prefer `unknown` over `any`**:
-
-```typescript
-function processValue(value: unknown) {
-    if (typeof value === 'string') {
-        console.log(value.toUpperCase()); // Type narrowed
-    }
-}
-```
-
-**Use type assertions sparingly**:
-- `as Type` bypasses compiler checks
-- Only use with external libraries or when you have more info than compiler
-
-### Functional Array Operations
-
-Prefer array methods over loops:
-
-```typescript
-// Prefer
-const doubled = items.map(x => x * 2);
-const evens = items.filter(x => x % 2 === 0);
-const sum = items.reduce((acc, x) => acc + x, 0);
-
-// Avoid imperative loops for transformations
-```
-
-## Comments Policy
-
-Only write high-value comments. Avoid talking to the user through comments.
-
-## Detailed Guides
-
-- [Testing](testing.md) - Vitest patterns and mocking conventions
-- [React](react.md) - React best practices with React Compiler focus
-- [Oxlint](references/oxlint.md) - dedicated JS/TS linter
-- [Oxfmt](references/oxfmt.md) - dedicated Prettier-compatible formatter
-- [Biome](references/biome.md) - integrated lint + format toolchain
+- For Vitest projects, use [Testing](testing.md) for mocking and environment details.
+  Retain another existing test runner when present.
+- For React work, use [React](react.md) for hooks, effects, and state guidance.
+  Apply compiler-specific advice only when that compiler is enabled. Preserve
+  framework requirements and necessary existing behavior when applying preferences.

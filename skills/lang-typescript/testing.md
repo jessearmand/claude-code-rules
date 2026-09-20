@@ -1,10 +1,11 @@
 # Testing with Vitest
 
-Patterns and conventions for Vitest testing.
+Use these patterns when the project already uses Vitest or the task explicitly
+introduces it. Preserve the project's test organization and setup conventions.
 
 ## Framework
 
-All tests use Vitest: `describe`, `it`, `expect`, `vi`
+Vitest tests use `describe`, `it`, `expect`, and `vi` as needed.
 
 ## File Organization
 
@@ -134,4 +135,4 @@ await vi.runAllTimersAsync();
 - Examine existing tests before adding new ones
 - Pay attention to mocks at top of test files
 - Test public APIs, not internals
-- If you need to spy on unexported functions, consider extracting them to a separate module
+- Test observable behavior instead of exporting or extracting internals solely for spying

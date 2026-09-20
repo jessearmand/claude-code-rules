@@ -13,7 +13,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from rm_rf_guard import analyze_target, find_recursive_force_invocations  # noqa: E402
 
-_GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rm_rf_guard.py")
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+_GUARD = os.path.join(_HOOKS_DIR, "rm_rf_guard.py")
+# A real project directory to stand in for the session cwd: this repo's root, so the
+# end-to-end cases resolve relative targets the same way on any machine or checkout.
+_REPO_ROOT = os.path.dirname(_HOOKS_DIR)
 
 SHOULD_BLOCK = [
     "rm -rf build",
@@ -56,7 +60,7 @@ SHOULD_ALLOW = [
 ]
 
 
-def _run_hook(command: str, cwd: str = "/Users/jeesearmand/Develop/claude-code") -> dict | None:
+def _run_hook(command: str, cwd: str = _REPO_ROOT) -> dict | None:
     """Invoke the hook end-to-end; return its parsed JSON payload, or None if it deferred."""
     payload = json.dumps(
         {
@@ -130,8 +134,7 @@ def main() -> int:
         )
         _check(analyze_target("/usr", tmp).severity == "critical", "/usr is critical", failures)
         _check(
-            analyze_target("..", os.path.join(os.path.expanduser("~"), "Develop", "claude-code")).severity
-            == "critical",
+            analyze_target("..", directory).severity == "critical",
             ".. from cwd is critical (ancestor of cwd)",
             failures,
         )

@@ -1,47 +1,34 @@
 ---
 name: commit-staged
-description: Commit staged changes with clear description and body using Conventional Commits format.
+description: This skill should be used when the user asks to "commit staged changes", "commit what is staged", "write a commit message for the index", or explicitly wants a commit limited to the current Git index. It validates and commits the exact staged tree without including unstaged or untracked work.
 disable-model-invocation: true
 allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(git commit:*), Bash(git add:*), Read, Glob, Grep, Skill(check)
 ---
 
-# Commit Staged
+# Commit Staged Changes
 
-Commit staged changes with clear description and body
+Commit only the change already represented by the Git index. Preserve all unstaged and untracked work, and validate the exact staged tree before committing it.
 
-## Primary Task
+## Invariants
 
-Run `git diff --staged`, review the changes, then commit the staged changes with a clear description and body.
-Describe the purpose of the changes, prioritize clarity, readability, and minimize ambiguity.
-
-## Commit Message Guidelines (Conventional Commits)
-
-- Use the format `<type>[optional scope][!]: <description>`.
-- Use `feat` for new features and `fix` for bug fixes; other allowed types include `docs`, `refactor`, `chore`, `test`, `perf`, `ci`, `build`, and `style`.
-- Add a scope in parentheses when it clarifies the area affected, e.g. `feat(parser):`.
-- Keep the description within 100 column width limit, and immediately after the colon and space.
-- Add a body when extra context is useful; start it one blank line after the description; keep within 120 column width limit.
-- Add footers after another blank line using trailer style (e.g. `Refs: #123`).
-- Indicate breaking changes with `!` before the colon or a `BREAKING CHANGE:` footer.
-
-Example:
-```
-feat(commands): add dry-run support for commit workflow
-
-Explain how dry-run skips git writes and reports intended actions.
-
-Refs: #412
-```
-
-## Important
-
-- DO NOT add any other files that are not staged
-- Focus on the staged changes identified by the output of `git diff --staged`
-- EXCEPTION: when there are modified files from the process of checking, ONLY add those modified files
+- Treat the current index as the complete commit scope.
+- Never stage an unstaged or untracked file merely because a check reads or rewrites it.
+- Never use `git add .`, `git add -A`, or `git commit -a`.
+- Validate the exact index tree in isolation so unstaged, untracked, and ignored source files cannot make checks pass.
+- Stop when a merge, rebase, cherry-pick, or revert is active, or when the index contains unmerged entries. Use the operation-specific continuation workflow instead of creating an ordinary commit.
+- Follow the `check` skill for repository validation.
+- Follow the `commit` skill's “Verify without unrelated untracked files” procedure and Conventional Commit message rules. Retain this skill's staged-only scope.
 
 ## Process
 
-1. Perform checks with /check or refer to project setup for running checks, tests, or linting
-2. After checks are resolved, proceed with reviewing the output of `git diff --staged`
-3. Review modified files from the process of checking, ONLY add those modified files
-4. Run `git diff --staged`, then ONLY commit the staged changes
+1. Inspect repository operation state, `git status --short`, and `git diff --staged`.
+2. Stop if the staged diff is empty.
+3. Stop on an active merge, rebase, cherry-pick, or revert. Report the operation and use its specific continuation workflow only when the user requests it.
+4. Confirm that the staged hunks form one coherent change. If the index mixes unrelated concerns, ask whether to split it before changing the user's staged selection.
+5. Follow the `commit` skill's exact-index validation procedure with the current index as the complete candidate. Do not run checks against the dirty original worktree.
+6. If validation requires a source rewrite, do not extend the staged candidate. Report the exact rewrite and stop. If the user wants to include it, transition to the general `commit` workflow.
+7. Write the current index to a tree object again. If its identifier differs from the validated tree, inspect and validate the new tree before committing.
+8. Reinspect `git diff --staged`, then derive the subject and optional body from that final diff.
+9. Commit only the index after validation passes. Do not bypass hooks with `--no-verify`, amend, squash, or push unless explicitly requested.
+10. After committing, compare `HEAD^{tree}` with the validated tree. If they differ, report the hook-induced or concurrent change; do not amend or push automatically.
+11. Report the commit identifier and subject, validation commands that passed, and unstaged or untracked paths deliberately left untouched.

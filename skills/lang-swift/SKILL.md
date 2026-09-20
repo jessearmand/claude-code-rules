@@ -1,74 +1,61 @@
 ---
 name: lang-swift
-description: Modern Swift and SwiftUI development with native state management, async/await patterns, and Apple platform conventions. Use when writing or reviewing Swift code.
+description: Write or review Swift and SwiftUI code while preserving the project's deployment targets, architecture, and concurrency model.
 ---
 
-# Swift & SwiftUI Development
+# Swift Development
 
-Write idiomatic SwiftUI code following Apple's architectural recommendations.
+Identify whether the task concerns a Swift package, Apple platform app, or
+cross-platform tool. Follow the project's Swift version, language mode, deployment
+targets, and existing frameworks. Do not assume every Swift project uses SwiftUI
+or requires migration to the newest state-management or concurrency APIs.
 
-## Core Philosophy
+## Implementation and concurrency
 
-- SwiftUI is the default UI paradigm - embrace its declarative nature
-- Avoid legacy UIKit patterns and unnecessary abstractions
-- Focus on simplicity, clarity, and native data flow
-- Let SwiftUI handle complexity - don't fight the framework
+- Preserve established UIKit, AppKit, SwiftUI, Combine, and model-layer boundaries.
+  Introduce abstractions or migrate frameworks only when the task benefits from it.
+- Use structured concurrency where it fits the existing design. Respect actor
+  isolation, cancellation, and ownership across asynchronous work.
+- Diagnose isolation and Sendable errors against the actual compiler settings.
+  Avoid unchecked conformances or blanket actor annotations just to silence errors.
+- Keep UI state ownership explicit and handle loading, failure, and cancellation
+  according to the feature's behavior.
 
-## State Management
+For a concurrency issue, use the [concurrency index](references/concurrency.md)
+and read only the relevant reference. Verify version-sensitive examples against
+the project's compiler; do not enable a new language mode as an incidental fix.
 
-Use built-in property wrappers:
+## SwiftUI state
 
-| Wrapper | Purpose |
-|---------|---------|
-| `@State` | Local, ephemeral view state |
-| `@Binding` | Two-way data flow between views |
-| `@Observable` | Shared state (iOS 17+) |
-| `@ObservableObject` | Legacy shared state (pre-iOS 17) |
-| `@Environment` | Dependency injection |
+Choose APIs supported by the deployment target and existing model architecture.
+`@Observable` is a macro, and `ObservableObject` is a protocol; neither is a
+property wrapper named `@ObservableObject`.
 
-## Quick Example
+| API | Role |
+|-----|------|
+| `@State` | View-owned state; can own an Observation model where supported |
+| `@Binding` | Read/write access to state owned elsewhere |
+| `@Observable` | Adds Observation tracking to a model type |
+| `@Bindable` | Creates bindings to properties of an Observation model |
+| `ObservableObject` and `@Published` | Publisher-based model observation |
+| `@StateObject` | Owns an `ObservableObject` instance for a view's lifetime |
+| `@ObservedObject` | Observes an `ObservableObject` supplied to the view |
+| `@Environment` / `@EnvironmentObject` | Reads dependencies supplied through the matching environment mechanism |
 
-```swift
-struct CounterView: View {
-    @State private var count = 0
+Use [SwiftUI patterns](patterns.md) when deciding ownership or asynchronous view
+behavior. Preserve an existing model/view-model layer when it serves a clear purpose.
 
-    var body: some View {
-        VStack {
-            Text("Count: \(count)")
-            Button("Increment") {
-                count += 1
-            }
-        }
-    }
-}
-```
+## Validation and build routing
 
-## DO:
+Use repository scripts, the pinned toolchain, and the existing test framework.
+Run affected tests and appropriate formatting/build checks for the changed target.
+Do not require an iOS simulator for a platform-independent package or a full app
+build for an unrelated documentation edit.
 
-- Write self-contained views
-- Use property wrappers as intended
-- Handle loading/error states explicitly
-- Keep views focused on presentation
-- Use Swift's type system for safety
+For Xcode build, test, simulator, or profiling work, use the `xcode-build` skill
+when available. If it is unavailable, use repository build instructions and the
+installed tools' help rather than blocking or installing a skill. Confirm the
+actual scheme, destination, configuration, and supported platform before running.
 
-## DON'T:
-
-- Create ViewModels for every view
-- Move state out of views unnecessarily
-- Add abstraction without clear benefit
-- Use Combine for simple async operations
-- Fight SwiftUI's update mechanism
-
-## Modern Swift Features
-
-- Use Swift Concurrency (`async/await`, actors)
-- Leverage Swift 6 data race safety
-- Embrace value types where appropriate
-- Use protocols for abstraction, not just testing
-
-## Detailed Guides
-
-- [Patterns](patterns.md) - State, async, and composition patterns
-- [Logging](logging.md) - Swift logging conventions
-- [Concurrency](references/concurrency.md) - Swift 6 strict concurrency and data race safety
-- Build, test, and profiling workflow: see the `xcode-build` skill
+For logging changes, use [logging guidance](logging.md). Report validation results
+and any platform, signing, or toolchain limitations.
