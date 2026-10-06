@@ -18,9 +18,9 @@ from corpus import load_corpus
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("backend", choices=("jev", "decider"))
+    parser.add_argument("backend", choices=("jev", "decider", "systemone"))
     parser.add_argument("--out", required=True)
-    parser.add_argument("--url", help="decider server base URL")
+    parser.add_argument("--url", help="base URL of a /v1/systemone server (decider, llama-server)")
     parser.add_argument("--name", help="label for this judge in the result file (default: the backend name)")
     parser.add_argument("--workers", type=int, default=1, help="concurrent requests (keep 1 for clean latency numbers)")
     parser.add_argument("--warmup", type=int, default=2, help="unrecorded calls before the timed run")

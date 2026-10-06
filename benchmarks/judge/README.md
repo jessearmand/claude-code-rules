@@ -37,6 +37,10 @@ python3 benchmarks/judge/semif_bridge.py export --out scratchpad/judge/corpus_se
    --revision 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a --input .../corpus_semif.jsonl --output .../semif_raw.jsonl)
 python3 benchmarks/judge/semif_bridge.py import scratchpad/judge/semif_raw.jsonl --out scratchpad/judge/semif-4b.jsonl
 
+# llama.cpp decision models (Julia-1, Laya, Kev-4B, lev): llama-server answers /v1/systemone natively
+benchmarks/judge/llamacpp_sweep.sh scratchpad/judge/llamacpp \
+  kev-4b-q4=ggml-org/Kev-4B-GGUF:Kev-4B-Q4_K_M.gguf lev-q4=ggml-org/lev-GGUF:lev-Q4_K_M.gguf
+
 python3 benchmarks/judge/report.py scratchpad/judge/*.jsonl --disagreements
 ```
 
@@ -60,3 +64,4 @@ live cases, `reference.jev_logged`.
 * `corpus.py`: the cases; `backends.py`: Jev and decider clients; `metrics.py`, `report.py`: scoring and tables.
 * `decider_mps_server.py`: `/v1/systemone` shim over `decider.infer.Decider` for machines without CUDA.
 * `semif_bridge.py`: export to and import from SemIf's row format.
+* `llamacpp_sweep.sh`: starts `llama-server` for each GGUF in turn and runs `run.py systemone` against it.

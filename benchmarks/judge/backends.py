@@ -97,7 +97,7 @@ def from_systemone_answer(answer: dict) -> dict:
 
 
 class DeciderBackend(Backend):
-    """POST /v1/systemone on a decider server (the CUDA server or the MPS shim in this folder)."""
+    """POST /v1/systemone: a decider server (CUDA, or the MPS shim in this folder) or llama-server with a decision model."""
 
     name = "decider"
 
@@ -131,6 +131,6 @@ class DeciderBackend(Backend):
 def make_backend(name: str, url: str | None = None) -> Backend:
     if name == "jev":
         return JevBackend()
-    if name == "decider":
+    if name in ("decider", "systemone"):
         return DeciderBackend(url or "http://127.0.0.1:8000")
     raise ValueError(f"unknown backend {name!r}; semif results are imported with semif_bridge.py")
