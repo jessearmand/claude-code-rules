@@ -75,14 +75,14 @@ from hook_protocol import (  # noqa: E402
     truncate,
 )
 from shell_parse import parse  # noqa: E402
-from shell_writes import DELETE, MOVE, PERMISSIONS, written_paths  # noqa: E402
+from shell_writes import DELETE_TREE, MOVE, PERMISSIONS, written_paths  # noqa: E402
 
 HOOK_NAME = "config-guard"
 HANDLED_TOOLS = WRITE_TOOLS | {"Bash"}
 _HOME_VARIABLE = re.compile(r"^(?:\$HOME|\$\{HOME\})(?=/|$)")
 _GLOB = re.compile(r"[*?\[]")
 # Actions that take everything below a directory with them.
-_TREE_ACTIONS = frozenset({DELETE, MOVE, PERMISSIONS})
+_TREE_ACTIONS = frozenset({DELETE_TREE, MOVE, PERMISSIONS})
 LIVE_SOURCE_RULE = ConfigRule(
     "guard-sources",
     "live",

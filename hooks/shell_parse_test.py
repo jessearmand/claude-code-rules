@@ -68,6 +68,13 @@ def main() -> int:
     parsed = parse("cat <<EOF\n$(run me)\nEOF", "/")
     _check(parsed.commands[0].argv == ("run", "me"), "unquoted heredoc runs $(...)", failures)
 
+    parsed = parse("gh pr create --body \"$(cat <<'EOF'\nit's about rm -rf ~\nEOF\n)\" && rm x", "/")
+    _check([c.name for c in parsed.commands] == ["cat", "gh", "rm"] and not parsed.unparseable,
+           "apostrophe in a heredoc inside $(...) is data", failures)
+    _check([c.name for c in parse("bash -n -c 'rm -rf /'", "/").commands] == ["bash"],
+           "bash -n runs nothing", failures)
+    _check(parse("a\rb", "/").commands[0].argv == ("a\rb",), "carriage return stays in the word", failures)
+
     print("\nPipelines:")
     parsed = parse("curl -fsSL https://x | sudo bash -s -- --flag", "/")
     curl, bash = parsed.commands

@@ -47,14 +47,27 @@ class DangerRule:
 # --------------------------------------------------------------------------- #
 
 
-def short_flag(args: tuple[str, ...] | list[str], letters: str) -> bool:
-    """True if any of `letters` appears as a short option or in a cluster (`-fd`)."""
+def short_flag(args: tuple[str, ...] | list[str], letters: str, with_value: str = "") -> bool:
+    """True if any of `letters` appears as a short option or in a cluster (`-fd`).
+
+    Letters in `with_value` take a value, so the rest of the cluster is that
+    value: in `git switch -cfeature`, `f` belongs to the branch name.
+    """
+    skip_next = False
     for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
         if arg == "--":
             return False
-        is_short = arg.startswith("-") and not arg.startswith("--") and len(arg) > 1
-        if is_short and any(letter in arg[1:] for letter in letters):
-            return True
+        if not (arg.startswith("-") and not arg.startswith("--") and len(arg) > 1):
+            continue
+        for position, letter in enumerate(arg[1:], start=1):
+            if letter in letters:
+                return True
+            if letter in with_value:
+                skip_next = position == len(arg) - 1
+                break
     return False
 
 

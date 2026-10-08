@@ -29,7 +29,8 @@ _OPERATORS = (
 )
 REDIRECT_OPERATORS = frozenset({"<<-", "<<<", "&>>", "&>", "<<", ">>", ">|", "<&", ">&", "<>", "<", ">"})
 HEREDOC_OPERATORS = frozenset({"<<", "<<-"})
-_METACHARACTERS = frozenset(" \t\r\n|&;()<>")
+# Only space and tab are blanks to the shell; a carriage return is part of a word.
+_METACHARACTERS = frozenset(" \t\n|&;()<>")
 _ANSI_C_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b",
                    "f": "\f", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
 
@@ -72,7 +73,7 @@ class _Lexer:
     def run(self) -> LexResult:
         while self.i < self.n:
             c = self.s[self.i]
-            if c in " \t\r":
+            if c in " \t":
                 self.i += 1
             elif c == "\\" and self._peek(1) == "\n":
                 self.i += 2
@@ -279,13 +280,27 @@ class _Lexer:
         return "".join(out)
 
     def _balanced(self, close: str, open_: str) -> str:
-        """Consume up to the matching `close`, honouring quotes. Returns the inner text."""
+        """Consume up to the matching `close`, honouring quotes and heredocs.
+
+        Returns the inner text. Heredoc bodies are skipped as data, so an
+        apostrophe in `$(cat <<'EOF' ... it's ... EOF)` does not open a quote.
+        """
         start = self.i
         depth = 1
+        pending_heredocs: list[tuple[str, bool]] = []
         while self.i < self.n:
             c = self.s[self.i]
             if c == "\\":
                 self.i += 2
+                continue
+            if c == "<" and self.s.startswith("<<", self.i) and not self.s.startswith("<<<", self.i):
+                pending_heredocs.append(self._scan_heredoc_delimiter())
+                continue
+            if c == "\n" and pending_heredocs:
+                self.i += 1
+                for delimiter, strip_tabs in pending_heredocs:
+                    self._skip_heredoc_body(delimiter, strip_tabs)
+                pending_heredocs = []
                 continue
             if c == "'":
                 end = self.s.find("'", self.i + 1)
@@ -309,6 +324,28 @@ class _Lexer:
             self.i += 1
         self.result.unterminated = True
         return self.s[start:]
+
+    def _scan_heredoc_delimiter(self) -> tuple[str, bool]:
+        """At `<<`: consume the operator and delimiter word; return (delimiter, strip_tabs)."""
+        self.i += 2
+        strip_tabs = self._peek(0) == "-"
+        if strip_tabs:
+            self.i += 1
+        while self.i < self.n and self.s[self.i] in " \t":
+            self.i += 1
+        start = self.i
+        while self.i < self.n and self.s[self.i] not in _METACHARACTERS:
+            self.i += 1
+        raw = self.s[start:self.i]
+        return raw.replace("'", "").replace('"', "").replace("\\", ""), strip_tabs
+
+    def _skip_heredoc_body(self, delimiter: str, strip_tabs: bool) -> None:
+        while self.i < self.n:
+            end = self.s.find("\n", self.i)
+            line = self.s[self.i:] if end < 0 else self.s[self.i:end]
+            self.i = self.n if end < 0 else end + 1
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                return
 
     def _skip_double_quoted(self) -> None:
         self.i += 1

@@ -438,7 +438,7 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
         for inner in _find_exec_commands(args):
             _emit(inner, (), ctx, (*via, "find -exec"), depth + 1, indirect, ctx.next_pipeline(),
                   0, False, ("find",))
-    elif name == "parallel":
+    elif name == "parallel" and "--dry-run" not in args:
         inner = _parallel_command(args)
         if inner:
             nested(" ".join(inner), "parallel")
@@ -471,6 +471,8 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         if arg in SHELL_OPTIONS_WITH_ARG:
             index += 2
             continue
+        if arg.startswith("-") and not arg.startswith("--") and "n" in arg[1:]:
+            return  # `-n`: read and syntax-check only, never execute
         if arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]:
             runs_string = True
             index += 1

@@ -21,6 +21,7 @@ from shell_parse import SimpleCommand
 
 WRITE = "write"
 DELETE = "delete"
+DELETE_TREE = "delete-tree"  # recursive removal: everything below goes too
 MOVE = "move"  # the source of a move or rename: it disappears
 PERMISSIONS = "permissions"
 LINK = "link"
@@ -136,6 +137,8 @@ def written_paths(command: SimpleCommand) -> list[PathWrite]:
 
     if name in _TARGET_ONLY:
         action, with_arg = _TARGET_ONLY[name]
+        if name == "rm" and _recursive(args):
+            action = DELETE_TREE
         found += [PathWrite(path, action) for path in _operands(args, with_arg)]
     elif name in _LEADING_SPEC:
         operands = _operands(args, frozenset({"--reference", "--from"}))
@@ -159,6 +162,17 @@ def written_paths(command: SimpleCommand) -> list[PathWrite]:
         found += [PathWrite(path, WRITE) for path in _operands(args, frozenset({"-i", "-o", "-r", "-d",
                                                                               "-p", "-B", "-z", "-D"}))[:1]]
     return found
+
+
+def _recursive(args: tuple[str, ...]) -> bool:
+    for arg in args:
+        if arg == "--":
+            return False
+        if arg.startswith("--") and len(arg) > 3 and "--recursive".startswith(arg):
+            return True
+        if arg.startswith("-") and not arg.startswith("--") and ("r" in arg or "R" in arg):
+            return True
+    return False
 
 
 def _perl_in_place(args: tuple[str, ...]) -> list[PathWrite]:

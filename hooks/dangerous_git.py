@@ -104,12 +104,17 @@ def _looks_like_path(operand: str, cwd: str) -> bool:
     return os.path.exists(os.path.join(cwd, operand))
 
 
+# `git checkout` options that take a separate value.
+_CHECKOUT_WITH_VALUE = frozenset({"--conflict", "--inter-hunk-context", "--unified", "-U",
+                                  "--pathspec-from-file", "--orphan", "-b", "-B"})
+
+
 @_git("checkout")
 def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
     args = git.args
-    if has(args, "-b", "-B", "--orphan") or any(a.startswith(("-b", "-B")) and len(a) > 2 for a in args):
-        return None
-    if short_flag(args, "f") or long_flag(args, "--force"):
+    if short_flag(args, "bB", with_value="U") or long_flag(args, "--orphan"):
+        return None  # creates a branch: nothing is discarded
+    if short_flag(args, "f", with_value="U") or long_flag(args, "--force"):
         return "git checkout --force"
     if long_flag(args, "--pathspec-from-file"):
         return "git checkout --pathspec-from-file"
@@ -117,7 +122,7 @@ def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
         if args[args.index("--") + 1:]:
             return "git checkout -- <path>"
         return None
-    positionals = operands(args, frozenset({"--conflict", "-t", "--track"}))
+    positionals = [p for p in operands(args, _CHECKOUT_WITH_VALUE) if p != "-"]
     if len(positionals) >= 2:
         return "git checkout <ref> <path>"
     if len(positionals) == 1 and _looks_like_path(positionals[0], ctx.cwd):
@@ -129,7 +134,7 @@ def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
 def _switch_discard(git: Git, ctx: RuleContext) -> str | None:
     if long_flag(git.args, "--discard-changes"):
         return "git switch --discard-changes"
-    if short_flag(git.args, "f") or long_flag(git.args, "--force"):
+    if short_flag(git.args, "f", with_value="cC") or long_flag(git.args, "--force"):
         return "git switch --force"
     return None
 
@@ -137,13 +142,19 @@ def _switch_discard(git: Git, ctx: RuleContext) -> str | None:
 @_git("restore")
 def _restore_worktree(git: Git, ctx: RuleContext) -> str | None:
     args = git.args
-    if has(args, "-h", "--help"):
+    if has(args, "-h", "--help", "--version"):
         return None
-    staged = short_flag(args, "S") or long_flag(args, "--staged", min_prefix=4)
-    worktree = short_flag(args, "W") or long_flag(args, "--worktree")
-    if worktree or not staged:
-        return "git restore (working tree)"
-    return None
+    pathspecs = operands(args, frozenset({"-s", "--source", "--conflict", "--inter-hunk-context",
+                                          "-U", "--unified"}))
+    if not pathspecs and not long_flag(args, "--pathspec-from-file"):
+        return None  # nothing named: git refuses to restore anything
+    staged = short_flag(args, "S", with_value="sU") or has(args, "--staged")
+    worktree = short_flag(args, "W", with_value="sU") or has(args, "--worktree")
+    if has(args, "--no-worktree"):
+        worktree = False
+    elif not staged and not has(args, "--no-staged"):
+        worktree = True  # git restore's default target is the working tree
+    return "git restore (working tree)" if worktree else None
 
 
 @_git("clean")
@@ -300,6 +311,8 @@ def _shell_alias(command: SimpleCommand, ctx: RuleContext) -> str | None:
 
 # Keys whose value is a program git runs. Set inline with `-c`, they execute
 # an arbitrary command under an innocuous-looking git invocation.
+_NETWORK_SUBCOMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote", "submodule",
+                                  "remote", "archive"})
 _PROGRAM_KEYS = frozenset({"core.sshcommand", "core.fsmonitor", "core.pager", "core.editor",
                            "core.askpass", "credential.helper", "diff.external", "sequence.editor"})
 
@@ -311,6 +324,9 @@ def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
     git = git_invocation(command)
     for item in git.config if git else ():
         key = item.partition("=")[0]
+        # sshCommand only runs on network operations; the rest run on most commands.
+        if key == "core.sshcommand" and git.subcommand not in _NETWORK_SUBCOMMANDS:
+            continue
         if key in _PROGRAM_KEYS:
             return f"git -c {key}=..."
     return None

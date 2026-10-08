@@ -92,8 +92,8 @@ def _shell_script_argument(args: list[str]) -> str | None:
         if arg in SHELL_OPTIONS_WITH_ARG:
             index += 2
             continue
-        if arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]:
-            return None  # `bash -c STRING` is handled by the parser itself
+        if arg.startswith("-") and not arg.startswith("--") and ("c" in arg[1:] or "n" in arg[1:]):
+            return None  # `bash -c STRING` is parsed by the parser itself; `-n` runs nothing
         if arg.startswith(("-", "+")) and arg not in ("-", "+"):
             index += 1
             continue

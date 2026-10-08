@@ -56,8 +56,13 @@ _DISKUTIL_DESTRUCTIVE = frozenset({"eraseDisk", "eraseVolume", "partitionDisk", 
                                    "apfs"})
 
 
+def _names_device(args: tuple[str, ...]) -> bool:
+    """A /dev path or a computed one; formatting an image file is harmless."""
+    return any(a.startswith("/dev/") or "$" in a or "`" in a for a in operands(args))
+
+
 def _disk_format(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    if _FORMATTERS.match(command.name):
+    if _FORMATTERS.match(command.name) and _names_device(command.args):
         return command.name
     if command.name in ("fdisk", "parted", "gdisk", "sgdisk") and not (short_flag(command.args, "l") or has(command.args, "print")):
         return command.name
@@ -83,7 +88,7 @@ def _executes_stdin(command: SimpleCommand) -> bool:
     """A shell or interpreter that will run whatever arrives on stdin."""
     name, args = command.name, command.args
     if name in SHELLS:
-        if short_flag(args, "c"):
+        if short_flag(args, "cn"):
             return False
         # `-s` reads the script from stdin; anything after it is $1, $2, ...
         return short_flag(args, "s") or not operands(args) or operands(args)[0] == "-"
@@ -250,6 +255,45 @@ def _push_artifact(command: SimpleCommand, ctx: RuleContext) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
+# find primaries that consume the next word (so `-name -delete` is a pattern).
+_FIND_ARITY_ONE = frozenset({
+    "-amin", "-anewer", "-atime", "-Bmin", "-Bnewer", "-Btime", "-cmin", "-cnewer", "-context",
+    "-ctime", "-flags", "-fls", "-fprint", "-fprint0", "-fstype", "-gid", "-group", "-ilname",
+    "-iname", "-inum", "-ipath", "-iregex", "-iwholename", "-links", "-lname", "-maxdepth",
+    "-mindepth", "-mmin", "-mnewer", "-mtime", "-name", "-newer", "-path", "-perm", "-printf",
+    "-regex", "-regextype", "-samefile", "-size", "-type", "-uid", "-used", "-user", "-wholename",
+    "-xattrname", "-xtype", "-files0-from",
+})
+_FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_TEMP_ROOTS = ("/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp", "/var/folders")
+
+
+def _find_deletes(args: tuple[str, ...]) -> bool:
+    """True when `-delete` is a find action, not an argument of another primary."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in _FIND_EXEC:
+            while index < len(args) and args[index] not in (";", "+"):
+                index += 1
+        elif arg == "-fprintf":
+            index += 2
+        elif arg in _FIND_ARITY_ONE or arg.startswith("-newer"):
+            index += 1
+        elif arg == "-delete":
+            return True
+        index += 1
+    return False
+
+
+def _is_temp(path: str, cwd: str) -> bool:
+    if path.startswith(("$TMPDIR", "${TMPDIR}")):
+        return True
+    resolved = os.path.realpath(expand(path, cwd))
+    return any(is_inside(resolved, os.path.realpath(root)) and resolved != os.path.realpath(root)
+               for root in _TEMP_ROOTS)
+
+
 def _find_starting_points(args: tuple[str, ...]) -> list[str]:
     points = []
     for arg in args:
@@ -260,18 +304,20 @@ def _find_starting_points(args: tuple[str, ...]) -> list[str]:
 
 
 def _find_delete(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    if command.name not in ("find", "gfind") or "-delete" not in command.args:
+    if command.name not in ("find", "gfind") or not _find_deletes(command.args):
         return None
     points = _find_starting_points(command.args)
     follows = any(a in ("-L", "-follow", "-H") for a in command.args)
-    outside = [p for p in points if not is_inside(expand(p, ctx.cwd), ctx.cwd) or is_broad_target(p, ctx.cwd)]
+    outside = [p for p in points
+               if is_broad_target(p, ctx.cwd)
+               or not (is_inside(expand(p, ctx.cwd), ctx.cwd) or _is_temp(p, ctx.cwd))]
     if outside or follows:
         return f"find {' '.join(points)} -delete (outside the working directory)"
     return None
 
 
 def _find_delete_local(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    if command.name in ("find", "gfind") and "-delete" in command.args:
+    if command.name in ("find", "gfind") and _find_deletes(command.args):
         return f"find {' '.join(_find_starting_points(command.args))} -delete"
     return None
 
