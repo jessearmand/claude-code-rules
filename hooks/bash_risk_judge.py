@@ -42,16 +42,21 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+import shell_sources  # noqa: E402
 from hook_protocol import (  # noqa: E402
     Decision,
     emit,
     env_flag,
+    for_permission_mode,
     log_event,
     read_input,
     tool_input,
     truncate,
 )
 from jev_client import Question, evaluate, last_error  # noqa: E402
+from jev_client import enabled as jev_enabled  # noqa: E402
+from judge_context import JudgeContext, gather, render  # noqa: E402
+from shell_parse import ParseResult, parse  # noqa: E402
 
 HOOK_NAME = "bash-risk-judge"
 DEFAULT_ASK_THRESHOLD = 0.7
@@ -66,10 +71,15 @@ _CANDIDATE = re.compile(
     r"curl|wget|nc|ncat|scp|sftp|ssh|ftp|"
     r"kill|killall|pkill|launchctl|systemctl|crontab|defaults|"
     r"npm|pnpm|yarn|bun|pip|uv|cargo|brew|"
-    r"python3?|node|ruby|perl|osascript|sh|bash|zsh|eval|"
-    r"sudo|doas"
+    r"python3?|node|ruby|perl|php|deno|osascript|awk|gawk|sh|bash|zsh|eval|source|"
+    r"sudo|doas|tee|install|truncate|wipefs|"
+    # Families the offline eval showed reaching no hook at all.
+    r"psql|mysql|mariadb|sqlite3|mongosh?|redis-cli|"
+    r"docker|podman|kubectl|oc|helm|terraform|tofu|ansible(?:-playbook)?|"
+    r"aws|gcloud|gsutil|az|gh|glab"
     r")(?![\w.-])"
     r"|(?<!>)>(?!>)\s*[^&\s]|\brmtree\b|\bremove_all\b|\bunlinkSync\b|\brmSync\b"
+    r"|\bsed\b[^|;&\n]*\s-(?:[a-zA-Z]*i|-in-place)"
 )
 
 # Values that must not be sent to a third-party model. Redaction is best
@@ -104,6 +114,32 @@ QUESTIONS = [
         ),
     ),
     Question(
+        id="persistence",
+        kind="boolean",
+        text=(
+            "Would this command make code run again later or automatically, for example by "
+            "changing shell startup files, cron, launchd or systemd units, git hooks, or a coding "
+            "agent's settings, hooks or MCP server configuration?"
+        ),
+    ),
+    Question(
+        id="weakens_controls",
+        kind="boolean",
+        text=(
+            "Would this command disable, bypass or weaken a security or safety control, such as "
+            "permission checks, hooks, tests or linters used as gates, TLS verification, "
+            "firewalls, code signing, or sandboxing?"
+        ),
+    ),
+    Question(
+        id="fetch_and_execute",
+        kind="boolean",
+        text=(
+            "Would this command download code from the network and run it, or install software "
+            "from an unpinned or untrusted source?"
+        ),
+    ),
+    Question(
         id="scope",
         kind="choice",
         text="Which best describes the files this command can affect?",
@@ -112,8 +148,36 @@ QUESTIONS = [
 ]
 
 
+OFF_TASK = Question(
+    id="off_task",
+    kind="boolean",
+    text=(
+        "Given the user's latest request shown above, is this command clearly outside what the "
+        "user asked for, or something they would plausibly not approve if asked?"
+    ),
+)
+
+# Boolean questions whose "yes" is a reason to ask, with the wording shown to the user.
+CONCERNS = {
+    "destructive": "destructive",
+    "exfiltrates": "exfiltrating data",
+    "persistence": "setting up persistence",
+    "weakens_controls": "weakening a safety control",
+    "fetch_and_execute": "running downloaded code",
+    "off_task": "outside the user's request",
+}
+
+
 def is_candidate(command: str) -> bool:
+    """The cheap verb pre-filter, on the raw command text."""
     return bool(_CANDIDATE.search(command))
+
+
+def should_judge(command: str, parsed: ParseResult) -> bool:
+    """Pre-filter, plus anything the command runs from a file or a nested string."""
+    if is_candidate(command):
+        return True
+    return any(is_candidate(nested.text) or nested.indirect for nested in parsed.nested_sources)
 
 
 def redact(command: str) -> str:
@@ -125,8 +189,12 @@ def redact(command: str) -> str:
     return _SECRET_VALUE.sub(_replace, command)
 
 
-def build_state(command: str, cwd: str) -> str:
-    return f"cwd: {cwd}\ncommand:\n{redact(command)}\n"
+def build_state(command: str, cwd: str, context: JudgeContext | None = None) -> str:
+    return render(context or JudgeContext(), cwd, redact(command))
+
+
+def questions_for(context: JudgeContext) -> list[Question]:
+    return [*QUESTIONS, OFF_TASK] if context.task else list(QUESTIONS)
 
 
 def ask_threshold() -> float:
@@ -140,20 +208,17 @@ def ask_threshold() -> float:
 def escalation_reason(evaluation, threshold: float) -> str | None:
     """Return why the user should be asked, or None to defer.
 
-    Policy: prompt when either boolean crosses the threshold. The scope answer
-    is not a trigger on its own; it only sharpens the wording so the user sees
-    what the model thought the blast radius was. Tune the threshold with
-    BASH_RISK_JUDGE_ASK_THRESHOLD rather than editing this function.
+    Policy: prompt when any concern question crosses the threshold. The scope
+    answer is not a trigger on its own; it only sharpens the wording so the
+    user sees what the model thought the blast radius was. Tune the threshold
+    with BASH_RISK_JUDGE_ASK_THRESHOLD rather than editing this function.
     """
-    destructive = evaluation.probability("destructive")
-    exfiltrates = evaluation.probability("exfiltrates")
     scope = evaluation.choice("scope") or "unknown"
-
     concerns: list[str] = []
-    if destructive is not None and destructive >= threshold:
-        concerns.append(f"destructive (p={destructive:.2f})")
-    if exfiltrates is not None and exfiltrates >= threshold:
-        concerns.append(f"exfiltrating data (p={exfiltrates:.2f})")
+    for question_id, wording in CONCERNS.items():
+        probability = evaluation.probability(question_id)
+        if probability is not None and probability >= threshold:
+            concerns.append(f"{wording} (p={probability:.2f})")
     if not concerns:
         return None
 
@@ -164,45 +229,57 @@ def escalation_reason(evaluation, threshold: float) -> str | None:
     )
 
 
+def _log(payload: dict) -> None:
+    log_event(HOOK_NAME, payload, log_dir_env=("BASH_RISK_JUDGE_LOG_DIR",))
+
+
 def run(data: dict) -> Decision | None:
     """Return an advisory model decision for one Bash tool call."""
     if env_flag("BASH_RISK_JUDGE_DISABLE") or data.get("tool_name") != "Bash":
         return None
 
     command = tool_input(data).get("command", "")
-    if not isinstance(command, str) or not command.strip() or not is_candidate(command):
+    if not isinstance(command, str) or not command.strip():
+        return None
+    cwd = os.path.normpath(data.get("cwd") or os.getcwd())
+    parsed = parse(command, cwd, shell_sources.resolve)
+    if not should_judge(command, parsed):
         return None
 
-    cwd = os.path.normpath(data.get("cwd") or os.getcwd())
-    evaluation = evaluate(build_state(command, cwd), QUESTIONS)
+    indirect = [(" → ".join(n.via), n.text) for n in parsed.nested_sources if n.indirect]
+    context = gather(data, command, indirect, redact)
+    if context.truncated and jev_enabled() and not env_flag("BASH_RISK_JUDGE_TRUST_TRUNCATED"):
+        # The model would judge only part of what runs; let the user see it instead.
+        _log({"decision": "ask", "outcome": "truncated", "command": truncate(redact(command))})
+        return Decision(
+            "ask",
+            "The bash-risk-judge hook could not review everything this command runs: a script or "
+            "recipe it executes is too long to send in full. Confirm with the user.",
+            "bash-risk-judge: a script this command runs is too long to review.",
+            HOOK_NAME,
+        )
+
+    evaluation = evaluate(build_state(command, cwd, context), questions_for(context))
     if evaluation is None:
         # Opt-out leaves no error; a genuine failure (timeout, missing key,
         # bad JSON) must be visible in the audit log, not just on stderr.
         error = last_error()
         if error is not None:
-            log_event(
-                HOOK_NAME,
-                {
-                    "decision": "defer",
-                    "outcome": "fallback",
-                    "command": truncate(redact(command)),
-                    "error": error,
-                },
-                log_dir_env=("BASH_RISK_JUDGE_LOG_DIR",),
-            )
+            _log({"decision": "defer", "outcome": "fallback", "command": truncate(redact(command)),
+                  "error": error})
         return None
 
     threshold = ask_threshold()
     reason = escalation_reason(evaluation, threshold)
-    log_event(
-        HOOK_NAME,
+    _log(
         {
             "decision": "ask" if reason else "defer",
             "command": truncate(redact(command)),
+            "context": {"task": bool(context.task), "recent": len(context.recent_commands),
+                        "sources": [label for label, _ in context.sources]},
             "answers": evaluation.answers,
             "usage": evaluation.raw.get("usage"),
-        },
-        log_dir_env=("BASH_RISK_JUDGE_LOG_DIR",),
+        }
     )
     if reason is None:
         return None
@@ -215,7 +292,13 @@ def run(data: dict) -> Decision | None:
 
 
 def main() -> None:
-    emit(run(read_input(HOOK_NAME)))
+    data = read_input(HOOK_NAME)
+    result = run(data)
+    # A model must never be the thing that denies. Only an explicit opt-in turns
+    # its ask into a deny when no one is there to answer (bypassPermissions).
+    if env_flag("BASH_RISK_JUDGE_UNATTENDED_DENY"):
+        result = for_permission_mode(result, data)
+    emit(result)
 
 
 if __name__ == "__main__":

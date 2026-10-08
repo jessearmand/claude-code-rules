@@ -89,7 +89,13 @@ def _shim(directory: str, body: str) -> None:
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
-def _run(command: str, shim_body: str | None, extra_env: dict[str, str] | None = None, cwd: str = "/tmp/proj") -> dict:
+def _run(
+    command: str,
+    shim_body: str | None,
+    extra_env: dict[str, str] | None = None,
+    cwd: str = "/tmp/proj",
+    extra_payload: dict | None = None,
+) -> dict:
     with tempfile.TemporaryDirectory() as bindir:
         env = {**os.environ, "HOOK_JEV_ENABLE": "1", "AI_GATEWAY_API_KEY": "test-key", "HOOK_JEV_TIMEOUT": "2"}
         env["BASH_RISK_JUDGE_LOG_DIR"] = os.path.join(bindir, "logs")
@@ -99,10 +105,80 @@ def _run(command: str, shim_body: str | None, extra_env: dict[str, str] | None =
             _shim(bindir, shim_body)
             env["PATH"] = bindir + os.pathsep + env["PATH"]
         env.update(extra_env or {})
-        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd})
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd, **(extra_payload or {})}
+        )
         completed = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, env=env, check=False)
         assert completed.returncode == 0, completed.stderr
         return json.loads(completed.stdout)
+
+
+def _context_tests(failures: list[str]) -> None:
+    """Task context, script bodies and the extra concern questions."""
+    with tempfile.TemporaryDirectory() as work:
+        state_file, args_file = os.path.join(work, "state.txt"), os.path.join(work, "args.txt")
+        capture = f"printf '%s\\n' \"$@\" > '{args_file}'; cat > '{state_file}'; printf '%s' '{SAFE_JSON}'"
+
+        def sent() -> tuple[str, str]:
+            with open(state_file, encoding="utf-8") as state, open(args_file, encoding="utf-8") as args:
+                return state.read(), args.read()
+
+        transcript = os.path.join(work, "session.jsonl")
+        records = [
+            {"type": "user", "message": {"role": "user", "content": "Bump the version in pyproject.toml"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "git status"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "clean"}]}},
+        ]
+        with open(transcript, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(json.dumps(r) for r in records) + "\n")
+        _run("git clean -xdf", capture, cwd=work, extra_payload={"transcript_path": transcript})
+        state, args = sent()
+        if "Bump the version" not in state or "$ git status" not in state:
+            failures.append(f"task and recent commands should reach the model: {state!r}")
+        if "off_task=" not in args:
+            failures.append("off_task question should be asked when the task is known")
+
+        _run("git clean -xdf", capture, cwd=work, extra_env={"BASH_RISK_JUDGE_CONTEXT": "0"},
+             extra_payload={"transcript_path": transcript})
+        state, args = sent()
+        if "Bump the version" in state or "off_task=" in args:
+            failures.append("BASH_RISK_JUDGE_CONTEXT=0 should send the command alone")
+
+        _run("git clean -xdf", capture, cwd=work, extra_payload={"user_prompt": "token=hunter2hunter2 please"})
+        if "hunter2" in sent()[0]:
+            failures.append("the user prompt must be redacted like the command")
+
+        with open(os.path.join(work, "deploy.sh"), "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nrsync -a dist/ prod:/srv/app/\n")
+        _run("./deploy.sh", capture, cwd=work)
+        state, _ = sent()
+        if "this command executes (script ./deploy.sh)" not in state or "rsync -a dist/" not in state:
+            failures.append(f"script body should be judged: {state!r}")
+
+        marker = os.path.join(work, "called")
+        with open(os.path.join(work, "big.sh"), "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\n" + "echo filler line\n" * 900)
+        out = _run("./big.sh", f"touch '{marker}'; printf '%s' '{SAFE_JSON}'", cwd=work)
+        if _decision(out) != "ask" or os.path.exists(marker):
+            failures.append(f"a script too long to send should ask without a model call, got {out}")
+
+    for question_id, wording in (("persistence", "persistence"), ("weakens_controls", "safety control"),
+                                 ("fetch_and_execute", "downloaded code"), ("off_task", "outside")):
+        verdict = json.dumps({"answers": {question_id: {"probability": 0.9}}})
+        out = _run("crontab -e", f"cat >/dev/null; printf '%s' '{verdict}'")
+        reason = out.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        if _decision(out) != "ask" or wording not in reason:
+            failures.append(f"{question_id} >= threshold should ask naming it, got {out}")
+
+    out = _run("crontab -e", f"cat >/dev/null; printf '%s' '{SUCCESS_JSON}'",
+               extra_payload={"permission_mode": "bypassPermissions"})
+    if _decision(out) != "ask":
+        failures.append("the model's ask must stay an ask by default, even when unattended")
+    out = _run("crontab -e", f"cat >/dev/null; printf '%s' '{SUCCESS_JSON}'",
+               {"BASH_RISK_JUDGE_UNATTENDED_DENY": "1"}, extra_payload={"permission_mode": "bypassPermissions"})
+    if _decision(out) != "deny":
+        failures.append("BASH_RISK_JUDGE_UNATTENDED_DENY=1 should turn an unattended ask into deny")
 
 
 def _decision(output: dict) -> str | None:
@@ -256,6 +332,8 @@ def main() -> None:
     completed = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, check=False)
     if json.loads(completed.stdout) != {}:
         failures.append("non-Bash tool should defer")
+
+    _context_tests(failures)
 
     if failures:
         print("FAILURES:")

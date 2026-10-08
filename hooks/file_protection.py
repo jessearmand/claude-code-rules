@@ -48,6 +48,7 @@ from hook_protocol import (  # noqa: E402
     action_verb,
     emit,
     env_flag,
+    for_permission_mode,
     log_event,
     paths_from,
     read_input,
@@ -229,7 +230,8 @@ def run(data: dict) -> Decision | None:
 
 
 def main() -> None:
-    emit(run(read_input(HOOK_NAME)))
+    data = read_input(HOOK_NAME)
+    emit(for_permission_mode(run(data), data))
 
 
 if __name__ == "__main__":

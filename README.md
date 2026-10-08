@@ -28,6 +28,13 @@ The repository implements Claude Code's hook system for validating and enhancing
 - **file_protection.py** (PreToolUse): Prevents modification of sensitive files:
   - Blocks editing of `.env`, lock files (`package-lock.json`, `Package.resolved`, `bun.lock`, `Cargo.lock`), and `.git/` directory contents
 
+- **rm_rf_guard.py**, **dangerous_commands.py**, **secrets_guard.py**, **config_guard.py** (PreToolUse): the deterministic guards. They own every `deny`:
+  - `rm_rf_guard` denies any recursive forced `rm`. `dangerous_commands` covers destructive git (reset --hard, force push, clean -f, branch -D, ...), downloads piped into a shell, disk writes, `chmod -R 777`, crontab, package publishing, `find -delete`, cloud/Kubernetes/database deletes, and switching off security controls. `secrets_guard` blocks reading or exfiltrating credentials. `config_guard` stops the agent editing its own settings, hooks, MCP servers, other harnesses' config, and persistence locations (shell rc files, git hooks, launchd, cron).
+  - All four parse the command with a shared bash-subset parser (`shell_lexer.py`, `shell_parse.py`), so newlines, `sudo -u x`, `timeout 5`, `bash -c`, `eval`, `ssh host '...'`, `$(...)`, heredocs fed to a shell and interpreter one-liners such as `python -c "os.system(...)"` cannot hide a command. `shell_sources.py` also reads what a command runs from disk (shell scripts, `npm run` scripts, Makefile recipes); a match found only there asks instead of denying.
+  - Under `bypassPermissions` or `dontAsk`, where nobody can answer, their `ask` becomes `deny` (`HOOK_UNATTENDED_KEEP_ASK=1` opts out).
+  - Each has `*_DISABLE` and `*_ASK` switches, documented at the top of the script.
+  - `config_guard` asks (rather than denies) before writes into the directory the running hooks load from, the target of `~/.claude/hooks`, so developing these hooks with an agent prompts on each edit. `CONFIG_GUARD_LIVE_DIRS` adds other live checkouts.
+
 - **bash_risk_judge.py** (PreToolUse, opt-in): Model-assisted second opinion for Bash commands the regex guards do not enumerate (`git clean -xdf`, `find -delete`, `shutil.rmtree`, `curl -d @file`, ...). Asks TypeSafe's Jev evaluation model typed questions through `ai evaluate` (vercel-labs/ai-cli 0.5+) and escalates to an `ask` prompt when P(destructive) or P(exfiltrates) crosses a threshold. It can only escalate, never allow or deny, and every failure path (CLI missing, old `ai` without `evaluate`, no key, timeout, bad JSON) defers to the normal permission flow, so with `HOOK_JEV_ENABLE` unset it is a no-op. Credentials come from `AI_GATEWAY_API_KEY` in the environment or, failing that, `fnox exec` (optionally pointed at `HOOK_JEV_FNOX_CONFIG`). A verb pre-filter keeps most commands off the network and secret-looking values are redacted before anything is sent. Shared plumbing lives in `jev_client.py`. See [Jev-augmented hooks](#jev-augmented-hooks).
 - **marimo-check.sh** (PostToolUse): Automatically runs `uvx marimo check` after any Edit or Write operation on marimo notebooks. Blocks the tool if checks fail, prompting Claude to fix the issues. Located at `skills/marimo-check/scripts/marimo-check.sh` (co-located with the marimo-check skill for maintainability). See [Marimo Check: Hook vs Skill](#marimo-check-hook-vs-skill) for details.
 
@@ -198,6 +205,7 @@ All plugins are defined and maintained locally in this repository, making it eas
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/rm_rf_guard.py", "timeout": 10 },
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/dangerous_commands.py", "timeout": 10 },
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/bash_command_validator.py" },
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/bash_risk_judge.py", "timeout": 10 }
         ]
@@ -206,6 +214,12 @@ All plugins are defined and maintained locally in this repository, making it eas
         "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob|Bash",
         "hooks": [
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/secrets_guard.py", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/config_guard.py", "timeout": 10 }
         ]
       },
       {
@@ -234,6 +248,7 @@ Wire the hooks in one place only, normally `~/.claude/settings.json`. Claude Cod
 ```
 
 - `HOOK_JEV_FNOX_CONFIG` is needed whenever `AI_GATEWAY_API_KEY` is not exported. Without it `fnox` searches upward from the session's working directory, so the key is only found in projects under the directory holding `fnox.toml`, and the hook silently defers everywhere else.
+- Context: the model sees the user's latest prompt and the agent's last few commands (read from the session transcript), plus the body of any script, `npm run` script or Makefile recipe the command executes, all redacted and size-bounded. It is asked about destruction, exfiltration, persistence, weakened controls, fetch-and-execute, and (when the prompt is known) whether the command is off task. Set `BASH_RISK_JUDGE_CONTEXT=0` to send the command alone. A script too long to send in full asks instead.
 - The default threshold is 0.7. The hook sends the working directory and asks about scope along with the command, and Jev discounts commands confined to the working directory: `git clean -xdf` scores about 0.56 through the hook against 0.93 for a bare "is this destructive?". Use 0.5 to be prompted for that class of command. Scores for each call are in `~/.claude/hooks-logs/`.
 
 The marimo check is a PostToolUse hook and is not part of the template. Add it if you work with marimo notebooks:

@@ -39,6 +39,42 @@ SHOULD_BLOCK = [
     "rm -rf $PROJECT/dist",
     "rm -rf ~/Library/Caches/foo",
     "test -d out && rm -rf out || echo skipped",
+    # Newlines separate commands; shlex used to read this as one `echo`.
+    "echo hi\nrm -rf build",
+    "git status\n  rm -rf ~",
+    # `#` only starts a comment at the start of a word.
+    "echo a#b; rm -rf build",
+    # Wrappers whose options take an argument.
+    "sudo -u root rm -rf /",
+    "sudo -Eu root rm -rf /",
+    "timeout 5 rm -rf build",
+    "nice -n 5 rm -rf build",
+    "xargs -I{} rm -rf {}",
+    "busybox rm -rf build",
+    "mise exec -- rm -rf build",
+    # Strings a shell parses again.
+    "bash -c 'rm -rf ~'",
+    "zsh -c 'rm -rf ~'",
+    "sudo sh -c 'rm -rf /'",
+    "bash -lc \"eval 'rm -rf ~'\"",
+    "eval 'rm -rf ~'",
+    "env -S 'rm -rf build'",
+    "su -c 'rm -rf /' root",
+    "ssh -p 22 host 'rm -rf /srv'",
+    "watch -n 1 rm -rf build",
+    "flock /tmp/lock -c 'rm -rf build'",
+    "echo 'rm -rf ~' | bash",
+    "bash <<'EOF'\nrm -rf ~\nEOF",
+    "bash <<< 'rm -rf build'",
+    # Command substitution runs its body.
+    "`rm -rf build`",
+    "echo \"$(rm -rf build)\"",
+    "cat <<EOF\n$(rm -rf build)\nEOF",
+    # Computed command names.
+    "X=rm; $X -rf ~",
+    "$(which rm) -rf build",
+    "f(){ rm -rf ~; }; f",
+    "$'\\x72m' -rf build",
 ]
 
 SHOULD_ALLOW = [
@@ -57,6 +93,12 @@ SHOULD_ALLOW = [
     "rm -rd build",
     "rm -- -rf",
     "printf '%s' 'rm -rf build'",
+    "cat <<EOF\nrm -rf build\nEOF",
+    "cat <<'EOF'\n$(rm -rf build)\nEOF",
+    "git commit -m 'drop rm -rf build from the docs'",
+    "command -v rm",
+    "ssh host",
+    "$GREP -rf patterns.txt src/",
 ]
 
 
@@ -74,9 +116,17 @@ def _run_hook(command: str, cwd: str = _REPO_ROOT) -> dict | None:
         [sys.executable, _GUARD], input=payload, capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, f"unexpected exit {result.returncode}: {result.stderr}"
-    if not result.stdout.strip():
-        return None
-    return json.loads(result.stdout)
+    payload = json.loads(result.stdout) if result.stdout.strip() else {}
+    return payload or None
+
+
+def _decision(payload: dict | None) -> str | None:
+    return payload["hookSpecificOutput"]["permissionDecision"] if payload else None
+
+
+def _write(directory: str, name: str, text: str) -> None:
+    with open(os.path.join(directory, name), "w", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 def _check(condition: bool, label: str, failures: list[str]) -> None:
@@ -158,8 +208,8 @@ def main() -> int:
         "denial reason suggests rm / rm -r",
         failures,
     )
-    _check(_run_hook("rm -r build") is None, "rm -r build -> defer (no output)", failures)
-    _check(_run_hook("ls -la") is None, "ls -la -> defer (no output)", failures)
+    _check(_run_hook("rm -r build") is None, "rm -r build -> defer", failures)
+    _check(_run_hook("ls -la") is None, "ls -la -> defer", failures)
 
     result = subprocess.run(
         [sys.executable, _GUARD],
@@ -169,10 +219,25 @@ def main() -> int:
         check=False,
     )
     _check(
-        result.returncode == 0 and not result.stdout.strip(),
+        result.returncode == 0 and json.loads(result.stdout or "{}") == {},
         "non-Bash tool -> defer",
         failures,
     )
+
+    print("\nCommands run from files the agent did not type here -> ask:")
+    with tempfile.TemporaryDirectory() as project:
+        _write(project, "clean.sh", "#!/usr/bin/env bash\nset -e\nrm -rf ~/stuff\n")
+        _write(project, "notes.txt", "rm -rf ~\n")
+        _write(project, "package.json", json.dumps({"scripts": {"prebuild": "rm -rf dist", "build": "tsc"}}))
+        _write(project, "Makefile", "all: build\nbuild: clean\n\t@echo built\nclean:\n\t-rm -rf out\n")
+        for command in ("./clean.sh", "bash clean.sh", "source clean.sh", "npm run build", "make", "make clean"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == "ask", f"{command} -> {decision}", failures)
+        for command in ("cat notes.txt", "./notes.txt", "npm run lint"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision is None, f"{command} -> {decision}", failures)
+        decision = _decision(_run_hook("./clean.sh && rm -rf build", project))
+        _check(decision == "deny", f"typed rm -rf beside a script still denies -> {decision}", failures)
 
     print()
     if failures:

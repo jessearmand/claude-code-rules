@@ -48,6 +48,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+import shell_sources  # noqa: E402
 from hook_protocol import (  # noqa: E402
     READ_TOOLS,
     WRITE_TOOLS,
@@ -55,6 +56,7 @@ from hook_protocol import (  # noqa: E402
     action_verb,
     emit,
     env_flag,
+    for_permission_mode,
     log_event,
     paths_from,
     read_input,
@@ -73,6 +75,7 @@ from secrets_guard_rules import (  # noqa: E402
     CommandRule,
     FileRule,
 )
+from shell_parse import parse  # noqa: E402
 
 HOOK_NAME = "secrets-guard"
 
@@ -166,8 +169,7 @@ def _neutralize(command: str) -> str:
     return "\n".join(kept)
 
 
-def check_command(command: str, threshold: str) -> CommandRule | None:
-    """Return the first rule that forbids running `command`."""
+def _match_text(command: str, threshold: str) -> CommandRule | None:
     if not command:
         return None
     candidate = _neutralize(command)
@@ -179,19 +181,54 @@ def check_command(command: str, threshold: str) -> CommandRule | None:
     return None
 
 
+def find_command_rule(
+    command: str, threshold: str, cwd: str = ""
+) -> tuple[CommandRule, str, bool] | None:
+    """(rule, matched text, indirect) for the first secret access `command` performs.
+
+    Beyond the command text itself, every string a shell would parse again is
+    checked: `bash -c '...'`, `eval`, `ssh host '...'`, heredocs fed to a
+    shell, interpreter one-liners that call a shell. Program text from files
+    the command runs (scripts, package.json scripts, Makefile recipes) is
+    checked too and reported as indirect.
+    """
+    rule = _match_text(command, threshold)
+    if rule:
+        return rule, command, False
+    if not command:
+        return None
+    indirect_hit: tuple[CommandRule, str, bool] | None = None
+    for nested in parse(command, cwd or os.getcwd(), shell_sources.resolve).nested_sources:
+        rule = _match_text(nested.text, threshold)
+        if rule is None:
+            continue
+        if not nested.indirect:
+            return rule, nested.text, False
+        indirect_hit = indirect_hit or (rule, nested.text, True)
+    return indirect_hit
+
+
+def check_command(command: str, threshold: str, cwd: str = "") -> CommandRule | None:
+    """Return the first rule that forbids running `command` as typed."""
+    found = find_command_rule(command, threshold, cwd)
+    return found[0] if found and not found[2] else None
+
+
 def evaluate(
-    tool_name: str, inputs: dict, threshold: str
-) -> tuple[FileRule | CommandRule, str] | None:
-    """Match a tool call against the rules. Returns (rule, target) or None."""
+    tool_name: str, inputs: dict, threshold: str, cwd: str = ""
+) -> tuple[FileRule | CommandRule, str, bool] | None:
+    """Match a tool call against the rules. Returns (rule, target, indirect) or None."""
     if tool_name == "Bash":
         command = inputs.get("command", "")
-        rule = check_command(command, threshold)
-        return (rule, command) if rule else None
+        if not isinstance(command, str):
+            return None
+        found = find_command_rule(command, threshold, cwd)
+        return (found[0], command, found[2]) if found else None
 
     for path in paths_from(inputs):
         rule = check_path(path, threshold)
         if rule:
-            return rule, path
+            return rule, path, False
     return None
 
 
@@ -228,12 +265,14 @@ def run(data: dict) -> Decision | None:
         return None
 
     threshold = safety_level()
-    finding = evaluate(tool_name, tool_input(data), threshold)
+    cwd = os.path.normpath(data.get("cwd") or os.getcwd())
+    finding = evaluate(tool_name, tool_input(data), threshold, cwd)
     if not finding:
         return None
 
-    rule, target = finding
-    decision = "ask" if asks_for(rule.level) else "deny"
+    rule, target, indirect = finding
+    # Found only in a file the command runs: the user decides, as with the other guards.
+    decision = "ask" if indirect or asks_for(rule.level) else "deny"
     log_event(
         HOOK_NAME,
         {
@@ -243,6 +282,7 @@ def run(data: dict) -> Decision | None:
             "tool": tool_name,
             "target": target[:200],
             "threshold": threshold,
+            "indirect": indirect,
             "session_id": data.get("session_id"),
             "cwd": data.get("cwd"),
             "permission_mode": data.get("permission_mode"),
@@ -260,7 +300,7 @@ def run(data: dict) -> Decision | None:
 def main() -> None:
     data = read_input(HOOK_NAME)
     try:
-        emit(run(data))
+        emit(for_permission_mode(run(data), data))
     except re.error as error:  # a malformed rule must not block real work
         log_event(
             HOOK_NAME,

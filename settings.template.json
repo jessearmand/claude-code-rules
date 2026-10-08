@@ -27,6 +27,11 @@
           },
           {
             "type": "command",
+            "command": "python3 ${HOME}/.claude/hooks/dangerous_commands.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "python3 ${HOME}/.claude/hooks/bash_command_validator.py"
           },
           {
@@ -42,6 +47,16 @@
           {
             "type": "command",
             "command": "python3 ${HOME}/.claude/hooks/secrets_guard.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${HOME}/.claude/hooks/config_guard.py",
             "timeout": 10
           }
         ]

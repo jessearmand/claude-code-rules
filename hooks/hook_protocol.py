@@ -104,6 +104,32 @@ def decide(decision: str, reason: str, system_message: str | None = None) -> Non
     sys.stdout.write("\n")
 
 
+# Permission modes in which nobody is there to answer an `ask`. Claude Code
+# already denies an unanswered ask under dontAsk and in `-p` runs; under
+# bypassPermissions the docs do not say, so the guards decide explicitly.
+UNATTENDED_MODES = frozenset({"bypassPermissions", "dontAsk"})
+
+
+def for_permission_mode(result: Decision | None, data: dict) -> Decision | None:
+    """Turn a deterministic guard's `ask` into `deny` when no one can be asked.
+
+    Only tightens: a deny stays a deny and a deferral stays a deferral. Set
+    HOOK_UNATTENDED_KEEP_ASK=1 to leave asks unchanged.
+    """
+    if result is None or result.decision != "ask" or env_flag("HOOK_UNATTENDED_KEEP_ASK"):
+        return result
+    mode = data.get("permission_mode")
+    if mode not in UNATTENDED_MODES:
+        return result
+    return Decision(
+        "deny",
+        f"{result.reason}\n\n[{result.hook or 'guard'}] Permission mode is {mode}, so no one can "
+        "confirm this. It is denied instead; ask the user to run it or to switch modes.",
+        result.system_message,
+        result.hook,
+    )
+
+
 def emit(result: Decision | None) -> None:
     """Emit a hook result using the Claude Code decision protocol."""
     if result is None:

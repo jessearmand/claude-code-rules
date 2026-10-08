@@ -29,6 +29,14 @@ _GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "secrets_guard
 
 # (path, expected rule_id or None) at the default "high" level
 PATH_CASES = [
+    # --- coding-agent and CLI login tokens ---
+    ("~/.claude/.credentials.json", "agent-credentials"),
+    ("/Users/me/.codex/auth.json", "agent-credentials"),
+    ("~/.pi/agent/auth.json", "agent-credentials"),
+    ("~/.local/share/opencode/auth.json", "agent-credentials"),
+    ("~/.config/gh/hosts.yml", "agent-credentials"),
+    ("~/.git-credentials", "agent-credentials"),
+    ("src/auth.json", None),
     # --- from read_env_protection_hook.py ---
     (".env", "env-file"),
     (".env.local", "env-file"),
@@ -210,6 +218,17 @@ COMMAND_CASES = [
     ("grep -r password src/", None),
     ("base64 .env", None),
     ("history | grep ssh", None),
+    # --- coding-agent tokens ---
+    ("cat ~/.codex/auth.json", "read-agent-credentials"),
+    ("jq -r .accessToken ~/.claude/.credentials.json", "read-agent-credentials"),
+    ("ls ~/.codex", None),
+    # --- strings a shell parses again ---
+    ("bash -c 'cat .env'", "read-env"),
+    ("eval 'cat .env'", "read-env"),
+    ("ssh host 'cat .env'", "read-env"),
+    ("echo 'cat .env' | sh", "read-env"),
+    ("python3 -c \"import os; os.system('cat ~/.ssh/id_rsa')\"", "read-private-key"),
+    ("cat <<'EOF' > notes.md\ncat .env\nEOF", None),
 ]
 
 LEVEL_COMMAND_CASES = [
