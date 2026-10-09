@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 DEFAULT_LOG_DIR = os.path.join(os.path.expanduser("~"), ".claude", "hooks-logs")
 
 # Tool inputs that can carry a path, across every tool these hooks match.
-PATH_KEYS = ("file_path", "notebook_path", "path", "filePath")
+PATH_KEYS = ("file_path", "notebook_path", "path", "filePath", "file")
 
 WRITE_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
 READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
