@@ -29,6 +29,9 @@ CASES = [
     ("git checkout -- src/app.py", "deny", "git-checkout-discard"),
     ("git checkout .", "deny", "git-checkout-discard"),
     ("git checkout -f main", "deny", "git-checkout-discard"),
+    ("git checkout -f -b next", "deny", "git-checkout-discard"),  # force with a new branch (PR review)
+    ("git checkout -b next", None, None),
+    ("git checkout -bfeature", None, None),  # the rest of the cluster is the branch name
     ("git checkout main", None, None),
     ("git checkout -b feature/x", None, None),
     ("git switch --discard-changes main", "deny", "git-switch-discard"),
@@ -123,6 +126,10 @@ CASES = [
     ("kubectl get pods -A", None, None),
     ("docker system prune -af --volumes", "deny", "docker-prune-volumes"),
     ("docker volume rm data", "deny", "docker-prune-volumes"),
+    ("docker compose down -v", "deny", "docker-prune-volumes"),  # Compose deletes its volumes (PR review)
+    ("docker-compose -f prod.yml down --volumes", "deny", "docker-prune-volumes"),
+    ("docker compose down", None, None),
+    ("docker compose -f prod.yml down -v", "deny", "docker-prune-volumes"),
     ("docker ps", None, None),
     ("psql -c 'DROP DATABASE prod'", "deny", "sql-destructive"),
     ("psql postgres://db <<'SQL'\nTRUNCATE users;\nSQL", "deny", "sql-destructive"),

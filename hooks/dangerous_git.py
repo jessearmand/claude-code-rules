@@ -181,10 +181,11 @@ _CHECKOUT_WITH_VALUE = frozenset({"--conflict", "--inter-hunk-context", "--unifi
 @_git("checkout")
 def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
     args = git.args
+    # In `-bfeature` the rest of the cluster is the branch name, not flags.
+    if short_flag(args, "f", with_value="UbB") or long_flag(args, "--force"):
+        return "git checkout --force"  # discards local changes, new branch or not
     if short_flag(args, "bB", with_value="U") or long_flag(args, "--orphan"):
         return None  # creates a branch: nothing is discarded
-    if short_flag(args, "f", with_value="U") or long_flag(args, "--force"):
-        return "git checkout --force"
     if long_flag(args, "--pathspec-from-file"):
         return "git checkout --pathspec-from-file"
     if "--" in args:

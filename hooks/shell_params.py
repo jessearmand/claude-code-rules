@@ -74,19 +74,44 @@ def _first_match(value: str, pattern: str, start: int) -> tuple[int, int] | None
     return None
 
 
+def _substituted(replacement: str, matched: str) -> str:
+    """bash 5.2's `patsub_replacement` (on by default): an unescaped, unquoted `&`
+    in the replacement stands for the matched text; `\\&` and `'&'` are a literal `&`."""
+    out, index = [], 0
+    while index < len(replacement):
+        char = replacement[index]
+        if char in "'\"":
+            # Quoted text is literal, `&` included; the quotes are removed.
+            close = replacement.find(char, index + 1)
+            if close < 0:
+                close = len(replacement)
+            out.append(replacement[index + 1:close])
+            index = close + 1
+        elif replacement.startswith("\\&", index):
+            out.append("&")
+            index += 2
+        elif char == "&":
+            out.append(matched)
+            index += 1
+        else:
+            out.append(replacement[index])
+            index += 1
+    return "".join(out)
+
+
 def _replace(every: bool):
     def replace(value: str, spec: str) -> str:
         pattern, _, replacement = spec.partition("/")
         if pattern.startswith("#"):
             matched = _anchored(value, pattern[1:], at_start=True)
-            return value if matched is None else replacement + value[len(matched):]
+            return value if matched is None else _substituted(replacement, matched) + value[len(matched):]
         if pattern.startswith("%"):
             matched = _anchored(value, pattern[1:], at_start=False)
-            return value if matched is None else value[:len(value) - len(matched)] + replacement
+            return value if matched is None else value[:len(value) - len(matched)] + _substituted(replacement, matched)
         out, index = [], 0
         while (found := _first_match(value, pattern, index)) is not None:
             left, right = found
-            out += [value[index:left], replacement]
+            out += [value[index:left], _substituted(replacement, value[left:right])]
             index = right
             if not every:
                 break

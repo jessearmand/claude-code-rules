@@ -208,13 +208,30 @@ def _kubectl_delete(command: SimpleCommand, ctx: RuleContext) -> str | None:
 
 
 def _docker_prune(command: SimpleCommand, ctx: RuleContext) -> str | None:
+    if command.name in ("docker-compose", "podman-compose"):
+        return _compose_down_volumes(command.name, command.args)
     if command.name not in ("docker", "podman"):
         return None
     words = positional_words(command)
+    if words[:1] == ["compose"]:
+        return _compose_down_volumes(f"{command.name} compose", command.args[command.args.index("compose") + 1:])
     if words[:2] == ["system", "prune"] and (short_flag(command.args, "a") or long_flag(command.args, "--all", "--volumes")):
         return f"{command.name} system prune --all/--volumes"
     if words[:1] == ["volume"] and len(words) > 1 and words[1] in ("rm", "prune", "remove"):
         return f"{command.name} volume {words[1]}"
+    return None
+
+
+# Compose options before the subcommand that take a value (`-f prod.yml down`).
+_COMPOSE_WITH_VALUE = frozenset({"-f", "--file", "-p", "--project-name", "--project-directory",
+                                 "--env-file", "--profile", "--ansi", "--progress", "--parallel"})
+
+
+def _compose_down_volumes(name: str, args: tuple[str, ...]) -> str | None:
+    """`docker compose down -v` / `--volumes` deletes the project's volumes."""
+    if operands(args, _COMPOSE_WITH_VALUE)[:1] == ["down"] and (
+            short_flag(args, "v") or long_flag(args, "--volumes")):
+        return f"{name} down --volumes"
     return None
 
 

@@ -94,6 +94,10 @@ _SECRET_VALUE = re.compile(
     r"|(\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"
 )
 
+# A PEM/OpenSSH/PGP private key block, or one cut off before its END line.
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----.*?(?:-----END \1-----|\Z)", re.DOTALL)
+
 QUESTIONS = [
     Question(
         id="destructive",
@@ -186,7 +190,7 @@ def redact(command: str) -> str:
             return f"{match.group(1)}<redacted>"
         return "<redacted>"
 
-    return _SECRET_VALUE.sub(_replace, command)
+    return _SECRET_VALUE.sub(_replace, _PRIVATE_KEY.sub("<redacted private key>", command))
 
 
 def build_state(command: str, cwd: str, context: JudgeContext | None = None) -> str:

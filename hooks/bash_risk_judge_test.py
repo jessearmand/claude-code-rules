@@ -42,6 +42,10 @@ NON_CANDIDATES = [
 REDACTIONS = [
     ("curl -H 'Authorization: Bearer abc.def-123' x", "curl -H 'Authorization: Bearer <redacted>' x"),
     ("export API_KEY=supersecretvalue123", "export API_KEY=<redacted>"),
+    # Private key blocks, whole or cut off by the source budget (PR review).
+    ("KEY='-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----'; echo ok",
+     "KEY='<redacted private key>'; echo ok"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA", "<redacted private key>"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),
     # References and substitutions are not literals. Redacting them used to turn
