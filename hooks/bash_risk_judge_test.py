@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bash_risk_judge import is_candidate, redact  # noqa: E402
 
-_FAKE_PASSWORD = "not-a-" + "real-password"
+_PLACEHOLDER = "z" * 12  # stands in for the secret half of a credential
 
 _HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bash_risk_judge.py")
 
@@ -49,10 +49,10 @@ REDACTIONS = [
      "KEY='<redacted private key>'; echo ok"),
     ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA", "<redacted private key>"),
     # Basic-auth credentials (PR review).
-    # The fake password is assembled at run time so secret scanners do not flag the fixture.
-    (f"curl -u alice:{_FAKE_PASSWORD} https://example.com", "curl -u alice:<redacted> https://example.com"),
-    (f"curl https://alice:{_FAKE_PASSWORD}@example.com/x", "curl https://alice:<redacted>@example.com/x"),
-    (f"curl --user=bob:{_FAKE_PASSWORD} x", "curl --user=bob:<redacted> x"),
+    # The secret half is built at run time so secret scanners do not flag the fixture.
+    (f"curl -u alice:{_PLACEHOLDER} https://example.com", "curl -u alice:<redacted> https://example.com"),
+    (f"curl https://alice:{_PLACEHOLDER}@example.com/x", "curl https://alice:<redacted>@example.com/x"),
+    (f"curl --user=bob:{_PLACEHOLDER} x", "curl --user=bob:<redacted> x"),
     ("ssh user@host", "ssh user@host"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),
