@@ -138,6 +138,10 @@ CASES = [
     ("sudo -u deploy git push --force", "deny", "git-push-force"),
     ("bash -c 'git reset --hard'", "deny", "git-reset-hard"),
     ("ssh prod 'kubectl delete ns prod'", "deny", "kubectl-delete-broad"),
+    # A program name that is decoded text (PR review); an ordinary $(...) head passes.
+    ("$(base64 -d <<< cm0=) -rf victim", "deny", "decode-and-execute"),
+    ("`xxd -r -p <<< 726d` -rf victim", "deny", "decode-and-execute"),
+    ("$(which python) app.py", None, None),
     # A script produced by a command whose output is unknown asks (PR review).
     ("source <(base64 -d <<< cm0gLXJmIHZpY3RpbQ==)", "ask", "incomplete-analysis"),
     # `${X:-$(cmd)}` runs cmd only when X is unset/empty: a branch certainly not taken asks.

@@ -29,7 +29,7 @@ from danger_rule import (
     short_flag,
 )
 from shell_interpreters import interpreter_kind
-from shell_parse import SimpleCommand
+from shell_parse import SimpleCommand, parse
 from shell_wrappers import SHELLS, STDIN_PATHS, shell_invocation
 from shell_writes import WRITE, written_paths
 
@@ -207,15 +207,25 @@ def _incomplete_analysis(command: SimpleCommand, ctx: RuleContext) -> str | None
 
 
 def _decode_and_execute(command: SimpleCommand, ctx: RuleContext) -> str | None:
+    if command.dynamic_head and command.argv:
+        # `$(base64 -d <<< cm0=) -rf x`: the program to run is decoded text.
+        body = re.fullmatch(r"\$\((.*)\)|`(.*)`", command.argv[0], re.DOTALL)
+        if body:
+            for source in parse(next(g for g in body.groups() if g is not None), "/").commands:
+                if _decodes(source):
+                    return f"$({source.name} (decode) ...) as the command"
     if not _executes_stdin(command):
         return None
     for source in _pipeline_sources(command, ctx):
-        decodes = source.name in _DECODERS and (
-            short_flag(source.args, "dDr") or long_flag(source.args, "--decode") or
-            source.name in ("uudecode", "gunzip", "zcat", "rev"))
-        if decodes:
+        if _decodes(source):
             return f"{source.name} (decode) ... | {command.name}"
     return None
+
+
+def _decodes(source: SimpleCommand) -> bool:
+    return source.name in _DECODERS and (
+        short_flag(source.args, "dDr") or long_flag(source.args, "--decode") or
+        source.name in ("uudecode", "gunzip", "zcat", "rev"))
 
 
 # --------------------------------------------------------------------------- #
