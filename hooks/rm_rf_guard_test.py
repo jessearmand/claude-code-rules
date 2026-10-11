@@ -110,6 +110,7 @@ SHOULD_BLOCK = [
     # Every possible value is kept; background commands are subshells (PR review).
     "X=rm; " + "; ".join(f"true || X=echo{i}" for i in range(10)) + "; $X -rf victim",
     "X=rm; X=echo & $X -rf victim",
+    "X=CMD; CMD=rm; ${!X} -rf victim",  # indirect expansion (PR review)
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",
@@ -245,6 +246,12 @@ def main() -> int:
         )
 
     print("\nEnd-to-end hook protocol:")
+    # Too many possible values to pair every one: the `rm` asks (PR review).
+    overflow = ("A=rm; B=-rf; " + "; ".join(f"true || A=a{i}" for i in range(8)) + "; "
+                + "; ".join(f"true || B=b{i}" for i in range(7)) + "; $A $B victim")
+    asked = _run_hook(overflow)
+    _check(asked is not None and asked["hookSpecificOutput"]["permissionDecision"] == "ask",
+           "rm with uncheckable argument combinations -> ask", failures)
     denied = _run_hook("rm -rf build")
     _check(
         denied is not None

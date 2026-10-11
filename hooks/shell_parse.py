@@ -63,7 +63,7 @@ _AND_OR = frozenset({"&&", "||"})
 # Reserved words that open and close a compound command whose body may not run.
 _BLOCK_OPENERS = frozenset({"if", "while", "until", "for", "select", "case", "{"})
 _BLOCK_CLOSERS = frozenset({"fi", "done", "esac", "}"})
-_MAX_VARIANTS = 8
+_MAX_VARIANTS = 64
 _MAX_BRACE_WORDS = 64
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
@@ -313,7 +313,9 @@ def _variable_choices(tokens: list, ctx: _Context) -> list[dict[str, str]]:
     if prod(len(values) for values in options) <= _MAX_VARIANTS:
         return [dict(zip(names, values, strict=True)) for values in itertools.product(*options)]
     # Too many combinations: still give every value of every variable one turn,
-    # so no possible value goes unchecked.
+    # so no possible value goes unchecked, and mark the parse incomplete because
+    # pairings across variables are not all covered.
+    ctx.result.truncated = True
     longest = max(len(values) for values in options)
     return [{name: values[index % len(values)] for name, values in zip(names, options, strict=True)}
             for index in range(longest)]
@@ -516,6 +518,11 @@ def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | 
                    at_start: bool) -> str:
     if _NAME.fullmatch(body):
         found = value(body, at_start)
+        return original if found is None else found
+    if body.startswith("!") and _NAME.fullmatch(body[1:]):
+        # `${!X}`: the value of the variable whose name X holds.
+        target = value(body[1:], False)
+        found = value(target, False) if target and _NAME.fullmatch(target) else None
         return original if found is None else found
     if body.startswith("#") and _NAME.fullmatch(body[1:]):
         found = value(body[1:], False)
@@ -769,14 +776,26 @@ def _unwrap_once(name: str, argv: list[str], ctx: _Context, via: tuple[str, ...]
 
 def _unwrap_env(args: list[str], ctx: _Context, via: tuple[str, ...], depth: int,
                 indirect: bool) -> tuple[list[str] | None, str, str | None]:
-    chdir = option_value(args, PREFIX_WRAPPERS["env"].chdir_options)
-    for index, arg in enumerate(args):
+    spec = PREFIX_WRAPPERS["env"]
+    chdir = option_value(args, spec.chdir_options)
+    index = 0
+    while index < len(args):
+        arg = args[index]
         split = _split_string_value(args, index, ("-S", "--split-string"))
         if split is not None:
-            _parse_into(split, ctx, (*via, "env -S"), depth + 1, indirect)
-            return None, "env", chdir
-        if not arg.startswith("-"):
+            # `env -C dir -S "cmd"`: the split command runs in dir.
+            saved = (ctx.cwd, ctx.cwd_options)
+            if chdir is not None:
+                ctx.cwd = _change_directory(ctx.cwd, chdir)
+                ctx.cwd_options = tuple(dict.fromkeys(_change_directory(o, chdir) for o in ctx.cwd_options))
+            try:
+                _parse_into(split, ctx, (*via, "env -S"), depth + 1, indirect)
+            finally:
+                ctx.cwd, ctx.cwd_options = saved
+            return None, "env", None
+        if arg == "--" or not arg.startswith("-"):
             break
+        index += 2 if arg in spec.with_arg else 1
     inner = _skip_options(args, PREFIX_WRAPPERS["env"])
     return (inner or None), "env", chdir
 

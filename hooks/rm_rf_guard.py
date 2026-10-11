@@ -115,6 +115,9 @@ class RmInvocation:
     indirect: bool = False
     # Directory it runs in after any earlier `cd`; None when that is computed.
     cwd: str | None = None
+    # An `rm` whose arguments the parser could not fully work out (the parse
+    # was cut short): it may be recursive and forced.
+    uncertain: bool = False
 
     @property
     def is_recursive_force(self) -> bool:
@@ -207,6 +210,12 @@ def find_recursive_force_invocations(
     incomplete = parsed.unparseable or parsed.truncated
     if not invocations and incomplete and _UNPARSEABLE_FALLBACK.search(command):
         return [RmInvocation(recursive=True, force=True)], True
+    if not invocations and parsed.truncated:
+        for simple in parsed.commands:
+            if _is_rm(simple):
+                invocation = _parse_rm_arguments(list(simple.args))
+                invocation.origin, invocation.cwd, invocation.uncertain = simple.origin(), simple.cwd, True
+                return [invocation], False
     return invocations, False
 
 
@@ -401,6 +410,16 @@ def run(data: dict) -> Decision | None:
     if not invocations:
         return None
 
+    if all(invocation.uncertain for invocation in invocations) and not unparseable:
+        return Decision(
+            "ask",
+            "rm-rf-guard: this command runs `rm` with arguments that could not all be worked out "
+            "(too many possible values to check every combination):\n\n"
+            + "\n".join(f"  {invocation.rendered()}" for invocation in invocations)
+            + "\n\nThe user decides whether it may run.",
+            "rm-rf-guard: an `rm` whose flags could not be fully determined.",
+            HOOK_NAME,
+        )
     direct = [invocation for invocation in invocations if not invocation.indirect]
     if direct or unparseable:
         return Decision(
