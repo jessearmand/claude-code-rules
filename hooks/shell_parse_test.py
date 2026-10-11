@@ -143,6 +143,14 @@ def main() -> int:
                                   "mapfile -s 1 -n 1 -t Y < <(printf '1\\n2\\n3\\n'); echo ${Y[0]} ${Y[1]}", "/").commands]
     _check(argv[1] == ("echo", "q", "z", "e") and argv[-1] == ("echo", "2", "${Y[1]}"),
            f"mapfile -O / -s / -n / -t: {argv}", failures)
+    argv = [c.argv for c in parse("set -- -rf -x val z; getopts rfx: O; echo $O $OPTIND; getopts rfx: O; "
+                                  "echo $O $OPTIND; getopts rfx: O; echo $O $OPTARG $OPTIND; getopts rfx: O; "
+                                  "echo $O $OPTIND; getopts :ab Q -c; echo $Q $OPTARG; OPTIND=1; getopts :ab Q -c; echo $Q $OPTARG",
+                                  "/").commands if c.name == "echo"]
+    _check(argv == [("echo", "r", "1"), ("echo", "f", "2"), ("echo", "x", "val", "4"), ("echo", "?", "4"),
+                    ("echo", "?", "$OPTARG"), ("echo", "?", "c")], f"getopts as bash runs it: {argv}", failures)
+    argv = [c.argv for c in parse("hash -p /bin/rm x; hash -r; x; f(){ :; }; hash -p /bin/rm f; f", "/").commands]
+    _check(argv[2] == ("x",) and argv[-2] == ("f",), f"hash -r forgets, a function comes first: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

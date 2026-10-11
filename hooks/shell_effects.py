@@ -77,9 +77,14 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
 
 def _executable(word: str, ctx: _Context) -> str:
     """The program a path runs once this line's links and copies are followed:
-    `ln -s /bin/rm x; ./x` and `cp /bin/rm x; ./x` run /bin/rm. A bare name is
-    looked up in PATH, which is not modelled, and stays as written."""
-    if "/" not in word or ctx.cwd is None:
+    `ln -s /bin/rm x; ./x` and `cp /bin/rm x; ./x` run /bin/rm. A bare name runs
+    what `hash -p` set for it, unless a function of that name comes first;
+    otherwise it is looked up in PATH, which is not modelled, and stays."""
+    if "/" not in word:
+        if word not in ctx.hashed or word in ctx.functions:
+            return word
+        word = ctx.hashed[word]
+    if ctx.cwd is None:
         return word
     path = os.path.normpath(os.path.join(ctx.cwd, os.path.expanduser(word)))
     seen = {path}

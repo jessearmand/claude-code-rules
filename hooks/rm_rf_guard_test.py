@@ -167,6 +167,9 @@ SHOULD_BLOCK = [
     "$'\\U00000072m' -rf victim",
     "mapfile -t X < <(printf r; printf m); \"${X[0]}\" -rf victim",  # mapfile fills its array (PR review)
     "readarray -t X <<< rm; ${X[0]} -rf victim",
+    "set -- -r; getopts r X; \"$X\"m -rf victim",  # getopts sets its variable (PR review)
+    "hash -p /bin/r[m] x; x -rf victim",  # hash -p names a program (PR review)
+    "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line

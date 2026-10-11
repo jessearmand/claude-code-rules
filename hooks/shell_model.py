@@ -189,6 +189,8 @@ class _Context:
     case_attributes: dict[str, str] = field(default_factory=dict)
     # `cp /bin/rm x`: x is now that program (absolute paths); links are in result.links.
     copies: dict[str, str] = field(default_factory=dict)
+    # `hash -p /bin/rm x`: bare name -> the program it runs.
+    hashed: dict[str, str] = field(default_factory=dict)
 
     def next_pipeline(self) -> int:
         self.pipeline_counter[0] += 1

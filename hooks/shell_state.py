@@ -7,17 +7,21 @@ Part of shell_parse; import from there.
 
 from __future__ import annotations
 
+import glob
+import os
 import re
 import shlex
 
 import shell_ifs
 from shell_expand import (
+    _GLOB_CHARS,
     _echoed_text,
     _ifs_values,
 )
 from shell_lexer import HEREDOC_OPERATORS, Word, lex
 from shell_model import (
     _ASSIGNMENT,
+    _ELEMENT,
     _FIELD,
     _NAME,
     _POSITIONALS,
@@ -217,13 +221,19 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
         else:
             earlier = ctx.variables.get(argv[1], (UNSET,))
             ctx.variables[argv[1]] = tuple(dict.fromkeys((*items, *earlier)))
-    elif len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and _NAME.fullmatch(argv[2]):
+    elif len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and (
+            _NAME.fullmatch(argv[2]) or _ELEMENT.fullmatch(argv[2])):
+        # `printf -v X ...` or an array element, `printf -v 'X[0]' ...`.
         text = _echoed_text(SimpleCommand(("printf", *argv[3:])))
-        target = _target_name(argv[2], ctx)
+        target = _target_name(argv[2], ctx) if _NAME.fullmatch(argv[2]) else argv[2]
         if text or "%" not in argv[3]:
             _assign(f"{target}={text}", ctx.variables, ctx.conditional)
         else:
             ctx.variables.pop(target, None)  # a format we do not model: the value is unknown
+    elif argv and argv[0] == "getopts" and len(argv) >= 3:
+        _getopts_builtin(argv[1], argv[2], argv[3:], ctx)
+    elif argv and argv[0] == "hash":
+        _hash_builtin(argv[1:], ctx)
     elif argv and argv[0] == "shift":
         # `shift N`: $N+1 becomes $1; past the last parameter nothing changes.
         params = _positionals(ctx)
@@ -315,6 +325,75 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
         fields = shell_ifs.split(line, ifs, len(names))
         for position, name in enumerate(names):
             _assign(f"{name}={fields[position] if position < len(fields) else ''}", ctx.variables, keep)
+
+
+# Where getopts is inside a cluster such as `-rf`: "OPTIND:offset".
+_GETOPTS_POSITION = "\0getopts"
+
+
+def _getopts_builtin(optstring: str, name: str, args: list[str], ctx: _Context) -> None:
+    """`getopts OPTSTRING NAME [ARGS]`: the next option from ARGS (or the
+    positional parameters) into NAME, its argument into OPTARG, and OPTIND
+    past it, as bash does (`set -- -r; getopts r X` sets X=r). Unknown
+    parameters or OPTIND make NAME unknown."""
+    params = tuple(args) if args else _positionals(ctx)
+    optind_values = ctx.variables.get("OPTIND", ("1",))
+    if params is None or not _NAME.fullmatch(name) or len(optind_values) != 1 or not optind_values[0].isdigit():
+        for key in (name, "OPTARG", "OPTIND"):
+            ctx.variables.pop(key, None)
+        return
+    optind = int(optind_values[0])
+    stored = ctx.variables.get(_GETOPTS_POSITION, ("",))[0].split(":")
+    offset = int(stored[1]) if len(stored) == 2 and stored[0] == str(optind) else 1
+    silent = optstring.startswith(":")
+    keep = ctx.conditional
+    index = optind - 1
+    if index >= len(params) or not params[index].startswith("-") or params[index] == "-" or params[index] == "--":
+        # No more options: NAME=?, OPTARG unset, OPTIND past `--` or at most $#+1.
+        end = optind + 1 if index < len(params) and params[index] == "--" else min(optind, len(params) + 1)
+        _assign(f"{name}=?", ctx.variables, keep)
+        _assign(f"OPTARG={UNSET}", ctx.variables, keep)
+        _assign(f"OPTIND={end}", ctx.variables, keep)
+        return
+    word = params[index]
+    letter = word[offset] if offset < len(word) else "?"
+    known = letter != ":" and letter in optstring
+    takes_argument = known and optstring[optstring.index(letter) + 1:optstring.index(letter) + 2] == ":"
+    result, optarg, next_optind, next_offset = letter if known else "?", None, optind, offset + 1
+    if takes_argument:
+        next_offset = 1
+        if offset + 1 < len(word):
+            optarg, next_optind = word[offset + 1:], optind + 1
+        elif index + 1 < len(params):
+            optarg, next_optind = params[index + 1], optind + 2
+        else:
+            result, optarg, next_optind = (":" if silent else "?"), (letter if silent else None), optind + 1
+    elif not known and silent:
+        optarg = letter
+    if not takes_argument and next_offset >= len(word):
+        next_optind, next_offset = optind + 1, 1
+    _assign(f"{name}={result}", ctx.variables, keep)
+    _assign(f"OPTARG={UNSET if optarg is None else optarg}", ctx.variables, keep)
+    _assign(f"OPTIND={next_optind}", ctx.variables, keep)
+    _assign(f"{_GETOPTS_POSITION}={next_optind}:{next_offset}", ctx.variables, keep)
+
+
+def _hash_builtin(args: list[str], ctx: _Context) -> None:
+    """`hash -p PATH NAME...` makes NAME run PATH; `-d NAME` forgets it, `-r` all."""
+    if "-r" in args:
+        ctx.hashed.clear()
+    if "-d" in args:
+        for name in args[args.index("-d") + 1:]:
+            ctx.hashed.pop(name, None)
+    if "-p" in args and args.index("-p") + 1 < len(args):
+        path = args[args.index("-p") + 1]
+        if _GLOB_CHARS.search(path) and ctx.cwd is not None:
+            # `hash -p /bin/r[m] x`: the path is globbed like any argument.
+            matches = sorted(glob.glob(os.path.join(ctx.cwd, os.path.expanduser(path))))
+            path = matches[0] if matches else path
+        for name in args[args.index("-p") + 2:]:
+            if not name.startswith("-"):
+                ctx.hashed[name] = path
 
 
 def _stdin_text(redirects: list[Redirect], ctx: _Context) -> str | None:
