@@ -92,10 +92,11 @@ def find_dangers(command: str, cwd: str, level: str = DEFAULT_LEVEL) -> list[Fin
     parsed = parse(command, cwd, shell_sources.resolve)
     findings: list[Finding] = []
     for simple in parsed.commands:
-        # Rules resolve relative paths where the command runs, after any `cd`.
-        # An unknown directory (computed `cd`) is judged as `/`, the worst case.
-        context = RuleContext(parsed, simple.cwd or os.sep)
-        for rule in RULES:
+        # Rules resolve relative paths where the command might run: after any
+        # `cd`, or as if it failed. An unknown directory is judged as `/`.
+        contexts = [RuleContext(parsed, directory or os.sep)
+                    for directory in dict.fromkeys(simple.possible_cwds)]
+        for rule, context in ((rule, context) for rule in RULES for context in contexts):
             if LEVEL_ORDER[rule.level] > LEVEL_ORDER[level]:
                 continue
             try:

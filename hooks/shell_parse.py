@@ -79,6 +79,13 @@ class SimpleCommand:
     # Directory the command runs in, following `cd`/`pushd` earlier in the same
     # line. None when a `cd` target is computed at run time (`cd "$DIR"`).
     cwd: str | None = None
+    # Every directory it might run in. A `cd` can fail (missing directory) and
+    # `cd a || cd b` runs only one of them, so earlier directories stay possible.
+    cwd_options: tuple[str | None, ...] = ()
+
+    @property
+    def possible_cwds(self) -> tuple[str | None, ...]:
+        return self.cwd_options or (self.cwd,)
 
     @property
     def name(self) -> str:
@@ -128,10 +135,20 @@ def program_name(token: str) -> str:
     return token.rsplit("/", 1)[-1]
 
 
+@dataclass(frozen=True)
+class WrittenFile:
+    """Literal text a command line wrote to a file before running it."""
+
+    text: str
+    # False when the line only appended (`>>`, `tee -a`): what was on disk comes first.
+    replaces: bool = True
+
+
 # A source resolver maps (command, cwd, files written earlier in the same
 # command line) to program text it executes from disk, e.g. the body of
 # `./deploy.sh` or the `build` script in package.json.
-SourceResolver = Callable[[SimpleCommand, str, "dict[str, str]"], "list[tuple[str, str]]"]
+SourceResolver = Callable[[SimpleCommand, str, "dict[str, WrittenFile]"], "list[tuple[str, str]]"]
+_MAX_CWD_OPTIONS = 8
 
 
 @dataclass
@@ -140,11 +157,13 @@ class _Context:
     # Current directory as the line runs; None once a computed `cd` makes it unknown.
     cwd: str | None
     sources: SourceResolver | None
+    # Every directory the line might be in at this point (see possible_cwds).
+    cwd_options: tuple[str | None, ...] = ()
     pipeline_counter: list[int] = field(default_factory=lambda: [0])
     variables: dict[str, str] = field(default_factory=dict)
     # Files this command line writes from literal text before running them:
     # `cat > x.sh <<'EOF' ... EOF; bash x.sh`. Absolute path -> content.
-    written_files: dict[str, str] = field(default_factory=dict)
+    written_files: dict[str, WrittenFile] = field(default_factory=dict)
 
     def next_pipeline(self) -> int:
         self.pipeline_counter[0] += 1
@@ -153,7 +172,8 @@ class _Context:
 
 def parse(command: str, cwd: str = "", sources: SourceResolver | None = None) -> ParseResult:
     """Every simple command `command` would run. Never raises."""
-    context = _Context(ParseResult(), cwd or os.getcwd(), sources)
+    start = cwd or os.getcwd()
+    context = _Context(ParseResult(), start, sources, (start,))
     _parse_into(command, context, via=(), depth=0, indirect=False)
     return context.result
 
@@ -175,23 +195,23 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
         ctx.result.unparseable = True
     # Nested code (`bash -c`, `$(...)`, scripts) runs in its own process: a
     # `cd` inside it does not move the caller.
-    entry_cwd = ctx.cwd
+    entry = (ctx.cwd, ctx.cwd_options)
     for body in lexed.substitutions:
         _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
-        ctx.cwd = entry_cwd
+        ctx.cwd, ctx.cwd_options = entry
 
     pipeline, stage = ctx.next_pipeline(), 0
     segment: list = []
-    subshells: list[str | None] = []
+    subshells: list[tuple[str | None, tuple[str | None, ...]]] = []
     for token in [*lexed.tokens, Operator("\n")]:
         if isinstance(token, Operator) and (token.op in _SEPARATORS or token.op in _PIPES):
             if segment:
                 _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                 segment = []
             if token.op == "(":
-                subshells.append(ctx.cwd)
+                subshells.append((ctx.cwd, ctx.cwd_options))
             elif token.op == ")" and subshells:
-                ctx.cwd = subshells.pop()  # `(cd x; ...)` does not move the caller
+                ctx.cwd, ctx.cwd_options = subshells.pop()  # `(cd x; ...)` does not move the caller
             if token.op in _PIPES:
                 stage += 1
             else:
@@ -199,7 +219,7 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
             continue
         segment.append(token)
     if depth > 0:
-        ctx.cwd = entry_cwd
+        ctx.cwd, ctx.cwd_options = entry
 
 
 def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
@@ -292,7 +312,7 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
         argv, wrappers, dynamic_head = inner, (*wrappers, label), False
 
     command = SimpleCommand(tuple(argv), redirects, via, wrappers, dynamic_head, indirect,
-                            pipeline, stage, ctx.cwd)
+                            pipeline, stage, ctx.cwd, ctx.cwd_options)
     ctx.result.commands.append(command)
     _record_written_file(command, ctx)
     _parse_payloads(command, ctx, depth)
@@ -304,16 +324,31 @@ def _follow_directory_change(command: SimpleCommand, ctx: _Context) -> None:
     if command.name not in ("cd", "pushd", "popd") or command.stage > 0:
         return  # a `cd` inside a pipeline runs in a subshell
     if command.name == "popd":
-        ctx.cwd = None
-        return
-    targets = [arg for arg in command.args if not (arg.startswith("-") and arg != "-")]
-    target = targets[0] if targets else "~"
+        target = None
+    else:
+        targets = [arg for arg in command.args if not (arg.startswith("-") and arg != "-")]
+        target = targets[0] if targets else "~"
+    ctx.cwd = _change_directory(ctx.cwd, target)
+    # The `cd` may fail, or sit in a branch that does not run (`cd a || cd b`):
+    # the directories possible before it stay possible after it.
+    moved = [_change_directory(option, target) for option in ctx.cwd_options]
+    options = list(dict.fromkeys([*ctx.cwd_options, *moved]))
+    if len(options) > _MAX_CWD_OPTIONS:
+        options = [*options[:_MAX_CWD_OPTIONS - 1], None]
+    ctx.cwd_options = tuple(options)
+
+
+def _change_directory(current: str | None, target: str | None) -> str | None:
+    """The directory after `cd target` from `current`; None when it cannot be known."""
+    if target is None:
+        return None  # popd: the directory stack is not tracked
     target = re.sub(r"^(?:\$HOME|\$\{HOME\})(?=/|$)", "~", target)
-    if target == "-" or "$" in target or "`" in target or ctx.cwd is None and not target.startswith(("/", "~")):
-        ctx.cwd = None  # OLDPWD, a variable, or relative to an unknown directory
-        return
+    if target == "-" or "$" in target or "`" in target:
+        return None  # OLDPWD or a value computed at run time
     expanded = os.path.expanduser(target)
-    ctx.cwd = os.path.normpath(expanded if os.path.isabs(expanded) else os.path.join(ctx.cwd or "/", expanded))
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+    return None if current is None else os.path.normpath(os.path.join(current, expanded))
 
 
 def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
@@ -323,12 +358,22 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
         body = _echoed_text(command)
     if body is None or command.cwd is None:
         return
-    targets = [r.target for r in command.redirects if r.op in (">", ">>", ">|") and not r.dynamic]
+    targets = [(r.target, r.op == ">>") for r in command.redirects
+               if r.op in (">", ">>", ">|") and not r.dynamic]
     if command.name == "tee":
-        targets += [arg for arg in command.args if not arg.startswith("-")]
-    for target in targets:
+        appends = any(a in ("-a", "--append") for a in command.args)
+        targets += [(arg, appends) for arg in command.args if not arg.startswith("-")]
+    for target, appends in targets:
         path = os.path.normpath(os.path.join(command.cwd, os.path.expanduser(target)))
-        ctx.written_files[path] = body
+        earlier = ctx.written_files.get(path)
+        if appends and earlier is not None:
+            ctx.written_files[path] = WrittenFile(_join_lines(earlier.text, body), earlier.replaces)
+        else:
+            ctx.written_files[path] = WrittenFile(body, replaces=not appends)
+
+
+def _join_lines(first: str, second: str) -> str:
+    return f"{first}{'' if not first or first.endswith(chr(10)) else chr(10)}{second}"
 
 
 def _unwrap_once(name: str, argv: list[str], ctx: _Context, via: tuple[str, ...], depth: int,

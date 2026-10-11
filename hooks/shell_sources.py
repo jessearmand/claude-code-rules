@@ -27,7 +27,7 @@ import json
 import os
 import re
 
-from shell_parse import SimpleCommand
+from shell_parse import SimpleCommand, WrittenFile
 from shell_wrappers import CLI_OPTIONS_WITH_VALUE, SHELL_OPTIONS_WITH_ARG, SHELLS
 
 MAX_SOURCE_BYTES = 256 * 1024
@@ -44,7 +44,7 @@ _MAX_MAKE_TARGETS = 8
 
 
 def resolve(
-    command: SimpleCommand, cwd: str, written: dict[str, str] | None = None
+    command: SimpleCommand, cwd: str, written: dict[str, WrittenFile] | None = None
 ) -> list[tuple[str, str]]:
     """(program text, label) pairs that `command` would execute from disk.
 
@@ -57,7 +57,7 @@ def resolve(
         return []
 
 
-def _resolve(command: SimpleCommand, cwd: str, written: dict[str, str]) -> list[tuple[str, str]]:
+def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) -> list[tuple[str, str]]:
     if not command.argv or command.dynamic_head:
         return []
     name, args = command.name, list(command.args)
@@ -119,11 +119,18 @@ def _absolute(path: str, cwd: str) -> str:
     return os.path.normpath(expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded))
 
 
-def _script(path: str, cwd: str, written: dict[str, str], require_shebang: bool) -> list[tuple[str, str]]:
+def _script(path: str, cwd: str, written: dict[str, WrittenFile], require_shebang: bool) -> list[tuple[str, str]]:
     absolute = _absolute(path, cwd)
     if absolute in written:
         # Written by this same command line: its author is the agent, right now.
-        return [(written[absolute], f"written {path}")]
+        # Appended text runs after whatever the file already held.
+        entry = written[absolute]
+        found = [(entry.text, f"written {path}")]
+        if not entry.replaces:
+            on_disk = _read_text(absolute)
+            if on_disk:
+                found.insert(0, (on_disk, f"script {path}"))
+        return found
     text = _read_text(absolute)
     if text is None:
         return []

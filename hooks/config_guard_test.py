@@ -50,6 +50,17 @@ BASH_CASES = [
     ("(cd ~/.claude); echo hi > settings.json", None, None),
     ("cd /tmp && echo hi > settings.json", None, None),
     ("bash -c 'cd ~/.claude'; echo hi > settings.json", None, None),
+    # A directory destination receives the source under its own name (PR review).
+    ("cp settings.json ~/.claude/", "deny", "claude-settings"),
+    ("mv config.toml ~/.codex/", "deny", "codex-config"),
+    ("install -m 644 hooks.json ~/.codex/", "deny", "codex-config"),
+    ("cp -t ~/.claude/ settings.json", "deny", "claude-settings"),
+    ("rsync -a evil/ ~/.claude/", "ask", "agent-config-dir"),
+    ("cp notes.md ~/.claude/", "ask", "agent-config-dir"),
+    ("cp report.txt ~/", None, None),
+    # A `cd` may not run: every directory it could leave stays possible (PR review).
+    ("cd ~/.claude || cd /tmp; printf '{}' > settings.json", "deny", "claude-settings"),
+    ("cd ~/.claude/missing; echo '{}' > ../settings.json", "deny", "claude-settings"),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),

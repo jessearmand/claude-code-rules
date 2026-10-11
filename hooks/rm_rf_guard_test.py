@@ -239,6 +239,11 @@ def main() -> int:
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)
+        appended = "printf 'rm -rf ~\\n' > x.sh; printf 'echo ok\\n' >> x.sh; bash x.sh"
+        decision = _decision(_run_hook(appended, project))
+        _check(decision == "deny", f"`>>` adds to the remembered script (PR review) -> {decision}", failures)
+        decision = _decision(_run_hook("printf 'echo ok\\n' >> clean.sh; ./clean.sh", project))
+        _check(decision == "ask", f"`>>` keeps the file's existing body -> {decision}", failures)
         decision = _decision(_run_hook("./clean.sh && rm -rf build", project))
         _check(decision == "deny", f"typed rm -rf beside a script still denies -> {decision}", failures)
 

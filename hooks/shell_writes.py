@@ -22,6 +22,7 @@ from shell_parse import SimpleCommand
 WRITE = "write"
 DELETE = "delete"
 DELETE_TREE = "delete-tree"  # recursive removal: everything below goes too
+INTO_DIR = "into-dir"  # copied into this directory; the exact file names may not be known
 MOVE = "move"  # the source of a move or rename: it disappears
 PERMISSIONS = "permissions"
 LINK = "link"
@@ -65,15 +66,29 @@ def _option_value(args: tuple[str, ...], names: tuple[str, ...]) -> str | None:
 
 
 def _copy_like(args: tuple[str, ...], with_arg: frozenset[str]) -> list[PathWrite]:
-    """cp/mv/install/ln: the destination is written (and, for mv, sources vanish)."""
+    """cp/mv/install/ln/rsync: what the destination may become.
+
+    A destination that is (or turns out to be) a directory receives each
+    source under its own name: `cp settings.json ~/.claude/` writes
+    `~/.claude/settings.json`. Both readings are returned, plus the
+    directory itself (INTO_DIR) for copies whose file names cannot be known,
+    such as `rsync -a dir/ dest/`.
+    """
     directory = _option_value(args, ("-t", "--target-directory"))
     operands = _operands(args, with_arg | {"-t", "--target-directory", "-S", "--suffix"})
     if directory:
-        return [PathWrite(f"{directory.rstrip('/')}/{source.rsplit('/', 1)[-1]}", WRITE)
-                for source in operands] + [PathWrite(directory, WRITE)]
-    if len(operands) < 2:
+        sources, destination = operands, directory
+    elif len(operands) >= 2:
+        sources, destination = operands[:-1], operands[-1]
+    else:
         return []
-    return [PathWrite(operands[-1], WRITE)]
+    found = [] if directory else [PathWrite(destination, WRITE)]
+    for source in sources:
+        name = source.rstrip("/").rsplit("/", 1)[-1]
+        if name and not source.endswith("/"):
+            found.append(PathWrite(f"{destination.rstrip('/')}/{name}", WRITE))
+    found.append(PathWrite(destination, INTO_DIR))
+    return found
 
 
 def _sed_in_place(args: tuple[str, ...]) -> list[PathWrite]:

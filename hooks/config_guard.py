@@ -74,8 +74,15 @@ from hook_protocol import (  # noqa: E402
     tool_input,
     truncate,
 )
-from shell_parse import parse  # noqa: E402
-from shell_writes import DELETE_TREE, MOVE, PERMISSIONS, written_paths  # noqa: E402
+from shell_parse import SimpleCommand, parse  # noqa: E402
+from shell_writes import (  # noqa: E402
+    DELETE_TREE,
+    INTO_DIR,
+    MOVE,
+    PERMISSIONS,
+    PathWrite,
+    written_paths,
+)
 
 HOOK_NAME = "config-guard"
 HANDLED_TOOLS = WRITE_TOOLS | {"Bash"}
@@ -83,6 +90,12 @@ _HOME_VARIABLE = re.compile(r"^(?:\$HOME|\$\{HOME\})(?=/|$)")
 _GLOB = re.compile(r"[*?\[]")
 # Actions that take everything below a directory with them.
 _TREE_ACTIONS = frozenset({DELETE_TREE, MOVE, PERMISSIONS})
+CONFIG_DIR_RULE = ConfigRule(
+    "agent-config-dir",
+    "high",
+    re.compile(r"(?!)"),
+    "copying into an agent configuration directory can add or replace its settings, hooks or plugins",
+)
 LIVE_SOURCE_RULE = ConfigRule(
     "guard-sources",
     "live",
@@ -97,8 +110,9 @@ class Finding:
     target: str
     action: str
     indirect: bool = False
-    # The write is relative to a directory a computed `cd` made unknown.
-    unknown_dir: bool = False
+    # Why the target is only possibly protected (an unknown directory, an
+    # unknown file name). Such a finding asks instead of denying.
+    uncertain: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -210,23 +224,51 @@ def _check_from_unknown_dir(path: str, cwd: str, action: str) -> ConfigRule | No
     return None
 
 
+def _check_into_dir(path: str, cwd: str) -> ConfigRule | None:
+    """A copy whose file names are unknown, into a protected or live directory."""
+    roots = _protected_roots(cwd)
+    for candidate in candidate_paths(path, cwd):
+        if not candidate.startswith("/"):
+            continue
+        if any(_is_inside(candidate, root) for root in roots):
+            return CONFIG_DIR_RULE
+        if any(_is_inside(candidate, root) for root in live_source_dirs()):
+            return LIVE_SOURCE_RULE
+    return None
+
+
+def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: SimpleCommand) -> Finding | None:
+    """Check one write as if its command runs in `directory` (None: unknown)."""
+    uncertain = None
+    if directory is None:
+        rule = _check_from_unknown_dir(write.path, cwd, write.action)
+        uncertain = "relative to a directory set by a computed `cd`"
+    elif write.action == INTO_DIR:
+        rule = _check_into_dir(write.path, directory)
+        uncertain = "copied into a protected directory under names that cannot be known"
+    else:
+        rule = check_path(write.path, directory, write.action)
+    return Finding(rule, write.path, write.action, simple.indirect, uncertain) if rule else None
+
+
 def check_command(command: str, cwd: str) -> Finding | None:
-    """The first protected write in `command`, resolving each relative path against
-    the directory that command runs in (after any `cd` earlier in the line)."""
+    """The first protected write in `command`.
+
+    Each relative path is resolved in every directory its command might run
+    in: after a `cd`, and also as if that `cd` failed or sat in a branch
+    that did not run (`cd a || cd b`).
+    """
     parsed = parse(command, cwd, shell_sources.resolve)
     softer: Finding | None = None
     for simple in parsed.commands:
         for write in written_paths(simple):
-            if simple.cwd is None:
-                rule = _check_from_unknown_dir(write.path, cwd, write.action)
-            else:
-                rule = check_path(write.path, simple.cwd, write.action)
-            if rule is None:
-                continue
-            finding = Finding(rule, write.path, write.action, simple.indirect, simple.cwd is None)
-            if not (finding.indirect or finding.unknown_dir):
-                return finding
-            softer = softer or finding
+            for directory in simple.possible_cwds:
+                finding = _finding_for(write, directory, cwd, simple)
+                if finding is None:
+                    continue
+                if not (finding.indirect or finding.uncertain):
+                    return finding
+                softer = softer or finding
     return softer
 
 
@@ -249,7 +291,7 @@ def evaluate(tool_name: str, inputs: dict, cwd: str) -> Finding | None:
 def build_reason(finding: Finding, tool_name: str, decision: str) -> str:
     verb = "BLOCKED" if decision == "deny" else "Confirm"
     source = (" (inside a script this command runs)" if finding.indirect
-              else " (relative to a directory set by a computed `cd`)" if finding.unknown_dir else "")
+              else f" ({finding.uncertain})" if finding.uncertain else "")
     return "\n".join(
         [
             f"🧷 {verb} by config-guard [{finding.rule.rule_id}] — cannot "
@@ -276,7 +318,7 @@ def run(data: dict) -> Decision | None:
     if finding is None:
         return None
 
-    asks = (env_flag("CONFIG_GUARD_ASK") or finding.indirect or finding.unknown_dir
+    asks = (env_flag("CONFIG_GUARD_ASK") or finding.indirect or finding.uncertain is not None
             or finding.rule is LIVE_SOURCE_RULE)
     decision = "ask" if asks else "deny"
     log_event(

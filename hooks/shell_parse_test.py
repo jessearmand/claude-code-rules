@@ -86,6 +86,8 @@ def main() -> int:
         ('cd "$DIR" && ls', None),
         ('cd "$DIR"; cd /b; ls', "/b"),
     ]
+    options = parse("cd /a || cd /b; ls", "/start").commands[-1].possible_cwds
+    _check(set(options) == {"/start", "/a", "/b"}, f"cd a || cd b keeps every branch {options}", failures)
     for command, expected in cwd_cases:
         actual = parse(command, "/start").commands[-1].cwd
         _check(actual == expected, f"{command!r} -> ls runs in {actual}", failures)
