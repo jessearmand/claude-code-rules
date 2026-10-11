@@ -49,7 +49,11 @@ from shell_wrappers import (
 MAX_DEPTH = 6
 _MAX_UNWRAP = 16
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
-_PARAMETER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# A parameter reference: `$NAME`, `${NAME}`, `${NAME:-default}` and the like.
+_REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# `${NAME<op>word}` forms whose result is NAME's value or `word`.
+_BRACED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(:?[-=+?])(.*)", re.DOTALL)
 _UNRESOLVED = re.compile(r"\$|`")
 _SEPARATORS = frozenset({"&&", "||", ";", ";;", ";&", ";;&", "&", "\n", "(", ")"})
 _PIPES = frozenset({"|", "|&"})
@@ -296,8 +300,8 @@ def _variable_choices(tokens: list, ctx: _Context) -> list[dict[str, str]]:
     for token in tokens:
         if not isinstance(token, Word) or not token.dynamic:
             continue
-        for match in _PARAMETER.finditer(token.text):
-            name = match.group(1) or match.group(2)
+        for match in _REFERENCE.finditer(token.text):
+            name = match.group(1)
             if len(ctx.variables.get(name, ())) > 1 and name not in names:
                 names.append(name)
     if not names:
@@ -374,8 +378,7 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
     if not word.dynamic:
         return word
 
-    def value(match: re.Match[str]) -> str:
-        name = match.group(1) or match.group(2)
+    def value(name: str, at_start: bool) -> str | None:
         if choice and name in choice:
             return choice[name]
         if name in ctx.variables:
@@ -385,15 +388,76 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
         if name == "PWD":
             # `$PWD/x` is `./x`: relative paths are checked in every directory the
             # command might run in, which a single expanded value would lose.
-            if match.start() == 0:
+            if at_start:
                 return "."
             if ctx.cwd is not None and len(set(ctx.cwd_options)) <= 1:
                 return ctx.cwd
-        return match.group(0)
+        return None
 
-    text = _PARAMETER.sub(value, word.text)
+    text = _expand_text(word.text, value, at_start=True)
     return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted,
                 heredoc_body=word.heredoc_body, substitutions=word.substitutions)
+
+
+def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: bool) -> str:
+    """Replace `$NAME`/`${NAME}` whose value is known, and resolve `${NAME:-word}`,
+    `${NAME:=word}` and `${NAME:+word}` to the value they select. When NAME is not
+    known it may be unset, so the default or alternate `word` is the candidate:
+    `> "${OUT:-$HOME/.claude/settings.json}"` writes settings.json. Anything else
+    (`${#X}`, `${X/a/b}`, unknown names) stays as written."""
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        if text.startswith("${", index):
+            end = _closing_brace(text, index + 2)
+            if end is None:
+                out.append(text[index:])
+                break
+            out.append(_expand_braced(text[index + 2:end], text[index:end + 1], value,
+                                      at_start and index == 0))
+            index = end + 1
+            continue
+        name = _NAME.match(text, index + 1) if text[index] == "$" else None
+        if name:
+            found = value(name.group(0), at_start and index == 0)
+            out.append(text[index:name.end()] if found is None else found)
+            index = name.end()
+            continue
+        out.append(text[index])
+        index += 1
+    return "".join(out)
+
+
+def _closing_brace(text: str, start: int) -> int | None:
+    depth = 1
+    for index in range(start, len(text)):
+        if text.startswith("${", index):
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | None],
+                   at_start: bool) -> str:
+    if _NAME.fullmatch(body):
+        found = value(body, at_start)
+        return original if found is None else found
+    match = _BRACED.fullmatch(body)
+    if not match:
+        return original
+    name, op, word = match.groups()
+    current = value(name, False)
+    if op.endswith("?"):
+        return original if current is None else current
+    alternative = _expand_text(word, value, at_start)
+    set_and_used = current is not None and (current != "" or not op.startswith(":"))
+    if op.endswith("+"):
+        # Unknown NAME may be set: the alternate word is the value to check.
+        return alternative if current is None or set_and_used else ""
+    return current if set_and_used else alternative
 
 
 def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[str, ...]]:
@@ -468,10 +532,38 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
     `environment` holds the command's prefix assignments (`X=1 cmd`): visible
     to what cmd runs (`X=1 sh -c 'echo $X'`), gone once cmd returns.
     """
+    # The caller's variables, once the command has an environment of its own.
+    caller: list[dict[str, tuple[str, ...]]] = []
+    for text in environment:
+        _own_assign(text, ctx, caller)
+    try:
+        _unwrap_and_record(argv, redirects, ctx, via, depth, indirect, pipeline, stage,
+                           dynamic_head, wrappers, caller)
+    finally:
+        if caller:
+            # The command's own environment reached what it runs, and is gone now.
+            ctx.variables = caller[0]
+
+
+def _own_assign(text: str, ctx: _Context, caller: list[dict[str, tuple[str, ...]]]) -> None:
+    """Put `text` in the current command's environment only, copying the shell's
+    variables the first time so the caller's stay untouched."""
+    if not caller:
+        caller.append(ctx.variables)
+        ctx.variables = dict(ctx.variables)
+    _assign(text, ctx.variables)
+
+
+def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context,
+                       via: tuple[str, ...], depth: int, indirect: bool, pipeline: int, stage: int,
+                       dynamic_head: bool, wrappers: tuple[str, ...],
+                       caller: list[dict[str, tuple[str, ...]]]) -> None:
     outer: tuple[str | None, tuple[str | None, ...]] | None = None
     for _ in range(_MAX_UNWRAP):
         while argv and _ASSIGNMENT.match(argv[0]):
-            argv = argv[1:]  # `sudo FOO=1 cmd`, `env A=b cmd`
+            # `env A=b cmd`, `sudo A=b cmd`: A is in cmd's environment.
+            _own_assign(argv[0], ctx, caller)
+            argv = argv[1:]
         if not argv:
             return
         name = program_name(argv[0])
@@ -490,19 +582,11 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
             break
         argv, wrappers, dynamic_head = inner, (*wrappers, label), False
 
-    variables = dict(ctx.variables)
-    for text in environment:
-        _assign(text, variables)
     command = SimpleCommand(tuple(argv), redirects, via, wrappers, dynamic_head, indirect,
-                            pipeline, stage, ctx.cwd, ctx.cwd_options, tuple(variables.items()))
+                            pipeline, stage, ctx.cwd, ctx.cwd_options, tuple(ctx.variables.items()))
     ctx.result.commands.append(command)
     _record_written_file(command, ctx)
-    caller_variables = ctx.variables
-    if environment:
-        ctx.variables = variables
     _parse_payloads(command, ctx, depth)
-    if environment:
-        ctx.variables = caller_variables
     if outer is not None:
         ctx.cwd, ctx.cwd_options = outer  # the wrapper's directory applied to the child only
     else:

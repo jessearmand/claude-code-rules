@@ -30,7 +30,7 @@ from danger_rule import (
 )
 from shell_interpreters import interpreter_kind
 from shell_parse import SimpleCommand
-from shell_wrappers import SHELLS, shell_invocation
+from shell_wrappers import SHELLS, STDIN_PATHS, shell_invocation
 from shell_writes import written_paths
 
 # --------------------------------------------------------------------------- #
@@ -94,7 +94,7 @@ def _executes_stdin(command: SimpleCommand) -> bool:
         return shell.reads_stdin and not shell.syntax_only
     if interpreter_kind(name):
         script_args = operands(args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M"}))
-        return not script_args or script_args[0] == "-"
+        return not script_args or script_args[0] in STDIN_PATHS
     return name in ("eval", "source", ".")
 
 
@@ -124,9 +124,9 @@ def _fetch_and_execute(command: SimpleCommand, ctx: RuleContext) -> str | None:
     return None
 
 
-def _executed_files(command: SimpleCommand) -> list[str]:
+def _executed_files(command: SimpleCommand, ctx: RuleContext) -> list[str]:
     """Files `command` runs as a program: a script argument, `./tool`, `source f`,
-    or a file a shell or interpreter reads on stdin."""
+    or a file a shell or interpreter reads on stdin (`< f`, `cat f | bash`)."""
     files: list[str] = []
     if command.name in SHELLS:
         shell = shell_invocation(command.name, command.args)
@@ -134,13 +134,16 @@ def _executed_files(command: SimpleCommand) -> list[str]:
             files.append(shell.script)
     elif interpreter_kind(command.name):
         script = operands(command.args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M", "-c", "-e"}))[:1]
-        files += [s for s in script if s != "-"]
+        files += [s for s in script if s not in STDIN_PATHS]
     elif command.name in ("source", ".") and command.args:
         files.append(command.args[0])
     elif "/" in (command.argv[0] if command.argv else "") and not command.dynamic_head:
         files.append(command.argv[0])
     if _executes_stdin(command):
         files += [r.target for r in command.redirects if r.op == "<" and not r.dynamic]
+        for source in _pipeline_sources(command, ctx):
+            if source.name == "cat" and not source.dynamic_head:
+                files += [f for f in operands(source.args, frozenset()) if f not in STDIN_PATHS]
     return files
 
 
@@ -153,7 +156,7 @@ def _absolute(path: str, directory: str | None) -> str | None:
 
 def _run_downloaded(command: SimpleCommand, ctx: RuleContext) -> str | None:
     """`curl -o x.sh URL && bash x.sh`: running a file this same line downloaded."""
-    executed = {a for f in _executed_files(command) for d in command.possible_cwds
+    executed = {a for f in _executed_files(command, ctx) for d in command.possible_cwds
                 if (a := _absolute(f, d))}
     if not executed:
         return None

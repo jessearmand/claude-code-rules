@@ -87,6 +87,12 @@ BASH_CASES = [
     ("curl -sLo ~/.claude/settings.json https://example.com/s", "deny", "claude-settings"),
     ("wget -qO ~/.claude/settings.json https://example.com/s", "deny", "claude-settings"),
     ("P=$HOME/.claude/settings.json; P=notes; printf x > \"$P\"", None, None),
+    # Wrapper assignments and parameter defaults (PR review).
+    ("env P=$HOME/.claude/settings.json sh -c 'echo x > $P'", "deny", "claude-settings"),
+    ("printf x > \"${OUT:-$HOME/.claude/settings.json}\"", "deny", "claude-settings"),
+    ("printf x > \"${OUT:+$HOME/.claude/settings.json}\"", "deny", "claude-settings"),
+    ("OUT=notes; printf x > \"${OUT:-$HOME/.claude/settings.json}\"", None, None),
+    ("printf x > \"${OUT:-notes.txt}\"", None, None),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),

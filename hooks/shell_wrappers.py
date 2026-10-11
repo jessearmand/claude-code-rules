@@ -97,6 +97,8 @@ PREFIX_WRAPPERS: dict[str, WrapperSpec] = {
 
 # Shells: `-c STRING` runs STRING; a bare positional is a script file; no
 # positional at all means the program is read from stdin.
+# Paths that name the process's own stdin: `bash /dev/stdin <<< CMD` runs CMD.
+STDIN_PATHS = frozenset({"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
 SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "yash", "posh"})
 SHELL_OPTIONS_WITH_ARG = _opts("-o", "+o", "-O", "+O", "--rcfile", "--init-file")
 # Options whose value is itself a command string the shell runs. fish takes
@@ -172,7 +174,7 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
         command_args = tuple(positionals[1:])
     elif dash_c:
         command_args = tuple(positionals)
-    elif not reads_stdin and positionals and positionals[0] != "-":
+    elif not reads_stdin and positionals and positionals[0] not in STDIN_PATHS:
         script = positionals[0]
     stdin = reads_stdin or (not dash_c and script is None)
     return ShellInvocation(tuple(commands), command_args, script, stdin, syntax_only)

@@ -84,6 +84,11 @@ SHOULD_BLOCK = [
     "X=rm || X=echo; $X -rf ~/victim",
     "X=rm; X=echo | cat; $X -rf ~/victim",
     "X=rm; true && X=echo; $X -rf ~/victim",
+    # Assignments after a wrapper; a shell reading /dev/stdin (PR review).
+    "env X=rm sh -c '$X -rf ~/victim'",
+    "sudo X=rm sh -c '$X -rf ~/victim'",
+    "bash /dev/stdin <<< 'rm -rf ~/victim'",
+    "sh /dev/fd/0 <<EOF\nrm -rf ~/victim\nEOF",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",
@@ -102,6 +107,7 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "X=echo; env X=rm true; $X -rf build",  # env's assignment is for `true` only
     "X=rm; X=echo; $X -rf build",  # the later assignment always runs
     "rm build.log",
     "rm -r build",
