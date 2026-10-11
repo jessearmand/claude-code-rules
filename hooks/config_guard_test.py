@@ -12,7 +12,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config_guard  # noqa: E402
-import shell_parse  # noqa: E402
+import shell_expand  # noqa: E402
 from config_guard import run  # noqa: E402
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -206,12 +206,12 @@ def main() -> int:
         for name in ("a", "b", "c"):
             open(os.path.join(crowded, f".{name}{name}"), "w").close()
         # Both the parser and config_guard stop listing matches past their limits.
-        limits = config_guard._MAX_GLOB_MATCHES, shell_parse._MAX_BRACE_WORDS
-        config_guard._MAX_GLOB_MATCHES = shell_parse._MAX_BRACE_WORDS = 2
+        limits = config_guard._MAX_GLOB_MATCHES, shell_expand._MAX_BRACE_WORDS
+        config_guard._MAX_GLOB_MATCHES = shell_expand._MAX_BRACE_WORDS = 2
         try:
             _check(_bash("rm -r .??*", crowded)[0] == "ask", "glob past the match limit -> ask", failures)
         finally:
-            config_guard._MAX_GLOB_MATCHES, shell_parse._MAX_BRACE_WORDS = limits
+            config_guard._MAX_GLOB_MATCHES, shell_expand._MAX_BRACE_WORDS = limits
         _check(_bash("cat > s.sh <<'EOF'\necho x > ~/.zshrc\nEOF\nbash s.sh", project)[0] == "deny",
                "script written and run in one command -> deny", failures)
 

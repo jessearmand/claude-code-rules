@@ -1,0 +1,422 @@
+"""
+Word expansion as bash does it, for values the parser knows: brace and
+pathname expansion, parameters (`$X`, `${X:-d}`, `${X%.bak}`, `${!X}`),
+word splitting by IFS, literal `$(echo ...)`/`$(printf ...)` output and
+`$(mktemp)`. What stays unknown stays as written and marks the word dynamic.
+Part of shell_parse; import from there.
+"""
+
+from __future__ import annotations
+
+import glob
+import itertools
+import os
+import re
+from collections.abc import Callable
+
+import shell_ifs
+import shell_params
+import shell_printf
+from shell_lexer import Word
+from shell_model import (
+    _ARRAY,
+    _ELEMENT,
+    _FIELD,
+    _NAME,
+    _UNRESOLVED,
+    UNSET,
+    ParseResult,
+    SimpleCommand,
+    _assign,
+    _Context,
+    _positionals,
+    _target_name,
+    _with_case,
+)
+
+_ONE_CHAR = re.compile(r".")
+
+# `${NAME<op>word}` forms whose result is NAME's value or `word`.
+_BRACED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(:?[-=+?])(.*)", re.DOTALL)
+
+_MAX_BRACE_WORDS = 64
+
+_GLOB_CHARS = re.compile(r"[*?[]")
+
+
+def _at_word_pieces(token: Word, ctx: _Context) -> list[Word] | None:
+    """`r"$@"x` with $1=a $2=b is two words, `ra` and `bx`: each parameter is its own
+    word, the surrounding text joins the first and last. None if not that shape."""
+    marker = next((m for m in ("${@}", "$@") if m in token.text), None)
+    params = _positionals(ctx) if marker else None
+    if params is None or token.text.count(marker) != 1:
+        return None
+    prefix, suffix = token.text.split(marker)
+    if not params:
+        texts = [prefix + suffix] if prefix or suffix else []
+    elif len(params) == 1:
+        texts = [prefix + params[0] + suffix]
+    else:
+        texts = [prefix + params[0], *params[1:-1], params[-1] + suffix]
+    return [Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=token.quoted, splits=token.splits)
+            for text in texts]
+
+
+def _glob_words(words: list[Word], ctx: _Context) -> list[Word]:
+    """Pathname expansion of unquoted words, in the directory the command runs in:
+    `/bin/r[m]` runs /bin/rm, and `rm -* x` next to a file named `-rf` is
+    `rm -rf x`. A pattern matching nothing stays literal, as in bash."""
+    if ctx.cwd is None:
+        return words
+    expanded: list[Word] = []
+    for index, word in enumerate(words):
+        expanded += _glob_word(word, ctx, command_word=index == 0)
+    return expanded
+
+
+def _glob_word(word: Word, ctx: _Context, command_word: bool = False) -> list[Word]:
+    cwd = ctx.cwd or "/"
+    if word.quoted or word.dynamic or not _GLOB_CHARS.search(word.text):
+        return [word]
+    try:
+        matches = sorted(glob.glob(os.path.expanduser(word.text), root_dir=cwd))
+    except (OSError, ValueError):
+        return [word]
+    if not matches:
+        return [word]
+    if len(matches) > _MAX_BRACE_WORDS:
+        # Too many to list: keep the pattern, plus any match that reads as an option,
+        # and in command position the first match, which is what runs. Incomplete.
+        ctx.result.truncated = True
+        head = [Word(matches[0])] if command_word else []
+        return [*head, word, *(Word(m) for m in matches if m.startswith("-"))]
+    return [Word(match) for match in matches]
+
+
+def _brace_expand(word: Word, ctx: _Context) -> list[Word]:
+    """Brace expansion, which bash does first: `{rm,-rf,~/x}` is three words,
+    `a{b,c}d` is `abd acd`. Only unquoted braces and commas count.
+
+    Past _MAX_BRACE_WORDS, every alternative's text becomes a word of its own
+    (nothing is dropped, so `rm {x,...,-rf} v` still shows `-rf`) and the
+    parse is marked truncated."""
+    if not word.braces:
+        return [word]
+    texts = _expand_brace_text(word.text, frozenset(word.braces))
+    if len(texts) > _MAX_BRACE_WORDS:
+        ctx.result.truncated = True
+        texts = _brace_fragments(word.text, word.braces)
+    if len(texts) == 1:
+        return [word]
+    return [Word(text, dynamic=word.dynamic and bool(_UNRESOLVED.search(text)), quoted=word.quoted, splits=word.splits,
+                 substitutions=word.substitutions if index == 0 else [])
+            for index, text in enumerate(texts)]
+
+
+def _brace_fragments(text: str, braces: tuple[int, ...]) -> list[str]:
+    """The text between unquoted braces and commas, each piece once."""
+    pieces, start = [], 0
+    for position in (*braces, len(text)):
+        pieces.append(text[start:position])
+        start = position + 1
+    return list(dict.fromkeys(piece for piece in pieces if piece))
+
+
+def _expand_brace_text(text: str, active: frozenset[int]) -> list[str]:
+    for start in sorted(p for p in active if text[p] == "{"):
+        depth, commas, end = 0, [], None
+        for index in sorted(p for p in active if p >= start):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+            elif depth == 1:
+                commas.append(index)
+        if end is None or not commas:
+            continue  # `{}`, `{x}` and unbalanced braces stay literal
+        prefix, suffix = text[:start], text[end + 1:]
+        expanded: list[str] = []
+        bounds = [start, *commas, end]
+        for left, right in itertools.pairwise(bounds):
+            piece = text[left + 1:right]
+            moved = ({p for p in active if p < start}
+                     | {p - left - 1 + len(prefix) for p in active if left < p < right}
+                     | {p - end - 1 + len(prefix) + len(piece) for p in active if p > end})
+            expanded += _expand_brace_text(prefix + piece + suffix, frozenset(moved))
+            if len(expanded) > _MAX_BRACE_WORDS:
+                break  # the caller falls back to fragments
+        return expanded
+    return [text]
+
+
+def _compound_word(token: Word, ctx: _Context, choice: dict[str, str]) -> Word:
+    """`X=(r "a b" $Y)` as one assignment word: `X=` then the expanded elements,
+    marked as an array, which `_assign` stores as X[0], X[1]..."""
+    items: list[str] = []
+    for element in token.elements or []:
+        for piece in _brace_expand(element, ctx):
+            items += [w.text for w in _split_unquoted(piece, _expand_word(piece, ctx, choice), ctx)]
+    text = token.text + _ARRAY + _FIELD.join(items)
+    return Word(text, dynamic=bool(_UNRESOLVED.search(text)), substitutions=token.substitutions)
+
+
+def _split_unquoted(original: Word, expanded: Word, ctx: _Context) -> list[Word]:
+    """Word splitting: an unquoted expansion holding IFS characters becomes several
+    words (`X='rm -rf ~'; $X` runs rm with two arguments; so does `IFS=,; X=rm,-rf,~`).
+    Quoted `"$X"` stays one."""
+    if not original.splits or not original.dynamic or expanded.text == original.text:
+        return [expanded]
+    splits = [tuple(shell_ifs.split(expanded.text, ifs)) for ifs in _ifs_values(ctx)]
+    if len(set(splits)) > 1:
+        ctx.result.truncated = True  # IFS may hold several values that split this differently
+    parts = splits[0]
+    if len(parts) <= 1:
+        # `IFS=,; X=rm,; $X` runs `rm`: the delimiters go even when one word remains.
+        return [expanded] if not parts or parts[0] == expanded.text else [
+            Word(parts[0], dynamic=bool(_UNRESOLVED.search(parts[0])), substitutions=expanded.substitutions)]
+    return [Word(part, dynamic=bool(_UNRESOLVED.search(part)), substitutions=expanded.substitutions if i == 0 else [])
+            for i, part in enumerate(parts)]
+
+
+def _star_separator(ctx: _Context) -> str:
+    """What `"$*"` puts between parameters: IFS's first character."""
+    return _ifs_values(ctx)[0][:1]
+
+
+def _ifs_values(ctx: _Context, environment: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Every value IFS may hold: `IFS=, read ...` sets it for one command; unset means the default."""
+    for text in reversed(environment):
+        if text.startswith("IFS="):
+            return (text[4:],)
+    values = ctx.variables.get("IFS", (UNSET,))
+    return tuple(dict.fromkeys(shell_ifs.DEFAULT if value == UNSET else value for value in values))
+
+
+def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None) -> Word:
+    """Substitute parameters whose value is known at this point in the line.
+
+    `P=$HOME/.claude/settings.json; echo x > "$P"` writes a known path; so
+    does `X=rm; $X -rf ~`. A word that still holds an expansion afterwards
+    (an unset variable, `${X:-d}`, `$(...)`) stays dynamic. `choice` picks the
+    value of a variable that may hold several.
+    """
+    if not word.dynamic:
+        return word
+
+    def value(name: str, at_start: bool) -> str | None:
+        if name.isdigit() or name in ("#", "@", "*"):
+            params = _positionals(ctx)
+            if params is None or name == "0":
+                return None
+            if name in ("@", "*"):
+                # Inside a longer word: `"$@"m` with $1=r is rm.
+                return (_star_separator(ctx) if name == "*" else " ").join(params)
+            return str(len(params)) if name == "#" else (params[int(name) - 1] if int(name) <= len(params) else "")
+        name = _target_name(name, ctx)
+        if choice and name in choice:
+            return None if choice[name] == UNSET else _with_case(name, choice[name], ctx)
+        if name in ctx.variables:
+            current = ctx.variables[name][0]
+            return None if current == UNSET else _with_case(name, current, ctx)
+        if "[" in name:
+            return None
+        if name == "HOME":
+            return os.path.expanduser("~")
+        if name == "PWD":
+            # `$PWD/x` is `./x`: relative paths are checked in every directory the
+            # command might run in, which a single expanded value would lose.
+            if at_start:
+                return "."
+            if ctx.cwd is not None and len(set(ctx.cwd_options)) <= 1:
+                return ctx.cwd
+        return None
+
+    def assign(name: str, text: str, certain: bool) -> None:
+        # `${X:=word}` assigns word when X is unset (or empty). If X is not known
+        # it may already be set, so both stay possible: word, or unknown.
+        if not certain and name not in ctx.variables:
+            ctx.variables[name] = (UNSET,)
+        _assign(f"{name}={text}", ctx.variables, ctx.conditional or not certain)
+        if choice is not None and name in choice:
+            choice[name] = text
+
+    text = _expand_text(word.text, value, at_start=True, assign=assign)
+    return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted, splits=word.splits,
+                heredoc_body=word.heredoc_body, substitutions=word.substitutions)
+
+
+# Records `${NAME:=word}`: (name, value, whether the assignment certainly happens).
+_Assigner = Callable[[str, str, bool], None]
+
+
+def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: bool,
+                 assign: _Assigner | None = None) -> str:
+    """Replace `$NAME`/`${NAME}` whose value is known, and resolve `${NAME:-word}`,
+    `${NAME:=word}` and `${NAME:+word}` to the value they select. When NAME is not
+    known it may be unset, so the default or alternate `word` is the candidate:
+    `> "${OUT:-$HOME/.claude/settings.json}"` writes settings.json. Anything else
+    (`${#X}`, `${X/a/b}`, unknown names) stays as written. `assign` records
+    what `${NAME:=word}` assigns, which later expansions then see."""
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        literal = _literal_substitution(text, index)
+        if literal is not None:
+            # `$(printf git)` / `` `echo git` ``: the output of a literal echo is known.
+            output, index = literal
+            out.append(output)
+            continue
+        if text.startswith("${", index):
+            end = _closing_brace(text, index + 2)
+            if end is None:
+                out.append(text[index:])
+                break
+            out.append(_expand_braced(text[index + 2:end], text[index:end + 1], value,
+                                      at_start and index == 0, assign))
+            index = end + 1
+            continue
+        name = _NAME.match(text, index + 1) if text[index] == "$" else None
+        if name is None and text[index] == "$" and index + 1 < len(text) and text[index + 1] in "0123456789#@*":
+            name = _ONE_CHAR.match(text, index + 1)  # `$1`, `$#`, `$@`
+        if name:
+            found = value(name.group(0), at_start and index == 0)
+            out.append(text[index:name.end()] if found is None else found)
+            index = name.end()
+            continue
+        out.append(text[index])
+        index += 1
+    return "".join(out)
+
+
+def _literal_substitution(text: str, index: int) -> tuple[str, int] | None:
+    """(output, end) for a command substitution at `index` whose body only echoes
+    literal text; trailing newlines are dropped, as bash does. None otherwise."""
+    from shell_parse import parse  # re-entry: parsed as a command list
+    if text.startswith("$(", index) and not text.startswith("$((", index):
+        depth, end = 1, index + 2
+        while end < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[end], 0)
+            end += 1
+        if depth:
+            return None
+        body = text[index + 2:end - 1]
+    elif text[index] == "`":
+        close = text.find("`", index + 1)
+        if close < 0:
+            return None
+        body, end = text[index + 1:close], close + 1
+    else:
+        return None
+    producer = parse(body, "/")
+    temporary = _mktemp_path(producer)
+    if temporary is not None:
+        return temporary, end
+    if not producer.commands or producer.unparseable or any(
+            c.name not in ("echo", "printf") or c.dynamic_head or c.via or c.redirects
+            or any("$" in a or "`" in a for a in c.argv) for c in producer.commands):
+        return None
+    printed = [shell_printf.printed_text(c.name, c.args) for c in producer.commands]
+    if any(p is None for p in printed):
+        return None
+    return "".join(printed).rstrip("\n"), end
+
+
+def _mktemp_path(producer: ParseResult) -> str | None:
+    """`$(mktemp)`, `$(mktemp -d -p DIR)`, `$(mktemp -t name.XXXX)`: a new path in
+    a known directory. Its name is random, so the template stands for it."""
+    if len(producer.commands) != 1 or producer.commands[0].name != "mktemp" or producer.commands[0].via:
+        return None
+    args = list(producer.commands[0].args)
+    directory, template, under_tmpdir, index = None, None, False, 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-p", "--tmpdir") and index + 1 < len(args):
+            directory, index = args[index + 1], index + 1
+        elif arg.startswith("--tmpdir="):
+            directory = arg.split("=", 1)[1]
+        elif arg == "-t":
+            under_tmpdir = True
+        elif arg.startswith("--suffix=") or arg in ("-d", "--directory", "-u", "--dry-run", "-q", "--quiet"):
+            pass
+        elif arg.startswith("-"):
+            return None
+        else:
+            template = arg
+        index += 1
+    if any("$" in part for part in (directory or "", template or "")):
+        return None
+    temporary_root = os.environ.get("TMPDIR") or "/tmp"
+    if template is None:
+        return os.path.join(directory or temporary_root, "tmp.XXXXXXXXXX")
+    if directory is None and not under_tmpdir:
+        return template  # `mktemp out.XXXX`: relative to the current directory
+    return os.path.join(directory or temporary_root, template)
+
+
+def _closing_brace(text: str, start: int) -> int | None:
+    depth = 1
+    for index in range(start, len(text)):
+        if text.startswith("${", index):
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | None],
+                   at_start: bool, assign: _Assigner | None = None) -> str:
+    if _NAME.fullmatch(body) or body.isdigit() or body in ("@", "*"):
+        found = value(body, at_start)
+        return original if found is None else found
+    element = _ELEMENT.fullmatch(body)
+    if element:
+        # `${X[0]}`: elements are stored as X[0], X[1]...; X[0] is also plain $X.
+        found = value(f"{element.group(1)}[{int(element.group(2))}]", False)
+        if found is None and int(element.group(2)) == 0:
+            found = value(element.group(1), False)
+        return original if found is None else found
+    if body.startswith("!") and _NAME.fullmatch(body[1:]):
+        # `${!X}`: the value of the variable whose name X holds.
+        target = value(body[1:], False)
+        found = value(target, False) if target and _NAME.fullmatch(target) else None
+        return original if found is None else found
+    if body.startswith("#") and _NAME.fullmatch(body[1:]):
+        found = value(body[1:], False)
+        return original if found is None else str(len(found))  # ${#X}
+    match = _BRACED.fullmatch(body)
+    if not match:
+        # Substring, pattern removal/replacement, case: computable once X is known.
+        name = _NAME.match(body)
+        current = value(name.group(0), False) if name else None
+        if current is None:
+            return original
+        result = shell_params.apply(current, _expand_text(body[name.end():], value, False, assign))
+        return original if result is None else result
+    name, op, word = match.groups()
+    current = value(name, False)
+    if op.endswith("?"):
+        return original if current is None else current
+    alternative = _expand_text(word, value, at_start, assign)
+    set_and_used = current is not None and (current != "" or not op.startswith(":"))
+    if op.endswith("+"):
+        # Unknown NAME may be set: the alternate word is the value to check.
+        return alternative if current is None or set_and_used else ""
+    if op.endswith("=") and not set_and_used and assign is not None:
+        assign(name, alternative, current is not None)
+    return current if set_and_used else alternative
+
+
+def echoed_text(command: SimpleCommand) -> str:
+    """The text an `echo`/`printf` prints, when it is literal ("" if not modelled)."""
+    return _echoed_text(command)
+
+
+def _echoed_text(command: SimpleCommand) -> str:
+    """What an echo/printf prints, trailing newlines dropped ("" if not modelled)."""
+    printed = shell_printf.printed_text(command.name, command.args)
+    return printed.rstrip("\n") if printed is not None else ""
