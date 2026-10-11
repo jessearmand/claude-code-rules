@@ -47,8 +47,14 @@ def _device_write(command: SimpleCommand, ctx: RuleContext) -> str | None:
             return f"redirect into {redirect.target}"
     if command.name == "dd":
         for arg in command.args:
-            if arg.startswith("of=/dev/") and not _HARMLESS_DEVICES.match(arg[3:]):
-                return f"dd {arg}"
+            if not arg.startswith("of="):
+                continue
+            # `cd /dev && dd of=sda`: a relative output resolves in the command's directory.
+            for directory in command.possible_cwds:
+                target = os.path.normpath(os.path.join(directory or "/", os.path.expanduser(arg[3:])))
+                if target.startswith("/dev/") and not _HARMLESS_DEVICES.match(target) \
+                        and (directory is not None or arg[3:].startswith("/")):
+                    return f"dd of={target}"
     return None
 
 
@@ -213,13 +219,19 @@ def _chmod_dangerous(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if command.name != "chmod":
         return None
     words = operands(command.args, frozenset({"--reference"}))
-    if len(words) < 2:
+    if any(a == "--reference" or a.startswith("--reference=") for a in command.args):
+        # `chmod --reference=RFILE FILE...`: the mode comes from RFILE; every operand is a target.
+        mode, targets = "", words
+    elif len(words) < 2:
         return None
-    mode, targets = words[0], words[1:]
+    else:
+        mode, targets = words[0], words[1:]
+    if not targets:
+        return None
     recursive = short_flag(command.args, "R") or long_flag(command.args, "--recursive")
-    if _SETUID.match(mode):
+    if mode and _SETUID.match(mode):
         return f"chmod {mode} (setuid/setgid)"
-    if _WORLD_WRITABLE.match(mode) and (recursive or any(is_broad_target(t, ctx.cwd) for t in targets)):
+    if mode and _WORLD_WRITABLE.match(mode) and (recursive or any(is_broad_target(t, ctx.cwd) for t in targets)):
         return f"chmod {'-R ' if recursive else ''}{mode}"
     if recursive and any(is_broad_target(t, ctx.cwd) for t in targets):
         return f"chmod -R on {targets[0]}"

@@ -128,6 +128,9 @@ SHOULD_BLOCK = [
     "function g { \"$@\"; }; g rm -rf victim",
     "read X < <(echo rm); \"$X\" -rf victim",
     "npm exec -c 'rm -rf victim'",  # npm exec command strings (PR review)
+    "read -a X <<< r; \"${X[0]}m\" -rf victim",  # arrays from read -a; $@ inside a word (PR review)
+    "set -- r; \"$@\"m -rf victim",
+    "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line
     "npm x --call='rm -rf victim'",
     "$(printf rm) -rf victim",  # literal command substitution (PR review)

@@ -56,6 +56,7 @@ _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
 _REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ONE_CHAR = re.compile(r".")
+_ELEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]")
 # `${NAME<op>word}` forms whose result is NAME's value or `word`.
 _BRACED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(:?[-=+?])(.*)", re.DOTALL)
 _UNRESOLVED = re.compile(r"\$|`")
@@ -588,16 +589,20 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
         return word
 
     def value(name: str, at_start: bool) -> str | None:
-        if name.isdigit() or name == "#":
+        if name.isdigit() or name in ("#", "@", "*"):
             params = _positionals(ctx)
             if params is None or name == "0":
                 return None
+            if name in ("@", "*"):
+                return " ".join(params)  # inside a longer word: `"$@"m` with $1=r is rm
             return str(len(params)) if name == "#" else (params[int(name) - 1] if int(name) <= len(params) else "")
         if choice and name in choice:
             return None if choice[name] == UNSET else choice[name]
         if name in ctx.variables:
             current = ctx.variables[name][0]
             return None if current == UNSET else current
+        if "[" in name:
+            return None
         if name == "HOME":
             return os.path.expanduser("~")
         if name == "PWD":
@@ -639,8 +644,8 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
             index = end + 1
             continue
         name = _NAME.match(text, index + 1) if text[index] == "$" else None
-        if name is None and text[index] == "$" and index + 1 < len(text) and text[index + 1] in "0123456789#":
-            name = _ONE_CHAR.match(text, index + 1)  # `$1`, `$#`
+        if name is None and text[index] == "$" and index + 1 < len(text) and text[index + 1] in "0123456789#@*":
+            name = _ONE_CHAR.match(text, index + 1)  # `$1`, `$#`, `$@`
         if name:
             found = value(name.group(0), at_start and index == 0)
             out.append(text[index:name.end()] if found is None else found)
@@ -691,8 +696,15 @@ def _closing_brace(text: str, start: int) -> int | None:
 
 def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | None],
                    at_start: bool) -> str:
-    if _NAME.fullmatch(body) or body.isdigit():
+    if _NAME.fullmatch(body) or body.isdigit() or body in ("@", "*"):
         found = value(body, at_start)
+        return original if found is None else found
+    element = _ELEMENT.fullmatch(body)
+    if element:
+        # `${X[0]}`: elements are stored as X[0], X[1]...; X[0] is also plain $X.
+        found = value(f"{element.group(1)}[{int(element.group(2))}]", False)
+        if found is None and int(element.group(2)) == 0:
+            found = value(element.group(1), False)
         return original if found is None else found
     if body.startswith("!") and _NAME.fullmatch(body[1:]):
         # `${!X}`: the value of the variable whose name X holds.
@@ -825,9 +837,17 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> 
                      and (t := _produced_text(r.target, ctx) or _input_file_text(r.target, ctx)) is not None),
                     None)
     array = "-a" in args
-    if text is None or array:
+    if text is None:
         for name in names:
             ctx.variables.pop(name, None)
+        return
+    if array:
+        # `read -a X <<< "a b"`: X[0]=a, X[1]=b (and $X is X[0]).
+        name = names[0]
+        for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
+            ctx.variables.pop(key)
+        for position, item in enumerate(text.split(delimiter, 1)[0].split()):
+            _assign(f"{name}[{position}]={item}", ctx.variables, ctx.conditional)
         return
     line = text.split(delimiter, 1)[0]
     fields = line.split(maxsplit=len(names) - 1) if len(names) > 1 else [line.strip()]
@@ -858,18 +878,21 @@ def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: boo
     still hold any of its earlier values.
     """
     name, _, value = text.partition("=")
-    if name.endswith("+"):
-        name = name[:-1]
-        values = tuple(("" if earlier == UNSET else earlier) + value
-                       for earlier in variables.get(name.split("[", 1)[0], ("",)))
-    else:
-        values = (value,)
-    name = name.split("[", 1)[0]
-    if keep_previous:
-        values = (*values, *variables.get(name, ()))
-    # Not capped: every value stays possible. Their number is bounded by the
-    # assignments written in the command line itself.
-    variables[name] = tuple(dict.fromkeys(values))
+    append = name.endswith("+")
+    name = name[:-1] if append else name
+    element = _ELEMENT.fullmatch(name)
+    # `X[2]=v` sets element X[2]; element 0 is also plain $X, as in bash.
+    keys = [f"{element.group(1)}[{int(element.group(2))}]"] if element else []
+    if not element or int(element.group(2)) == 0:
+        keys.append(name.split("[", 1)[0])
+    for key in keys:
+        values = (tuple(("" if earlier == UNSET else earlier) + value for earlier in variables.get(key, ("",)))
+                  if append else (value,))
+        if keep_previous:
+            values = (*values, *variables.get(key, ()))
+        # Not capped: every value stays possible. Their number is bounded by the
+        # assignments written in the command line itself.
+        variables[key] = tuple(dict.fromkeys(values))
 
 
 def _bounded(options: list[str | None]) -> tuple[str | None, ...]:

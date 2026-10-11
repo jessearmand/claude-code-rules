@@ -197,6 +197,9 @@ CASES = [
     ("printf 'SELECT 1;' | sqlite3 prod.db", None, None),
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 prod.db < q.sql", "deny", "sql-destructive"),
     ("$(printf git) reset --hard", "deny", "git-reset-hard"),
+    ("cd /dev && sudo dd if=/dev/zero of=sda", "deny", "device-write"),  # relative dd output (PR review)
+    ("chmod -R --reference=/var/tmp/mode /usr", "deny", "chmod-dangerous"),
+    ("chmod --reference=a.txt b.txt", None, None),
     # Anything the parser had to stop analysing asks (PR review).
     ("env " * 17 + "true", "ask", "incomplete-analysis"),
     ("printf '" + "echo ok\\n" * 70 + "' | xargs -I{} sh -c '{}'", "ask", "incomplete-analysis"),
