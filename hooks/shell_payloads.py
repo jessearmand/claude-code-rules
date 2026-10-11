@@ -30,6 +30,7 @@ from shell_model import (
     SimpleCommand,
     _Context,
 )
+from shell_state import _MAPFILE_WITH_VALUE
 from shell_streams import (
     _producer_output,
 )
@@ -208,9 +209,6 @@ def _trap_handler(args: list[str]) -> str | None:
     if len(operands) < 2 or operands[0] in ("-", ""):
         return None
     return operands[0]
-
-
-_MAPFILE_WITH_VALUE = frozenset("dnOsucC")
 
 
 def _mapfile_callback(args: list[str]) -> str | None:

@@ -139,6 +139,10 @@ def main() -> int:
     _check(argv[1] == ("echo", "a b", "[]") and argv[-1] == ("echo", "a", "b"), f"read -N / -n: {argv}", failures)
     argv = [c.argv for c in parse("trap - EXIT; trap '' INT; trap -p; trap EXIT", "/").commands]
     _check(len(argv) == 4, f"trap resets, ignores and listings run nothing: {argv}", failures)
+    argv = [c.argv for c in parse("X=(q w e); mapfile -O 1 -t X <<< z; echo ${X[0]} ${X[1]} ${X[2]}; "
+                                  "mapfile -s 1 -n 1 -t Y < <(printf '1\\n2\\n3\\n'); echo ${Y[0]} ${Y[1]}", "/").commands]
+    _check(argv[1] == ("echo", "q", "z", "e") and argv[-1] == ("echo", "2", "${Y[1]}"),
+           f"mapfile -O / -s / -n / -t: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

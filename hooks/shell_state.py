@@ -196,6 +196,8 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
     prefix assignments (`IFS=, read A B`)."""
     if argv and argv[0] == "read":
         _read_builtin(argv[1:], redirects, ctx, _ifs_values(ctx, environment))
+    elif argv and argv[0] in ("mapfile", "readarray"):
+        _mapfile_builtin(argv[1:], redirects, ctx)
     elif argv and argv[0] == "alias":
         _define_aliases(argv[1:], ctx)
     elif argv and argv[0] == "unalias":
@@ -281,15 +283,7 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
         for name in names:
             ctx.variables.pop(name, None)  # `read -n "$K"`: how much is read is not known
         return
-    text = next((r.target + "\n" if r.op == "<<<" else r.body for r in redirects
-                 if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
-                None)
-    if text is None:
-        # `read X < <(echo rm)`: what the producer prints, when that is known;
-        # `read X < file`: the file, as written earlier on the line or on disk.
-        text = next((t for r in redirects if r.op == "<" and not r.dynamic
-                     and (t := _produced_text(r.target, ctx) or _input_file_text(r.target, ctx)) is not None),
-                    None)
+    text = _stdin_text(redirects, ctx)
     array = "a" in options
     if text is None:
         for name in names:
@@ -321,6 +315,75 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
         fields = shell_ifs.split(line, ifs, len(names))
         for position, name in enumerate(names):
             _assign(f"{name}={fields[position] if position < len(fields) else ''}", ctx.variables, keep)
+
+
+def _stdin_text(redirects: list[Redirect], ctx: _Context) -> str | None:
+    """What a builtin reads on stdin, when it is literal text: a here-string or
+    heredoc, what `< <(producer)` prints, or a file written earlier on the line
+    or on disk (`< file`). None otherwise (a pipe, the terminal)."""
+    text = next((r.target + "\n" if r.op == "<<<" else r.body for r in redirects
+                 if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
+                None)
+    if text is None:
+        text = next((t for r in redirects if r.op == "<" and not r.dynamic
+                     and (t := _input_text(r.target, ctx)) is not None), None)
+    return text
+
+
+def _input_text(target: str, ctx: _Context) -> str | None:
+    """`< <(echo rm)`: what the producer prints; `< file`: the file's text."""
+    produced = _produced_text(target, ctx)
+    return produced if produced is not None else _input_file_text(target, ctx)
+
+
+_MAPFILE_WITH_VALUE = frozenset("dnOsucC")
+
+
+def _mapfile_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> None:
+    """`mapfile -t X < <(printf 'a\\nb')` sets X[0]=a, X[1]=b. Without -O the array
+    is cleared first; -O N starts at N and keeps the rest; -s skips lines,
+    -n caps their number, -t drops each line's delimiter."""
+    options: dict[str, str] = {}
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "-":
+        arg = args[index]
+        if arg == "--":
+            index += 1
+            break
+        for offset, letter in enumerate(arg[1:], start=2):
+            if letter in _MAPFILE_WITH_VALUE:
+                value = arg[offset:]
+                if not value:
+                    index += 1
+                    value = args[index] if index < len(args) else ""
+                options[letter] = value
+                break
+            options[letter] = ""
+        index += 1
+    name = args[index] if index < len(args) else "MAPFILE"
+    if not _NAME.fullmatch(name):
+        return
+    numbers = {k: options[k] for k in "nOs" if k in options}
+    text = _stdin_text(redirects, ctx) if "u" not in options else None
+    if text is None or not all(v.isdigit() for v in numbers.values()):
+        # Input or counts not known: so are the elements.
+        for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
+            ctx.variables.pop(key)
+        return
+    delimiter = options["d"][:1] or "\0" if "d" in options else "\n"
+    lines = [part + delimiter for part in text.split(delimiter)]
+    lines[-1] = lines[-1][:-1]
+    lines = [line for line in lines if line][int(numbers.get("s", 0)):]
+    if "n" in numbers and int(numbers["n"]) > 0:
+        lines = lines[:int(numbers["n"])]
+    if "t" in options:
+        lines = [line[:-1] if line.endswith(delimiter) else line for line in lines]
+    origin = int(numbers.get("O", 0))
+    if "O" not in numbers and not ctx.conditional:
+        for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
+            ctx.variables.pop(key)
+    for position, line in enumerate(lines, start=origin):
+        _assign(f"{name}[{position}]={line}", ctx.variables, ctx.conditional)
 
 
 def _read_line(text: str, delimiter: str, raw: bool) -> str:
