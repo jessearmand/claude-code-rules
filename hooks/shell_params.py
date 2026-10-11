@@ -12,12 +12,16 @@ from __future__ import annotations
 import re
 from fnmatch import fnmatchcase
 
+from shell_lexer import lex
+
 _SUBSTRING = re.compile(r":\s*(-?\d+)\s*(?::\s*(-?\d+)\s*)?")
 
 
 def apply(value: str, operator: str) -> str | None:
     """`${NAME<operator>}` when NAME holds `value`; None if `operator` is not one
-    whose result can be computed (indirection, arrays, `@` transformations)."""
+    whose result can be computed (indirection, arrays, `@P`/`@A`/`@K`/`@a`)."""
+    if operator.startswith("@"):
+        return _transform(value, operator[1:])
     substring = _SUBSTRING.fullmatch(operator)
     if substring:
         return _substring(value, int(substring.group(1)), substring.group(2))
@@ -25,6 +29,17 @@ def apply(value: str, operator: str) -> str | None:
         if operator.startswith(prefix):
             return function(value, operator[len(prefix):])
     return None
+
+
+def _transform(value: str, letter: str) -> str | None:
+    """`${X@E}` expands backslash escapes as `$'...'` does; `@U`, `@u`, `@L`
+    change case; `@Q` quotes. The others depend on state not modelled."""
+    if letter == "E":
+        decoded = lex("$'" + value.replace("'", "\\'") + "'").tokens
+        return decoded[0].text if len(decoded) == 1 else None
+    if letter == "Q":
+        return "'" + value.replace("'", "'\\''") + "'"
+    return {"U": value.upper(), "u": value[:1].upper() + value[1:], "L": value.lower()}.get(letter)
 
 
 def _substring(value: str, offset: int, length: str | None) -> str:

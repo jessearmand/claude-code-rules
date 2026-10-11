@@ -284,6 +284,13 @@ def main() -> int:
                "git -C repo checkout <path> -> deny", failures)
         _check(_decision(_run_hook("git -C repo checkout main", project)) is None,
                "git -C repo checkout <branch> -> defer", failures)
+        # A branch named like a file is checked out, not the file (PR review).
+        os.makedirs(os.path.join(project, "repo", ".git", "refs", "heads"))
+        open(os.path.join(project, "repo", ".git", "refs", "heads", "tracked"), "w").close()
+        _check(_decision(_run_hook("git -C repo checkout tracked", project)) is None,
+               "git checkout <branch that is also a file> -> defer", failures)
+        _check(_decision(_run_hook("git -C repo checkout -- tracked", project)) == "deny",
+               "git checkout -- <path> -> deny", failures)
         os.remove(os.path.join(project, "-fdx"))
         # Program text too large to read asks instead of passing (PR review).
         with open(os.path.join(project, "large.sh"), "w", encoding="utf-8") as handle:

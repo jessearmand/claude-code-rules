@@ -154,6 +154,9 @@ def main() -> int:
     argv = [c.argv for c in parse("echo $((1+2)) ok; (( n++ )); ((cd /tmp; ls))", "/").commands]
     _check(argv == [("echo", "$((1+2))", "ok"), ("(( n++ ))",), ("cd", "/tmp"), ("ls",)],
            f"$((...)) closes at `))`; ((expr)) is arithmetic, ((cmd; cmd)) subshells: {argv}", failures)
+    parsed = parse("X=abc; echo ${X@U} ${X@Q} ${X@P}", "/")
+    _check(parsed.commands[0].argv == ("echo", "ABC", "'abc'", "${X@P}") and parsed.truncated,
+           f"@ transformations; @P is not modelled: {parsed.commands[0].argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

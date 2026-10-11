@@ -179,6 +179,8 @@ SHOULD_BLOCK = [
     "X=echo; f(){ g(){ return; }; X=rm; }; f; \"$X\" -rf victim",  # a nested declaration's return is its own
     "CMD=$'\\x72m'; X='a[$(\"$CMD\" -rf victim)]'; echo \"$((X))\"",  # arithmetic evaluates X (PR review)
     "X='a[$(rm -rf victim)]'; (( X ))",
+    "X='\\x72\\x6d'; \"${X@E}\" -rf victim",  # ${X@E} expands escapes (PR review)
+    "X=RM; ${X@L} -rf victim",
     "X='a[$(rm -rf victim)]'; Y=X; let Y+1",
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
@@ -462,6 +464,11 @@ def main() -> int:
             _check(decision == "ask", f"make attached/= options (PR review): {command} -> {decision}", failures)
         decision = _decision(_run_hook("bash -n < clean.sh", project))
         _check(decision is None, f"bash -n < clean.sh only checks syntax -> {decision}", failures)
+        # `source NAME` looks NAME up in PATH first (PR review).
+        os.makedirs(os.path.join(project, "bin"))
+        _write(os.path.join(project, "bin"), "cleanup_guard_test", "rm -rf victim\n")
+        decision = _decision(_run_hook(f"PATH={project}/bin:$PATH; source cleanup_guard_test", project))
+        _check(decision == "ask", f"source NAME found in PATH -> {decision}", failures)
         # A non-interactive bash runs $BASH_ENV first (PR review).
         decision = _decision(_run_hook("printf %b '\\162\\155 -rf victim\\n' > env.sh; "
                                        "BASH_ENV=\"$PWD/env.sh\" bash -c :", project))

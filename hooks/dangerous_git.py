@@ -131,6 +131,48 @@ def _looks_like_path(operand: str, directories: tuple[str, ...]) -> bool:
     return any(os.path.exists(os.path.join(directory, operand)) for directory in directories)
 
 
+def _is_ref(name: str, directories: tuple[str, ...]) -> bool:
+    """`git checkout foo` switches to a branch or tag named foo when one exists,
+    even if a file foo exists too: look it up in the repository's refs."""
+    if name in ("HEAD", "-", "@") or name.startswith(("@{", "HEAD~", "HEAD^")):
+        return True
+    for directory in directories:
+        git_dir = _git_dir(directory)
+        if git_dir is None:
+            continue
+        for kind in ("heads", "tags"):
+            if os.path.isfile(os.path.join(git_dir, "refs", kind, name)):
+                return True
+        try:
+            with open(os.path.join(git_dir, "packed-refs"), encoding="utf-8", errors="replace") as handle:
+                if any(line.rstrip("\n").endswith((f" refs/heads/{name}", f" refs/tags/{name}")) for line in handle):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def _git_dir(directory: str) -> str | None:
+    """The .git directory of the repository `directory` is in, if any."""
+    current = os.path.abspath(directory)
+    while True:
+        candidate = os.path.join(current, ".git")
+        if os.path.isdir(candidate):
+            return candidate
+        if os.path.isfile(candidate):  # a worktree or submodule: `gitdir: PATH`
+            try:
+                with open(candidate, encoding="utf-8", errors="replace") as handle:
+                    line = handle.readline().strip()
+                if line.startswith("gitdir:"):
+                    return os.path.normpath(os.path.join(current, line[7:].strip()))
+            except OSError:
+                return None
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
 # `git checkout` options that take a separate value.
 _CHECKOUT_WITH_VALUE = frozenset({"--conflict", "--inter-hunk-context", "--unified", "-U",
                                   "--pathspec-from-file", "--orphan", "-b", "-B"})
@@ -152,7 +194,9 @@ def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
     positionals = [p for p in operands(args, _CHECKOUT_WITH_VALUE) if p != "-"]
     if len(positionals) >= 2:
         return "git checkout <ref> <path>"
-    if len(positionals) == 1 and _looks_like_path(positionals[0], git.directories or (ctx.cwd,)):
+    directories = git.directories or (ctx.cwd,)
+    if len(positionals) == 1 and _looks_like_path(positionals[0], directories) \
+            and not _is_ref(positionals[0], directories):
         return f"git checkout {positionals[0]} (a path)"
     return None
 

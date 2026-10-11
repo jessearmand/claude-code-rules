@@ -71,7 +71,7 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
             return []  # command strings and stdin are parsed by the parser itself
         return _script(shell.script, cwd, written, require_shebang=False)
     if name in ("source", "."):
-        return _script(args[0], cwd, written, require_shebang=False) if args else []
+        return _script(_source_path(args[0], command, cwd, written), cwd, written, require_shebang=False) if args else []
     if "/" in head:
         return _script(head, cwd, written, require_shebang=True)
     if name in _PACKAGE_RUNNERS:
@@ -79,6 +79,20 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
     if name in ("make", "gmake"):
         return _make(args, cwd, written)
     return []
+
+
+def _source_path(operand: str, command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) -> str:
+    """The file `source NAME` reads: a NAME without a slash is looked up in PATH
+    first (bash's default), then in the current directory."""
+    if "/" in operand:
+        return operand
+    path_values = command.env_values("PATH") or (os.environ.get("PATH", ""),)
+    for directory in path_values[0].split(os.pathsep):
+        candidate = os.path.join(os.path.expanduser(directory or "."), operand)
+        absolute = os.path.normpath(os.path.join(cwd, candidate))
+        if absolute in written or os.path.isfile(absolute):
+            return absolute
+    return operand
 
 
 # --------------------------------------------------------------------------- #

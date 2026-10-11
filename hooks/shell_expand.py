@@ -60,6 +60,7 @@ def _arithmetic_expressions(text: str) -> list[str]:
     return found
 
 
+_UNMODELLED_TRANSFORM = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?@[A-Za-z]\}")
 _ARITHMETIC_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -280,6 +281,9 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
             choice[name] = text
 
     text = _expand_text(word.text, value, at_start=True, assign=assign)
+    if _UNMODELLED_TRANSFORM.search(text):
+        # `${X@P}`, `${X@A}`...: bash computes a value this parser cannot.
+        ctx.result.truncated = True
     return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted, splits=word.splits,
                 heredoc_body=word.heredoc_body, substitutions=word.substitutions)
 
