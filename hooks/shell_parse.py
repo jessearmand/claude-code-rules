@@ -1679,6 +1679,16 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     elif name == "eval":
         if args:
             nested(" ".join(args), "eval", shares_shell=True)
+    elif name == "trap":
+        handler = _trap_handler(args)
+        if handler:
+            # `trap 'CMD' EXIT`: the shell runs CMD later, in itself.
+            nested(handler, "trap", shares_shell=True)
+    elif name in ("mapfile", "readarray"):
+        callback = _mapfile_callback(args)
+        if callback:
+            # `mapfile -C CMD`: CMD runs with the index and the line appended.
+            nested(f'{callback} 0 "$MAPFILE_LINE"', f"{name} -C", shares_shell=True)
     elif name in ("source", ".") and args:
         # `source <(printf CMD)`: the shell runs what the substitution prints.
         _produced_script(args[0], command, ctx, nested, shares_shell=True)
@@ -1841,6 +1851,37 @@ def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: 
         elif command.name == "cat" and len(command.args) == 1:
             _run_file(command.args[0], shell, ctx, nested)
     return True
+
+
+def _trap_handler(args: list[str]) -> str | None:
+    """The code `trap CODE SIGNAL...` installs; None for `-p`/`-l`, a reset (`-`,
+    a lone signal) or an ignore (`''`)."""
+    operands = args[1:] if args[:1] == ["--"] else args
+    if not operands or operands[0].startswith("-") and operands[0] != "-":
+        return None
+    if len(operands) < 2 or operands[0] in ("-", ""):
+        return None
+    return operands[0]
+
+
+_MAPFILE_WITH_VALUE = frozenset("dnOsucC")
+
+
+def _mapfile_callback(args: list[str]) -> str | None:
+    """The `-C callback` of `mapfile`/`readarray`, attached (`-Ccmd`) or not."""
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "--":
+        arg = args[index]
+        for offset, letter in enumerate(arg[1:], start=2):
+            if letter in _MAPFILE_WITH_VALUE:
+                value = arg[offset:] or (args[index + 1] if index + 1 < len(args) else "")
+                if not arg[offset:]:
+                    index += 1
+                if letter == "C":
+                    return value or None
+                break
+        index += 1
+    return None
 
 
 def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None]) -> None:
