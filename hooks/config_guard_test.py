@@ -117,6 +117,7 @@ BASH_CASES = [
     ("unzip -o payload.zip -d ~/.claude", "ask", "agent-config-dir"),
     ("tar xzf p.tgz -C ~/.claude", "ask", "agent-config-dir"),
     ("tar -tzf p.tgz -C ~/.claude", None, None),
+    ("chmod --reference=/var/tmp/mode ~/.claude/settings.json", "deny", "claude-settings"),
     ("printf x > \"$(echo $HOME/.claude/settings.json)\"", "deny", "claude-settings"),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.

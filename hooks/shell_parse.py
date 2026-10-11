@@ -819,8 +819,10 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> 
                  if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
                 None)
     if text is None:
-        # `read X < <(echo rm)`: what the producer prints, when that is known.
-        text = next((t for r in redirects if r.op == "<" and (t := _produced_text(r.target, ctx)) is not None),
+        # `read X < <(echo rm)`: what the producer prints, when that is known;
+        # `read X < file`: the file, as written earlier on the line or on disk.
+        text = next((t for r in redirects if r.op == "<" and not r.dynamic
+                     and (t := _produced_text(r.target, ctx) or _input_file_text(r.target, ctx)) is not None),
                     None)
     array = "-a" in args
     if text is None or array:
@@ -1358,6 +1360,26 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
     elif feeder.name == "cat" and len(feeder.args) == 1:
         # `cat script.sh | bash` runs the file just like `bash script.sh`.
         _run_file(feeder.args[0], command, ctx, nested)
+
+
+_MAX_INPUT_FILE = 256 * 1024
+
+
+def _input_file_text(path: str, ctx: _Context) -> str | None:
+    """A file a command reads on stdin: its text from this line's writes, or from disk."""
+    if ctx.cwd is None or path.startswith("<("):
+        return None
+    absolute = os.path.normpath(os.path.join(ctx.cwd, os.path.expanduser(path)))
+    entry = ctx.written_files.get(absolute)
+    if entry is not None:
+        return entry.text
+    try:
+        if os.path.isfile(absolute) and os.path.getsize(absolute) <= _MAX_INPUT_FILE:
+            with open(absolute, encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+    except OSError:
+        pass
+    return None
 
 
 def _produced_text(operand: str, ctx: _Context) -> str | None:
