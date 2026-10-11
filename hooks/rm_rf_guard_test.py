@@ -169,6 +169,9 @@ SHOULD_BLOCK = [
     "readarray -t X <<< rm; ${X[0]} -rf victim",
     "set -- -r; getopts r X; \"$X\"m -rf victim",  # getopts sets its variable (PR review)
     "hash -p /bin/r[m] x; x -rf victim",  # hash -p names a program (PR review)
+    "X=echo; f(){ X=rm; return; X=echo; }; f; \"$X\" -rf victim",  # nothing after return runs (PR review)
+    "X=echo; f(){ X=rm; true && return; X=ls; }; f; \"$X\" -rf victim",
+    "X=rm; trap 'X=echo' EXIT; \"$X\" -rf victim",  # a trap handler runs later (PR review)
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",

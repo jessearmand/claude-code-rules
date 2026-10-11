@@ -478,6 +478,12 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
         _follow_directory_change(command, ctx)
 
 
+def _is_return(step: _BodyStep) -> bool:
+    """A body step whose command is `return` (or `exit`, which ends more)."""
+    words = [t for t in step.tokens if isinstance(t, Word)]
+    return bool(words) and not words[0].quoted and words[0].text in ("return", "exit")
+
+
 def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     """Calling a declared function runs its body here, in this shell, with the
     call's arguments as $1..$n: `f(){ "$1" -rf x; }; f rm` runs rm."""
@@ -494,13 +500,19 @@ def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     ctx.calling.add(command.name)
     ctx.local_scopes.append(set())
     try:
+        may_have_returned = False
         for step in body:
-            ctx.conditional = conditional or step.conditional
+            # After a `return` that may have run (`cmd && return`), the rest may not.
+            ctx.conditional = conditional or step.conditional or may_have_returned
             saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables)) if step.isolated else None
             _segment(list(step.tokens), ctx, (*command.via, f"{command.name}()"), depth + 1, command.indirect,
                      ctx.next_pipeline(), 0)
             if saved:
                 ctx.cwd, ctx.cwd_options, ctx.variables = saved
+            if _is_return(step) and not step.isolated:
+                if not step.conditional:
+                    break  # `return`: nothing after it in the body runs
+                may_have_returned = True
     finally:
         # `local` variables give the caller its own values back.
         for name in ctx.local_scopes.pop():

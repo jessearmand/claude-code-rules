@@ -79,8 +79,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     elif name == "trap":
         handler = _trap_handler(args)
         if handler:
-            # `trap 'CMD' EXIT`: the shell runs CMD later, in itself.
-            nested(handler, "trap", shares_shell=True)
+            # `trap 'CMD' EXIT`: the shell runs CMD later, on the signal. It is checked
+            # now, but what it assigns must not change the commands that run before.
+            nested(handler, "trap")
     elif name in ("mapfile", "readarray"):
         callback = _mapfile_callback(args)
         if callback:
