@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from shell_interpreters import awk_commands, inline_programs, shell_strings
 from shell_lexer import HEREDOC_OPERATORS, REDIRECT_OPERATORS, Operator, Word, lex
 from shell_wrappers import (
+    CLI_OPTIONS_WITH_VALUE,
     PREFIX_WRAPPERS,
     RESERVED_PREFIXES,
     SHELLS,
@@ -184,7 +185,10 @@ def parse(command: str, cwd: str = "", sources: SourceResolver | None = None) ->
 # --------------------------------------------------------------------------- #
 
 
-def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool) -> None:
+def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
+                shares_shell: bool = False) -> None:
+    """Parse `text` as a command list. Nested code runs in a child shell unless
+    `shares_shell` (eval, source): then its `cd` and assignments persist."""
     if depth > MAX_DEPTH:
         ctx.result.truncated = True
         return
@@ -195,29 +199,30 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     if lexed.unterminated:
         ctx.result.unparseable = True
     # Nested code (`bash -c`, `$(...)`, scripts) runs in its own process: a
-    # `cd` inside it does not move the caller.
-    entry = (ctx.cwd, ctx.cwd_options)
+    # `cd` or assignment inside it does not reach the caller.
+    entry = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
 
     pipeline, stage = ctx.next_pipeline(), 0
     segment: list = []
-    subshells: list[tuple[str | None, tuple[str | None, ...]]] = []
+    subshells: list[tuple[str | None, tuple[str | None, ...], dict[str, str]]] = []
     for token in [*lexed.tokens, Operator("\n")]:
         if isinstance(token, Operator) and (token.op in _SEPARATORS or token.op in _PIPES):
             if segment:
                 _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                 segment = []
             if token.op == "(":
-                subshells.append((ctx.cwd, ctx.cwd_options))
+                subshells.append((ctx.cwd, ctx.cwd_options, dict(ctx.variables)))
             elif token.op == ")" and subshells:
-                ctx.cwd, ctx.cwd_options = subshells.pop()  # `(cd x; ...)` does not move the caller
+                # `(cd x; X=1)` changes neither the caller's directory nor its variables.
+                ctx.cwd, ctx.cwd_options, ctx.variables = subshells.pop()
             if token.op in _PIPES:
                 stage += 1
             else:
                 pipeline, stage = ctx.next_pipeline(), 0
             continue
         segment.append(token)
-    if depth > 0:
-        ctx.cwd, ctx.cwd_options = entry
+    if depth > 0 and not shares_shell:
+        ctx.cwd, ctx.cwd_options, ctx.variables = entry
 
 
 def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
@@ -260,9 +265,8 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
     """
     for token in tokens:
         for body in getattr(token, "substitutions", ()):
-            entry = (ctx.cwd, ctx.cwd_options)
+            # A subshell: _parse_into restores the caller's directory and variables.
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
-            ctx.cwd, ctx.cwd_options = entry
 
 
 def _expand_word(word: Word, ctx: _Context) -> Word:
@@ -331,6 +335,7 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
           depth: int, indirect: bool, pipeline: int, stage: int, dynamic_head: bool,
           wrappers: tuple[str, ...]) -> None:
     """Unwrap `argv`, record the resulting command, and parse anything it runs."""
+    outer: tuple[str | None, tuple[str | None, ...]] | None = None
     for _ in range(_MAX_UNWRAP):
         while argv and _ASSIGNMENT.match(argv[0]):
             argv = argv[1:]  # `sudo FOO=1 cmd`, `env A=b cmd`
@@ -340,7 +345,12 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
         step = _unwrap_once(name, argv, ctx, via, depth, indirect)
         if step is None:
             break
-        inner, label = step
+        inner, label, chdir = step
+        if chdir is not None:
+            # `env -C dir cmd`, `sudo -D dir cmd`: cmd (and what it runs) starts in dir.
+            outer = outer or (ctx.cwd, ctx.cwd_options)
+            ctx.cwd = _change_directory(ctx.cwd, chdir)
+            ctx.cwd_options = tuple(dict.fromkeys(_change_directory(o, chdir) for o in ctx.cwd_options))
         if inner is None:
             # The wrapper is a query (`command -v rm`) or ran a string we
             # already parsed; record the wrapper itself and stop.
@@ -352,7 +362,10 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
     ctx.result.commands.append(command)
     _record_written_file(command, ctx)
     _parse_payloads(command, ctx, depth)
-    _follow_directory_change(command, ctx)
+    if outer is not None:
+        ctx.cwd, ctx.cwd_options = outer  # the wrapper's directory applied to the child only
+    else:
+        _follow_directory_change(command, ctx)
 
 
 def _follow_directory_change(command: SimpleCommand, ctx: _Context) -> None:
@@ -415,39 +428,60 @@ def _join_lines(first: str, second: str) -> str:
 
 
 def _unwrap_once(name: str, argv: list[str], ctx: _Context, via: tuple[str, ...], depth: int,
-                 indirect: bool) -> tuple[list[str] | None, str] | None:
-    """One unwrapping step. None: not a wrapper. (None, label): runs nothing further here."""
+                 indirect: bool) -> tuple[list[str] | None, str, str | None] | None:
+    """One unwrapping step: (inner argv or None, label, directory it switches to).
+
+    None: not a wrapper. Inner None: the wrapper runs nothing further here.
+    """
     args = argv[1:]
     if name == "env":
         return _unwrap_env(args, ctx, via, depth, indirect)
     if name in PREFIX_WRAPPERS:
         spec = PREFIX_WRAPPERS[name]
-        if spec.command_option and spec.command_option in args:
-            command = _option_value(args, spec.command_option)
-            if command is not None:
-                _parse_into(command, ctx, (*via, f"{name} {spec.command_option}"), depth + 1, indirect)
-                return None, name
+        chdir = option_value(args, spec.chdir_options)
+        command = option_value(args, spec.command_options)
+        if command is not None:
+            _parse_into(command, ctx, (*via, f"{name} -c"), depth + 1, indirect)
+            return None, name, chdir
         inner = _skip_options(args, spec)
-        return (None if inner is None or not inner else inner), name
+        return (inner or None), name, chdir
     if name == "find":
         return None
     if name in SUBCOMMAND_RUNNERS:
-        inner = _skip_subcommand_runner(args, name)
-        return (inner, f"{name} {args[0]}") if inner else None
+        found = _skip_subcommand_runner(args, name)
+        return (found[1], f"{name} {found[0]}", None) if found else None
     return None
 
 
 def _unwrap_env(args: list[str], ctx: _Context, via: tuple[str, ...], depth: int,
-                indirect: bool) -> tuple[list[str] | None, str]:
+                indirect: bool) -> tuple[list[str] | None, str, str | None]:
+    chdir = option_value(args, PREFIX_WRAPPERS["env"].chdir_options)
     for index, arg in enumerate(args):
         split = _split_string_value(args, index, ("-S", "--split-string"))
         if split is not None:
             _parse_into(split, ctx, (*via, "env -S"), depth + 1, indirect)
-            return None, "env"
+            return None, "env", chdir
         if not arg.startswith("-"):
             break
     inner = _skip_options(args, PREFIX_WRAPPERS["env"])
-    return (inner or None), "env"
+    return (inner or None), "env", chdir
+
+
+def option_value(args: list[str] | tuple[str, ...], names: frozenset[str]) -> str | None:
+    """The value of the first option in `names`, in any spelling: `-c X`, `-cX`,
+    `--command X`, `--command=X`. Stops at `--`."""
+    for index, arg in enumerate(args):
+        if arg == "--":
+            return None
+        for name in names:
+            if arg == name:
+                return args[index + 1] if index + 1 < len(args) else None
+            if name.startswith("--") and arg.startswith(name + "="):
+                return arg.split("=", 1)[1]
+            short_attached = len(name) == 2 and not arg.startswith("--") and arg.startswith(name)
+            if short_attached and len(arg) > 2:
+                return arg[2:]
+    return None
 
 
 def _split_string_value(args: list[str], index: int, names: tuple[str, ...]) -> str | None:
@@ -458,15 +492,6 @@ def _split_string_value(args: list[str], index: int, names: tuple[str, ...]) -> 
         if arg.startswith(name + "=") or (len(name) == 2 and arg.startswith(name) and len(arg) > 2):
             first = arg.split("=", 1)[1] if "=" in arg and name.startswith("--") else arg[len(name):]
             return " ".join([first, *args[index + 1:]])
-    return None
-
-
-def _option_value(args: list[str], option: str) -> str | None:
-    for index, arg in enumerate(args):
-        if arg == option and index + 1 < len(args):
-            return args[index + 1]
-        if arg.startswith(option) and len(arg) > len(option) and not arg.startswith("--"):
-            return arg[len(option):]
     return None
 
 
@@ -500,15 +525,24 @@ def _skip_options(args: list[str], spec: WrapperSpec) -> list[str] | None:
     return args[index:] if index <= len(args) else []
 
 
-def _skip_subcommand_runner(args: list[str], name: str) -> list[str] | None:
+def _skip_subcommand_runner(args: list[str], name: str) -> tuple[str, list[str]] | None:
+    """(subcommand, command it runs) for `uv [opts] run [opts] cmd...` and the like.
+
+    Global options may come before the subcommand (`uv --directory . run ...`).
+    """
     runner = SUBCOMMAND_RUNNERS[name]
-    if not args or args[0] not in runner.subcommands:
+    global_with_value = runner.with_arg | CLI_OPTIONS_WITH_VALUE.get(name, frozenset())
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "--":
+        index += 2 if args[index] in global_with_value else 1
+    if index >= len(args) or args[index] not in runner.subcommands:
         return None
-    rest = args[1:]
+    subcommand, rest = args[index], args[index + 1:]
     if "--" in rest:
-        return rest[rest.index("--") + 1:] or None
-    inner = _skip_options(rest, WrapperSpec(runner.with_arg, runner.positionals))
-    return inner or None
+        inner = rest[rest.index("--") + 1:]
+    else:
+        inner = _skip_options(rest, WrapperSpec(runner.with_arg, runner.positionals)) or []
+    return (subcommand, inner) if inner else None
 
 
 # --------------------------------------------------------------------------- #
@@ -521,8 +555,8 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     nested_via = via
     indirect = command.indirect
 
-    def nested(text: str, label: str, from_file: bool = False) -> None:
-        _parse_into(text, ctx, (*nested_via, label), depth + 1, indirect or from_file)
+    def nested(text: str, label: str, from_file: bool = False, shares_shell: bool = False) -> None:
+        _parse_into(text, ctx, (*nested_via, label), depth + 1, indirect or from_file, shares_shell)
 
     if name in SHELLS:
         _shell_payload(command, args, ctx, nested)
@@ -535,11 +569,11 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             nested(literal, f"{name} system()")
     elif name == "eval":
         if args:
-            nested(" ".join(args), "eval")
+            nested(" ".join(args), "eval", shares_shell=True)
     elif name in STRING_RUNNERS:
         spec = STRING_RUNNERS[name]
-        if spec.command_option:
-            value = _option_value(args, spec.command_option) or _long_command(args)
+        if spec.command_options:
+            value = option_value(args, spec.command_options)
             if value is not None:
                 nested(value, f"{name} -c")
         else:
@@ -562,16 +596,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     if depth < MAX_DEPTH:
         for text, label in _sources_for(command, ctx):
             # A file written earlier in this same command line was typed by the agent.
-            nested(text, label, from_file=not label.startswith("written "))
-
-
-def _long_command(args: list[str]) -> str | None:
-    for index, arg in enumerate(args):
-        if arg == "--command" and index + 1 < len(args):
-            return args[index + 1]
-        if arg.startswith("--command="):
-            return arg.split("=", 1)[1]
-    return None
+            # `source`/`.` run the file in this shell: its cd and assignments persist.
+            nested(text, label, from_file=not label.startswith("written "),
+                   shares_shell=command.name in ("source", "."))
 
 
 def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,

@@ -74,6 +74,17 @@ SHOULD_BLOCK = [
     "X=rm; $X -rf ~",
     "T=$HOME; rm -rf \"$T\"",
     "X=rm; echo $($X -rf ~/victim)",
+    # Subshells keep their own variables; eval shares the caller's (PR review).
+    "X=rm; echo $(X=echo); $X -rf ~/victim",
+    "X=rm; (X=echo); $X -rf ~/victim",
+    "X=echo; eval X=rm; $X -rf ~/victim",
+    # Runner global options before the subcommand; long command options (PR review).
+    "uv --directory . run rm -rf build",
+    "poetry -C . run rm -rf build",
+    "pnpm --dir . exec rm -rf build",
+    "flock lockfile --command 'rm -rf build'",
+    "flock lockfile --command='rm -rf build'",
+    "su --command='rm -rf /'",
     # fish command options and substitutions inside arithmetic (PR review).
     "fish -C 'rm -rf ~/victim'",
     "fish --command='rm -rf ~/victim'",
@@ -270,6 +281,12 @@ def main() -> int:
             _check(decision == "ask", f"script on stdin (PR review): {command} -> {decision}", failures)
         _check(_decision(_run_hook("cd tools || cd other; ./wipe.sh", project)) == "ask",
                "script found in a directory a conditional cd may leave (PR review)", failures)
+        os.makedirs(os.path.join(project, "sub"))
+        _write(project, os.path.join("sub", "Makefile"), "clean:\n\trm -rf ~/victim\n")
+        for command in ("make -Csub clean", "make --directory=sub clean", "make -fsub/Makefile clean",
+                        "make --file=sub/Makefile clean"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == "ask", f"make attached/= options (PR review): {command} -> {decision}", failures)
         decision = _decision(_run_hook("bash -n < clean.sh", project))
         _check(decision is None, f"bash -n < clean.sh only checks syntax -> {decision}", failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):

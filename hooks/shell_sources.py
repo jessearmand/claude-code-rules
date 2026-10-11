@@ -289,14 +289,13 @@ def _make(args: list[str], cwd: str) -> list[tuple[str, str]]:
     directory, makefile, targets = cwd, None, []
     index = 0
     while index < len(args):
-        arg = args[index]
-        value = args[index + 1] if index + 1 < len(args) else ""
+        arg, value, step = _make_option(args, index)
         if arg in ("-C", "--directory"):
-            directory, index = _absolute(value, directory), index + 2
+            directory, index = _absolute(value, directory), index + step
         elif arg in ("-f", "--file", "--makefile"):
-            makefile, index = value, index + 2
+            makefile, index = value, index + step
         elif arg in _MAKE_OPTIONS_WITH_ARG:
-            index += 2
+            index += step
         elif arg.startswith("-") or "=" in arg:
             index += 1
         else:
@@ -312,6 +311,18 @@ def _make(args: list[str], cwd: str) -> list[tuple[str, str]]:
     rules, default = _make_rules(text)
     wanted = targets or ([default] if default else [])
     return _make_recipes(rules, wanted)
+
+
+def _make_option(args: list[str], index: int) -> tuple[str, str, int]:
+    """(option name, value, words consumed) for `-C dir`, `-Cdir`, `--directory=dir`."""
+    arg = args[index]
+    following = args[index + 1] if index + 1 < len(args) else ""
+    if arg.startswith("--") and "=" in arg:
+        name, value = arg.split("=", 1)
+        return name, value, 1
+    if not arg.startswith("--") and len(arg) > 2 and arg[:2] in _MAKE_OPTIONS_WITH_ARG:
+        return arg[:2], arg[2:], 1
+    return arg, following, 2
 
 
 def _make_rules(text: str) -> tuple[dict[str, tuple[list[str], list[str]]], str | None]:

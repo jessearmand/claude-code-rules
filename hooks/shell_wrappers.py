@@ -32,8 +32,10 @@ class WrapperSpec:
     # Options that turn the wrapper into a query that runs nothing
     # (`command -v rm`, `sudo -l`).
     no_exec: frozenset[str] = frozenset()
-    # Short option whose value is a shell command string (`su -c`, `flock -c`).
-    command_option: str | None = None
+    # Options whose value is a shell command string (`su -c`, `flock --command`).
+    command_options: frozenset[str] = frozenset()
+    # Options that change directory before running the command (`env -C`, `sudo -D`).
+    chdir_options: frozenset[str] = frozenset()
 
 
 def _opts(*names: str) -> frozenset[str]:
@@ -47,13 +49,16 @@ PREFIX_WRAPPERS: dict[str, WrapperSpec] = {
               "--command-timeout"),
         no_exec=_opts("-l", "--list", "-v", "--validate", "-k", "-K", "--reset-timestamp",
                       "--remove-timestamp", "-V", "--version", "-e", "--edit"),
+        chdir_options=_opts("-D", "--chdir"),
     ),
     "doas": WrapperSpec(_opts("-u", "-C"), no_exec=_opts("-C")),
     "pkexec": WrapperSpec(_opts("--user")),
     "run0": WrapperSpec(_opts("-u", "--user", "-g", "--group", "--chdir", "-D", "--unit",
-                              "--property", "--slice", "--description", "--setenv")),
+                              "--property", "--slice", "--description", "--setenv"),
+        chdir_options=_opts("-D", "--chdir")),
     "env": WrapperSpec(_opts("-u", "--unset", "-C", "--chdir", "-P", "--default-signal",
-                             "--ignore-signal", "--block-signal", "-a", "--argv0")),
+                             "--ignore-signal", "--block-signal", "-a", "--argv0"),
+        chdir_options=_opts("-C", "--chdir")),
     "nice": WrapperSpec(_opts("-n", "--adjustment")),
     "ionice": WrapperSpec(_opts("-c", "--class", "-n", "--classdata", "-p", "--pid",
                                 "-P", "--pgid", "-u", "--uid")),
@@ -79,12 +84,14 @@ PREFIX_WRAPPERS: dict[str, WrapperSpec] = {
                                "-I", "--replace", "-L", "--max-lines", "-n", "--max-args",
                                "-P", "--max-procs", "-s", "--max-chars", "--process-slot-var")),
     "flock": WrapperSpec(_opts("-w", "--timeout", "-E", "--conflict-exit-code"), positionals=1,
-                         command_option="-c"),
+                         command_options=_opts("-c", "--command")),
     "chroot": WrapperSpec(_opts("--userspec", "--groups"), positionals=1),
     "unshare": WrapperSpec(_opts("--mount-proc", "-S", "--setuid", "-G", "--setgid",
-                                 "-R", "--root", "-w", "--wd")),
+                                 "-R", "--root", "-w", "--wd"),
+        chdir_options=_opts("-w", "--wd")),
     "nsenter": WrapperSpec(_opts("-t", "--target", "-S", "--setuid", "-G", "--setgid",
-                                 "-R", "--root", "-w", "--wd")),
+                                 "-R", "--root", "-w", "--wd"),
+        chdir_options=_opts("-w", "--wd")),
     "dbus-launch": WrapperSpec(),
 }
 
@@ -173,12 +180,12 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
 # Wrappers whose command is a string the shell parses again.
 STRING_RUNNERS: dict[str, WrapperSpec] = {
     "su": WrapperSpec(_opts("-s", "--shell", "-g", "--group", "-G", "--supp-group",
-                            "-w", "--whitelist-environment"), command_option="-c"),
+                            "-w", "--whitelist-environment"), command_options=_opts("-c", "--command")),
     "runuser": WrapperSpec(_opts("-u", "--user", "-g", "--group", "-G", "--supp-group",
-                                 "-s", "--shell", "-w"), command_option="-c"),
+                                 "-s", "--shell", "-w"), command_options=_opts("-c", "--command")),
     "script": WrapperSpec(_opts("-E", "--echo", "-I", "--log-in", "-O", "--log-out",
                                 "-B", "--log-io", "-T", "--log-timing", "-m", "--logging-format",
-                                "-o", "--output-limit"), command_option="-c"),
+                                "-o", "--output-limit"), command_options=_opts("-c", "--command")),
     "watch": WrapperSpec(_opts("-n", "--interval", "-d", "--differences", "-q", "--equexit",
                                "--chgexit")),
 }

@@ -68,6 +68,11 @@ BASH_CASES = [
     ("echo hi > \"$OUT\"", None, None),
     # Command substitutions run after the commands before them (PR review).
     ("cd ~/.claude && echo $(printf '{}' > settings.json)", "deny", "claude-settings"),
+    # Wrappers that change directory for the command they run (PR review).
+    ("env -C ~/.claude sh -c 'echo x > settings.json'", "deny", "claude-settings"),
+    ("env --chdir=$HOME/.claude sh -c 'echo x > settings.json'", "deny", "claude-settings"),
+    ("sudo -D ~/.codex tee config.toml", "deny", "codex-config"),
+    ("env -C ~/.claude true; echo x > settings.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),
