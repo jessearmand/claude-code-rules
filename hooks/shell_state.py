@@ -32,6 +32,7 @@ from shell_model import (
     FUNCTION,
     HASHED,
     NAMEREF,
+    READONLY,
     SHELL_OPTION,
     UNSET,
     Redirect,
@@ -90,7 +91,21 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
         for word in _declare_attributes(rest[0].text, rest[1:], ctx):
             if _ASSIGNMENT.match(word.text):
                 _assign(_through_nameref(word.text, ctx), ctx.variables, ctx.conditional)
+        _mark_readonly(rest[0].text, rest[1:], ctx)
     return rest, tuple(assignments)
+
+
+def _mark_readonly(builtin: str, words: list[Word], ctx: _Context) -> None:
+    """`readonly X=v` / `declare -r X`: X keeps its value from here on."""
+    flags = "".join(w.text[1:] for w in words if w.text.startswith("-"))
+    if builtin != "readonly" and not (builtin in ("declare", "typeset", "local") and "r" in flags):
+        return
+    if builtin == "readonly" and ("f" in flags or "p" in flags):
+        return  # `readonly -f NAME` marks a function; `-p` only prints
+    for word in words:
+        name = word.text.split("=", 1)[0].rstrip("+")
+        if not word.text.startswith("-") and _NAME.fullmatch(name):
+            _assign_setting(f"{READONLY}{name}", "on", "", ctx.variables, ctx.conditional)
 
 
 # POSIX special builtins: assignments before them stay in the shell (sh, dash,
@@ -306,6 +321,8 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
         for name in argv[1:]:
             if _ELEMENT.fullmatch(name):
                 _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)  # `unset 'X[0]'`: that element
+            elif _NAME.fullmatch(name) and ctx.variables.get(READONLY + name) == ("on",):
+                pass  # a readonly variable cannot be unset
             elif _NAME.fullmatch(name):
                 # `unset X`: the variable, every element if it is an array, and its case attribute.
                 for key in [k for k in ctx.variables if k in (name, CASE + name) or k.startswith(name + "[")]:

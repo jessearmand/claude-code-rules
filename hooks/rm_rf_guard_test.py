@@ -199,6 +199,8 @@ SHOULD_BLOCK = [
     "X=rM; \"${X,,M}\" -rf victim",  # patterned case conversion (PR review)
     "printf r > cmd; printf m >> cmd; \"$(cat cmd)\" -rf victim",  # cat of a file the line wrote (PR review)
     "X=r; X+=m; \"${X/m/&}\" -rf victim",  # `&` is the matched text (PR review)
+    "readonly X=$'\\x72m'; printf -v X %s echo; \"$X\" -rf victim",  # readonly keeps its value (PR review)
+    "X=rM; \"${X,,[[:upper:]]}\" -rf victim",  # bash character classes (PR review)
     "X=; f(){ X+=$2; }; mapfile -t -C f -c 1 A <<< $'r\\nm'; \"$X\" -rf victim",  # -C per line (PR review)  # an exit that may not run ends nothing (PR review)
     "X=echo; trap '\"$X\" -rf victim' USR1; X=r; X+=m; kill -USR1 $$; X=echo",  # signal traps (PR review)
     "X=r; X+=m; coproc X=echo; \"$X\" -rf victim",  # coproc runs on its own (PR review)

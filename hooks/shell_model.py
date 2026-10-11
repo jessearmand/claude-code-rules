@@ -41,6 +41,8 @@ SHELL_OPTION = "\0shopt:"
 DESCRIPTOR = "\0fd:"
 # `declare -u X` / `-l`: "\0case:X" holds "u" or "l", applied when X is assigned.
 CASE = "\0case:"
+# `readonly X` / `declare -r X`: "\0readonly:X" holds "on"; later assignments fail.
+READONLY = "\0readonly:"
 # `hash -p /bin/rm x`: "\0hash:x" holds the program x runs (UNSET: looked up in PATH).
 HASHED = "\0hash:"
 # `alias x=rm`: "\0alias:x" holds the replacement text (UNSET: no alias).
@@ -325,6 +327,12 @@ def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: boo
     if not element or int(element.group(2)) == 0:
         keys.append(name.split("[", 1)[0])
     for key in keys:
+        if not key.startswith("\0"):
+            protected = variables.get(READONLY + key.split("[", 1)[0], ())
+            if protected == ("on",):
+                continue  # `readonly X; X=echo`: bash refuses, X keeps its value
+            if "on" in protected:
+                keep_previous = True  # may be readonly: the old value may remain
         values = (tuple(("" if earlier == UNSET else earlier) + value for earlier in variables.get(key, ("",)))
                   if append else (value,))
         if value != UNSET and not key.startswith("\0"):

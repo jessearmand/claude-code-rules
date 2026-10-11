@@ -4,14 +4,14 @@ Bash parameter-expansion operators applied to a value the parser knows.
 `X=rm; ${X:0:2} -rf v` runs `rm`; `P=~/.claude/x.bak; > "${P%.bak}"` writes
 `~/.claude/x`. shell_parse resolves the variable; this module applies the
 operator: substring, length, prefix/suffix removal, replacement and case
-modification. Patterns are shell globs, matched with fnmatch.
+modification. Patterns are shell globs, matched as bash does (shell_glob).
 """
 
 from __future__ import annotations
 
 import re
-from fnmatch import fnmatchcase
 
+import shell_glob
 from shell_lexer import lex
 
 _SUBSTRING = re.compile(r":\s*(-?\d+)\s*(?::\s*(-?\d+)\s*)?")
@@ -54,14 +54,14 @@ def _substring(value: str, offset: int, length: str | None) -> str:
 def _remove_prefix(longest: bool):
     def remove(value: str, pattern: str) -> str:
         ends = range(len(value), -1, -1) if longest else range(len(value) + 1)
-        return next((value[end:] for end in ends if fnmatchcase(value[:end], pattern)), value)
+        return next((value[end:] for end in ends if shell_glob.match(value[:end], pattern)), value)
     return remove
 
 
 def _remove_suffix(longest: bool):
     def remove(value: str, pattern: str) -> str:
         starts = range(len(value) + 1) if longest else range(len(value), -1, -1)
-        return next((value[:start] for start in starts if fnmatchcase(value[start:], pattern)), value)
+        return next((value[:start] for start in starts if shell_glob.match(value[start:], pattern)), value)
     return remove
 
 
@@ -69,7 +69,7 @@ def _first_match(value: str, pattern: str, start: int) -> tuple[int, int] | None
     """Leftmost, then longest, match of `pattern` at or after `start`."""
     for left in range(start, len(value) + 1):
         for right in range(len(value), left - 1, -1):
-            if right > left and fnmatchcase(value[left:right], pattern):
+            if right > left and shell_glob.match(value[left:right], pattern):
                 return left, right
     return None
 
@@ -123,7 +123,7 @@ def _anchored(value: str, pattern: str, at_start: bool) -> str | None:
     """The longest part of `value` matching `pattern` at its start (or end)."""
     for size in range(len(value), -1, -1):
         part = value[:size] if at_start else value[len(value) - size:]
-        if fnmatchcase(part, pattern):
+        if shell_glob.match(part, pattern):
             return part
     return None
 
@@ -134,7 +134,7 @@ def _case(upper: bool, every: bool):
     def change(value: str, pattern: str) -> str:
         pattern = pattern or "?"
         convert = str.upper if upper else str.lower
-        return "".join(convert(char) if (every or index == 0) and fnmatchcase(char, pattern) else char
+        return "".join(convert(char) if (every or index == 0) and shell_glob.match(char, pattern) else char
                        for index, char in enumerate(value))
     return change
 
