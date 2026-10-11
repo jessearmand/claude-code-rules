@@ -247,6 +247,16 @@ class _Lexer:
             digits = self._take_while(self.i + 1, "01234567", 3)
             self.i += 1 + len(digits)
             return chr(int(digits, 8))
+        if nxt in "uU":
+            # `\uHHHH` / `\UHHHHHHHH`: a Unicode character (`$'\u0072m'` is rm).
+            digits = self._take_while(self.i + 2, "0123456789abcdefABCDEF", 4 if nxt == "u" else 8)
+            if digits and int(digits, 16) <= 0x10FFFF:
+                self.i += 2 + len(digits)
+                return chr(int(digits, 16))
+        if nxt == "c" and self.i + 2 < self.n:
+            # `\cX`: the control character for X.
+            self.i += 3
+            return chr(ord(self.s[self.i - 1]) & 0x1F)
         self.i += 2
         return "\\" + nxt
 

@@ -303,11 +303,9 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
         for position, name in enumerate(names):
             _assign(f"{name}={line if position == 0 else ''}", ctx.variables, ctx.conditional)
         return
-    line = text.split(delimiter, 1)[0]
+    line = _read_line(text, delimiter, raw="r" in options)
     if count_option == "n":
         line = line[:int(options["n"])]  # `-n K`: at most K characters of the line
-    if "r" not in options:
-        line = re.sub(r"\\(.)", r"\1", line)  # without -r, a backslash escapes the next character
     for reading, ifs in enumerate(ifs_values):
         # Another possible IFS gives another possible value; earlier readings stay possible.
         keep = ctx.conditional or reading > 0
@@ -323,6 +321,28 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
         fields = shell_ifs.split(line, ifs, len(names))
         for position, name in enumerate(names):
             _assign(f"{name}={fields[position] if position < len(fields) else ''}", ctx.variables, keep)
+
+
+def _read_line(text: str, delimiter: str, raw: bool) -> str:
+    """The line `read` takes from `text`: up to the first delimiter. Without -r
+    a backslash escapes the next character, an escaped delimiter does not end
+    the line, and backslash-newline joins the next line (`r\\<newline>m` is rm)."""
+    if raw:
+        return text.split(delimiter, 1)[0]
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and index + 1 < len(text):
+            if text[index + 1] != "\n":
+                out.append(text[index + 1])
+            index += 2
+            continue
+        if char == delimiter:
+            break
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def _set_positionals(args: list[str]) -> list[str] | None:

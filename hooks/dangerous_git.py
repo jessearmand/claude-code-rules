@@ -40,16 +40,25 @@ class Git:
     config: tuple[str, ...]  # `key=value` from -c / --config-env, lower-cased keys
     # --config-env keys whose environment variable has no value we can see.
     unresolved: tuple[str, ...] = ()
+    # Where git works: the command's possible directories, then each `-C DIR`
+    # in turn. Empty when no directory is known.
+    directories: tuple[str, ...] = ()
 
 
 def git_invocation(command: SimpleCommand) -> Git | None:
     if command.name != "git" or command.dynamic_head:
         return None
     args, config, from_env = list(command.args), [], []
+    directories = [d for d in command.possible_cwds if d is not None]
     index = 0
     while index < len(args):
         arg = args[index]
         if arg in _GLOBAL_WITH_VALUE:
+            if arg == "-C" and index + 1 < len(args):
+                # `git -C a -C b`: b is relative to a.
+                target = os.path.expanduser(args[index + 1])
+                directories = ([target] if os.path.isabs(target)
+                               else [os.path.join(d, target) for d in directories])
             if arg == "-c" and index + 1 < len(args):
                 config.append(args[index + 1])
             elif arg == "--config-env" and index + 1 < len(args):
@@ -77,7 +86,8 @@ def git_invocation(command: SimpleCommand) -> Git | None:
     if not arg and not config and not unresolved:
         return None
     rest = tuple(args[index + 1:]) if arg else ()
-    return Git(arg, rest, tuple(_normalize_config(c) for c in config), tuple(unresolved))
+    return Git(arg, rest, tuple(_normalize_config(c) for c in config), tuple(unresolved),
+               tuple(dict.fromkeys(os.path.normpath(d) for d in directories)))
 
 
 def _normalize_config(item: str) -> str:
@@ -113,12 +123,12 @@ def _reset_hard(git: Git, ctx: RuleContext) -> str | None:
     return None
 
 
-def _looks_like_path(operand: str, cwd: str) -> bool:
+def _looks_like_path(operand: str, directories: tuple[str, ...]) -> bool:
     if operand in (".", "..") or operand.startswith(("./", "../", "/", ":")) or operand.endswith("/"):
         return True
     if any(ch in operand for ch in "*?["):
         return True  # a pathspec glob; branch names cannot contain these
-    return os.path.exists(os.path.join(cwd, operand))
+    return any(os.path.exists(os.path.join(directory, operand)) for directory in directories)
 
 
 # `git checkout` options that take a separate value.
@@ -142,7 +152,7 @@ def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
     positionals = [p for p in operands(args, _CHECKOUT_WITH_VALUE) if p != "-"]
     if len(positionals) >= 2:
         return "git checkout <ref> <path>"
-    if len(positionals) == 1 and _looks_like_path(positionals[0], ctx.cwd):
+    if len(positionals) == 1 and _looks_like_path(positionals[0], git.directories or (ctx.cwd,)):
         return f"git checkout {positionals[0]} (a path)"
     return None
 

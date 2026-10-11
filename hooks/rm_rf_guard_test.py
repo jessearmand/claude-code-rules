@@ -162,6 +162,9 @@ SHOULD_BLOCK = [
     "trap \"$(printf %b '\\162\\155 -rf victim')\" EXIT",  # trap handlers run later (PR review)
     "mapfile -C \"$(printf %b '\\162\\155 -rf victim #')\" -c 1 < <(printf x)",  # mapfile callbacks
     "readarray -t -C'rm -rf victim #' A < /dev/null",
+    "read X <<'EOF'\nr\\\nm\nEOF\n\"$X\" -rf victim",  # backslash-newline joins lines (PR review)
+    "$'\\u0072m' -rf victim",  # ANSI-C Unicode escapes (PR review)
+    "$'\\U00000072m' -rf victim",
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line
