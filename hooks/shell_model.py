@@ -191,6 +191,12 @@ class _Context:
     copies: dict[str, str] = field(default_factory=dict)
     # `hash -p /bin/rm x`: bare name -> the program it runs.
     hashed: dict[str, str] = field(default_factory=dict)
+    # A `return` ran in the step being parsed; the enclosing function call or
+    # sourced script decides what it ends.
+    returned: bool = False
+    # Per shell, innermost last: trap handlers to check again when it exits,
+    # as (handler, via, depth, indirect).
+    trap_frames: list[list[tuple[str, tuple[str, ...], int, bool]]] = field(default_factory=lambda: [[]])
 
     def next_pipeline(self) -> int:
         self.pipeline_counter[0] += 1

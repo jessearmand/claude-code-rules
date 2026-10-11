@@ -55,10 +55,12 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     nested_via = via
     indirect = command.indirect
 
-    def nested(text: str, label: str, not_typed: bool = False, shares_shell: bool = False) -> None:
+    def nested(text: str, label: str, not_typed: bool = False, shares_shell: bool = False,
+               return_boundary: bool = False) -> None:
         # `not_typed`: text the agent did not type as a command here (a file's
         # program, a string literal), so the guards ask about it instead of denying.
-        _parse_into(text, ctx, (*nested_via, label), depth + 1, indirect or not_typed, shares_shell)
+        _parse_into(text, ctx, (*nested_via, label), depth + 1, indirect or not_typed, shares_shell,
+                    return_boundary)
 
     if name in SHELLS:
         _shell_payload(command, args, ctx, nested)
@@ -80,8 +82,10 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
         handler = _trap_handler(args)
         if handler:
             # `trap 'CMD' EXIT`: the shell runs CMD later, on the signal. It is checked
-            # now, but what it assigns must not change the commands that run before.
+            # now, but what it assigns must not change the commands that run before;
+            # and again when the shell exits, with the variables it has then.
             nested(handler, "trap")
+            ctx.trap_frames[-1].append((handler, (*via, "trap (on exit)"), depth + 1, indirect))
     elif name in ("mapfile", "readarray"):
         callback = _mapfile_callback(args)
         if callback:
@@ -89,7 +93,7 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             nested(f'{callback} 0 "$MAPFILE_LINE"', f"{name} -C", shares_shell=True)
     elif name in ("source", ".") and args:
         # `source <(printf CMD)`: the shell runs what the substitution prints.
-        _produced_script(args[0], command, ctx, nested, shares_shell=True)
+        _produced_script(args[0], command, ctx, nested, shares_shell=True, return_boundary=True)
     elif name in STRING_RUNNERS:
         spec = STRING_RUNNERS[name]
         if spec.command_options:
@@ -127,7 +131,8 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             caller_params = ctx.variables.get(_POSITIONALS)
             if sourcing and len(command.args) > 1:
                 ctx.variables[_POSITIONALS] = (_FIELD.join(command.args[1:]),)
-            nested(text, label, not_typed=not label.startswith("written "), shares_shell=sourcing)
+            nested(text, label, not_typed=not label.startswith("written "), shares_shell=sourcing,
+                   return_boundary=sourcing)
             if sourcing and len(command.args) > 1:
                 if caller_params is None:
                     ctx.variables.pop(_POSITIONALS, None)
@@ -172,7 +177,7 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
 
 
 def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],
-                     shares_shell: bool = False) -> bool:
+                     shares_shell: bool = False, return_boundary: bool = False) -> bool:
     """A script given as `<(producer)`: parse what the producer prints when that
     is known statically (`echo`/`printf` text, `cat FILE`), as one stream. False
     if `operand` is not a process substitution."""
@@ -184,7 +189,7 @@ def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: 
     label = f"{shell.name} <({'; '.join(c.name for c in producer.commands)})"
     if output is not None:
         if output:
-            nested(output, label, shares_shell=shares_shell)
+            nested(output, label, shares_shell=shares_shell, return_boundary=return_boundary)
         return True
     if len(producer.commands) > 1:
         # Where one command's output ends and the next one's begins is not known.
@@ -195,7 +200,8 @@ def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: 
         if command.name in ("echo", "printf"):
             text = _echoed_text(command)
             if text:
-                nested(text, f"{shell.name} <({command.name})", shares_shell=shares_shell)
+                nested(text, f"{shell.name} <({command.name})", shares_shell=shares_shell,
+                       return_boundary=return_boundary)
         elif command.name == "cat" and len(command.args) == 1:
             _run_file(command.args[0], shell, ctx, nested)
     return True

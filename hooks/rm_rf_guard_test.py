@@ -172,6 +172,11 @@ SHOULD_BLOCK = [
     "X=echo; f(){ X=rm; return; X=echo; }; f; \"$X\" -rf victim",  # nothing after return runs (PR review)
     "X=echo; f(){ X=rm; true && return; X=ls; }; f; \"$X\" -rf victim",
     "X=rm; trap 'X=echo' EXIT; \"$X\" -rf victim",  # a trap handler runs later (PR review)
+    "X=echo; trap '\"$X\" -rf victim' EXIT; X=rm",  # it sees the state the shell exits with (PR review)
+    "X=echo; f(){ X=rm; if true; then return; fi; X=echo; }; f; \"$X\" -rf victim",  # return after `then`
+    "X=echo; f(){ X=rm; command return; X=echo; }; f; \"$X\" -rf victim",
+    "X=echo; source <(printf 'X=rm\\nreturn\\nX=echo\\n'); \"$X\" -rf victim",  # return ends a sourced script
+    "X=echo; f(){ g(){ return; }; X=rm; }; f; \"$X\" -rf victim",  # a nested declaration's return is its own
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",

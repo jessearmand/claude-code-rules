@@ -135,14 +135,16 @@ def parse(command: str, cwd: str = "", sources: SourceResolver | None = None) ->
     start = cwd or os.getcwd()
     context = _Context(ParseResult(), start, sources, (start,))
     _parse_into(command, context, via=(), depth=0, indirect=False)
+    _run_exit_traps(context)
     context.result.written_files = dict(context.written_files)
     return context.result
 
 
 def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
-                shares_shell: bool = False) -> None:
+                shares_shell: bool = False, return_boundary: bool = False) -> None:
     """Parse `text` as a command list. Nested code runs in a child shell unless
-    `shares_shell` (eval, source): then its `cd` and assignments persist."""
+    `shares_shell` (eval, source): then its `cd` and assignments persist.
+    `return_boundary` (a sourced script): a `return` in it ends the script."""
     if depth > MAX_DEPTH:
         ctx.result.truncated = True
         return
@@ -155,6 +157,11 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     # Nested code (`bash -c`, `$(...)`, scripts) runs in its own process: a
     # `cd` or assignment inside it does not reach the caller.
     entry = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
+    new_shell = depth > 0 and not shares_shell
+    if new_shell:
+        ctx.trap_frames.append([])
+    outer_returned = ctx.returned
+    ctx.returned = False
 
     pipeline, stage = ctx.next_pipeline(), 0
     segment: list = []
@@ -175,6 +182,7 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                     # do not let its assignments or cd change the declaring shell.
                     functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name, []))
                 isolated = token.op in _PIPES or stage > 0 or token.op == "&"
+                may_not_run = previous in _AND_OR or blocks > 0
                 if functions:
                     level = functions[-1][0]
                     functions[-1][3].append(_BodyStep(tuple(segment), isolated,
@@ -185,8 +193,19 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                     saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                     ctx.cwd, ctx.cwd_options, ctx.variables = saved
+                    ctx.returned = False  # a `return` in a subshell ends only that
                 else:
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
+                if functions:
+                    ctx.returned = False  # a body being declared does not run yet
+                if ctx.returned and return_boundary:
+                    # `return` in a sourced script ends it; after one that may not have
+                    # run, the rest of the script may not run either.
+                    ctx.returned = False
+                    if not may_not_run:
+                        segment = []
+                        break
+                    outer_conditional = True
                 while functions and blocks <= functions[-1][0]:
                     _, saved, name, body = functions.pop()
                     if name:
@@ -208,8 +227,25 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
             continue
         segment.append(token)
     ctx.conditional = outer_conditional
-    if depth > 0 and not shares_shell:
+    if new_shell:
+        # The shell ends here: its EXIT traps run with the state it ends in.
+        _run_exit_traps(ctx)
+        ctx.trap_frames.pop()
+        ctx.returned = outer_returned
         ctx.cwd, ctx.cwd_options, ctx.variables = entry
+    elif not shares_shell or return_boundary:
+        ctx.returned = outer_returned
+
+
+def _run_exit_traps(ctx: _Context) -> None:
+    """Check the shell's trap handlers again with the state it exits in:
+    `X=echo; trap '"$X" -rf v' EXIT; X=rm` runs rm. They run in a scope of
+    their own, so nothing after them sees their assignments."""
+    handlers, ctx.trap_frames[-1] = ctx.trap_frames[-1], []
+    for handler, via, depth, indirect in handlers:
+        saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
+        _parse_into(handler, ctx, via, depth, indirect, shares_shell=True)
+        ctx.cwd, ctx.cwd_options, ctx.variables = saved
 
 
 class _FunctionHeader:
@@ -231,8 +267,13 @@ class _FunctionHeader:
         return False
 
     def after_segment(self, segment: list) -> None:
-        single = len(segment) == 1 and isinstance(segment[0], Word)
-        self._name_seen = segment[0].text if single else ""
+        # `g`, or `{ g` / `then g` / `do g`: a nested declaration's name follows
+        # the reserved word that opens the enclosing block.
+        words = [t for t in segment if isinstance(t, Word)]
+        while len(words) > 1 and not words[0].quoted and words[0].text in RESERVED_PREFIXES:
+            words = words[1:]
+        single = len(words) == 1 and len(segment) == len([t for t in segment if isinstance(t, Word)])
+        self._name_seen = words[0].text if single else ""
         self._parens = 0
 
     def after_operator(self, op: str) -> None:
@@ -468,6 +509,10 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
     command = SimpleCommand(tuple(argv), redirects, via, wrappers, dynamic_head, indirect,
                             pipeline, stage, ctx.cwd, ctx.cwd_options, tuple(ctx.variables.items()))
     ctx.result.commands.append(command)
+    if command.name in ("return", "exit") and not command.dynamic_head:
+        # `return`, `then return`, `command return`: the enclosing function or
+        # sourced script ends here (`exit` ends even more).
+        ctx.returned = True
     _record_written_file(command, ctx)
     _record_link(command, ctx)
     _parse_payloads(command, ctx, depth)
@@ -476,12 +521,6 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
         ctx.cwd, ctx.cwd_options = outer  # the wrapper's directory applied to the child only
     else:
         _follow_directory_change(command, ctx)
-
-
-def _is_return(step: _BodyStep) -> bool:
-    """A body step whose command is `return` (or `exit`, which ends more)."""
-    words = [t for t in step.tokens if isinstance(t, Word)]
-    return bool(words) and not words[0].quoted and words[0].text in ("return", "exit")
 
 
 def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
@@ -505,11 +544,12 @@ def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             # After a `return` that may have run (`cmd && return`), the rest may not.
             ctx.conditional = conditional or step.conditional or may_have_returned
             saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables)) if step.isolated else None
+            ctx.returned = False
             _segment(list(step.tokens), ctx, (*command.via, f"{command.name}()"), depth + 1, command.indirect,
                      ctx.next_pipeline(), 0)
             if saved:
                 ctx.cwd, ctx.cwd_options, ctx.variables = saved
-            if _is_return(step) and not step.isolated:
+            if ctx.returned and not step.isolated:
                 if not step.conditional:
                     break  # `return`: nothing after it in the body runs
                 may_have_returned = True
@@ -522,6 +562,7 @@ def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
                 ctx.variables.pop(name, None)
         ctx.calling.discard(command.name)
         ctx.conditional = conditional
+        ctx.returned = False
         # The caller's positional parameters come back when the function returns.
         if positionals is None:
             ctx.variables.pop(_POSITIONALS, None)
