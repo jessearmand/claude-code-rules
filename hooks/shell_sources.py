@@ -77,7 +77,7 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
     if name in _PACKAGE_RUNNERS:
         return _package_script(name, args, cwd)
     if name in ("make", "gmake"):
-        return _make(args, cwd)
+        return _make(args, cwd, written)
     return []
 
 
@@ -285,7 +285,7 @@ def _package_scripts(cwd: str) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 
-def _make(args: list[str], cwd: str) -> list[tuple[str, str]]:
+def _make(args: list[str], cwd: str, written: dict[str, WrittenFile]) -> list[tuple[str, str]]:
     directory, makefile, targets = cwd, None, []
     index = 0
     while index < len(args):
@@ -303,14 +303,22 @@ def _make(args: list[str], cwd: str) -> list[tuple[str, str]]:
             index += 1
 
     path = _absolute(makefile, directory) if makefile else next(
-        (p for p in (os.path.join(directory, n) for n in _MAKEFILE_NAMES) if os.path.isfile(p)), None
+        (p for p in (os.path.join(directory, n) for n in _MAKEFILE_NAMES) if p in written or os.path.isfile(p)),
+        None,
     )
-    text = _read_text(path) if path else None
+    if path in written:
+        # A Makefile this same command line wrote: make reads the new text, and
+        # its recipes count as typed by the agent.
+        entry = written[path]
+        on_disk = "" if entry.replaces else (_read_text(path) or "")
+        text, prefix = on_disk + entry.text, "written "
+    else:
+        text, prefix = (_read_text(path) if path else None), ""
     if text is None:
         return []
     rules, default = _make_rules(text)
     wanted = targets or ([default] if default else [])
-    return _make_recipes(rules, wanted)
+    return [(recipe, prefix + label) for recipe, label in _make_recipes(rules, wanted)]
 
 
 def _make_option(args: list[str], index: int) -> tuple[str, str, int]:

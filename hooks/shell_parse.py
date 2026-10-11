@@ -65,6 +65,8 @@ _BLOCK_OPENERS = frozenset({"if", "while", "until", "for", "select", "case", "{"
 _BLOCK_CLOSERS = frozenset({"fi", "done", "esac", "}"})
 _MAX_VARIANTS = 64
 _MAX_BRACE_WORDS = 64
+# A variable value meaning "may be unset" (`true || unset X`).
+UNSET = "\0unset"
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
@@ -122,7 +124,8 @@ class SimpleCommand:
 
     def env_values(self, name: str) -> tuple[str, ...]:
         """Every value `name` may hold in this command's environment; () if unknown."""
-        return next((values for key, values in self.environment if key == name), ())
+        values = next((values for key, values in self.environment if key == name), ())
+        return tuple(value for value in values if value != UNSET)
 
 
 @dataclass(frozen=True)
@@ -454,9 +457,10 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
 
     def value(name: str, at_start: bool) -> str | None:
         if choice and name in choice:
-            return choice[name]
+            return None if choice[name] == UNSET else choice[name]
         if name in ctx.variables:
-            return ctx.variables[name][0]
+            current = ctx.variables[name][0]
+            return None if current == UNSET else current
         if name == "HOME":
             return os.path.expanduser("~")
         if name == "PWD":
@@ -578,7 +582,22 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
         for word in rest[1:]:
             if _ASSIGNMENT.match(word.text):
                 _assign(word.text, ctx.variables, ctx.conditional)
+    _builtin_mutation([word.text for word in rest], ctx)
     return rest, tuple(assignments)
+
+
+def _builtin_mutation(argv: list[str], ctx: _Context) -> None:
+    """Builtins that set or clear a variable: `printf -v X FMT ARGS`, `unset X`."""
+    if len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and _NAME.fullmatch(argv[2]):
+        text = _echoed_text(SimpleCommand(("printf", *argv[3:])))
+        if text or "%" not in argv[3]:
+            _assign(f"{argv[2]}={text}", ctx.variables, ctx.conditional)
+        else:
+            ctx.variables.pop(argv[2], None)  # a format we do not model: the value is unknown
+    elif argv and argv[0] == "unset":
+        for name in argv[1:]:
+            if _NAME.fullmatch(name):
+                _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)
 
 
 def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: bool = False) -> None:
@@ -590,7 +609,8 @@ def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: boo
     name, _, value = text.partition("=")
     if name.endswith("+"):
         name = name[:-1]
-        values = tuple(earlier + value for earlier in variables.get(name.split("[", 1)[0], ("",)))
+        values = tuple(("" if earlier == UNSET else earlier) + value
+                       for earlier in variables.get(name.split("[", 1)[0], ("",)))
     else:
         values = (value,)
     name = name.split("[", 1)[0]

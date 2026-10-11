@@ -11,6 +11,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import shell_sources  # noqa: E402
 from rm_rf_guard import analyze_target, find_recursive_force_invocations  # noqa: E402
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -111,6 +112,8 @@ SHOULD_BLOCK = [
     "X=rm; " + "; ".join(f"true || X=echo{i}" for i in range(10)) + "; $X -rf victim",
     "X=rm; X=echo & $X -rf victim",
     "X=CMD; CMD=rm; ${!X} -rf victim",  # indirect expansion (PR review)
+    "printf -v X rm; $X -rf victim",
+    "X=rm; true || unset X; $X -rf victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",
@@ -205,6 +208,12 @@ def main() -> int:
     for command in SHOULD_ALLOW:
         invocations, _ = find_recursive_force_invocations(command)
         _check(not invocations, command, failures)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # A Makefile written earlier in the same line is what make runs (PR review).
+        command = "cat > Makefile <<'EOF'\nx:\n\trm -rf victim\nEOF\nmake x"
+        invocations, _ = find_recursive_force_invocations(command, tmp, shell_sources.resolve)
+        _check(bool(invocations) and not invocations[0].indirect, "same-line Makefile recipe", failures)
 
     print("\nTarget analysis:")
     with tempfile.TemporaryDirectory() as tmp:

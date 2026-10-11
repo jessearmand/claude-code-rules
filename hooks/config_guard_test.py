@@ -11,6 +11,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import config_guard  # noqa: E402
 from config_guard import run  # noqa: E402
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,6 +101,10 @@ BASH_CASES = [
     ("P=$HOME/.claude/settings.json; P=notes & printf x > \"$P\"", "deny", "claude-settings"),
     ("> notes.txt", None, None),
     ("env -C ~/.claude -S \"sh -c 'printf x > settings.json'\"", "deny", "claude-settings"),
+    # printf -v and unset change variables (PR review).
+    ("printf -v P %s $HOME/.claude/settings.json; printf x > \"$P\"", "deny", "claude-settings"),
+    ("P=notes; unset P; printf x > \"${P-$HOME/.claude/settings.json}\"", "deny", "claude-settings"),
+    ("P=notes; printf x > \"${P-$HOME/.claude/settings.json}\"", None, None),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
@@ -161,6 +166,16 @@ def main() -> int:
         with open(os.path.join(project, "setup.sh"), "w", encoding="utf-8") as handle:
             handle.write("#!/bin/bash\necho '{}' > ~/.claude/settings.json\n")
         _check(_bash("./setup.sh", project)[0] == "ask", "settings write inside a script -> ask", failures)
+        # A glob with more matches than are checked asks (PR review).
+        crowded = os.path.join(project, "crowded")
+        os.mkdir(crowded)
+        for name in ("a", "b", "c"):
+            open(os.path.join(crowded, f".{name}{name}"), "w").close()
+        limit, config_guard._MAX_GLOB_MATCHES = config_guard._MAX_GLOB_MATCHES, 2
+        try:
+            _check(_bash("rm -r .??*", crowded)[0] == "ask", "glob past the match limit -> ask", failures)
+        finally:
+            config_guard._MAX_GLOB_MATCHES = limit
         _check(_bash("cat > s.sh <<'EOF'\necho x > ~/.zshrc\nEOF\nbash s.sh", project)[0] == "deny",
                "script written and run in one command -> deny", failures)
 

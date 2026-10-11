@@ -47,6 +47,7 @@ Wire-up (~/.claude/settings.json):
 from __future__ import annotations
 
 import glob
+import itertools
 import os
 import re
 import sys
@@ -128,12 +129,22 @@ def _expand(path: str, cwd: str) -> str:
     return os.path.normpath(path)
 
 
+_MAX_GLOB_MATCHES = 10_000
+
+
+def glob_overflows(path: str, cwd: str) -> bool:
+    """True when a glob matches more files than candidate_paths inspects."""
+    expanded = _expand(path, cwd)
+    return bool(_GLOB.search(expanded)) and \
+        sum(1 for _ in itertools.islice(glob.iglob(expanded), _MAX_GLOB_MATCHES + 1)) > _MAX_GLOB_MATCHES
+
+
 def candidate_paths(path: str, cwd: str) -> list[str]:
     """The path as written, expanded, symlink-resolved, and glob-expanded."""
     expanded = _expand(path, cwd)
     found = [path, expanded]
     if _GLOB.search(expanded):
-        found += glob.glob(expanded)[:64]
+        found += itertools.islice(glob.iglob(expanded), _MAX_GLOB_MATCHES)
     resolved = [os.path.realpath(p) for p in found[1:]]
     unique: list[str] = []
     for value in (*found, *resolved):
@@ -262,6 +273,8 @@ def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: Simp
         uncertain = "copied into a protected directory under names that cannot be known"
     else:
         rule = check_path(path, directory, write.action)
+        if rule is None and glob_overflows(path, directory):
+            rule, uncertain = CONFIG_DIR_RULE, "a glob matching more files than can be checked"
     return Finding(rule, write.path, write.action, simple.indirect, uncertain) if rule else None
 
 
