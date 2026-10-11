@@ -17,9 +17,18 @@ from shell_lexer import lex
 _SUBSTRING = re.compile(r":\s*(-?\d+)\s*(?::\s*(-?\d+)\s*)?")
 
 
-def apply(value: str, operator: str) -> str | None:
+def apply(value: str, operator: str, extglob: bool = False) -> str | None:
     """`${NAME<operator>}` when NAME holds `value`; None if `operator` is not one
-    whose result can be computed (indirection, arrays, `@P`/`@A`/`@K`/`@a`)."""
+    whose result can be computed (indirection, arrays, `@P`/`@A`/`@K`/`@a`, an
+    extglob `!(...)` pattern). `extglob`: `shopt -s extglob` is on."""
+    with shell_glob.extglob(extglob):
+        try:
+            return _apply(value, operator)
+        except shell_glob.Unsupported:
+            return None
+
+
+def _apply(value: str, operator: str) -> str | None:
     if operator.startswith("@"):
         return _transform(value, operator[1:])
     substring = _SUBSTRING.fullmatch(operator)

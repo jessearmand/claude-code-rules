@@ -245,6 +245,7 @@ CASES = [
     # A program computed from a variable the line sets, in a way not modelled (PR review).
     ("declare -A X; X[foo]=r; X[bar]=m; \"${X[foo]}${X[bar]}\" -rf victim", "ask", "incomplete-analysis"),
     ("X=(r m); i=0; \"${X[i=0]}${X[i=1]}\" -rf victim", "ask", "incomplete-analysis"),
+    ("shopt -s extglob; X=rM; \"${X/!(r)/m}\" -rf victim", "ask", "incomplete-analysis"),  # !( ) not modelled
     ("\"$EDITOR\" notes.md", None, None),  # the environment's, not computed here
     ("for r in /a/node /b/node; do \"$r\" -e 'console.log(1)'; done", None, None),
     ("printf '" + "echo ok\\n" * 70 + "' | xargs -I{} sh -c '{}'", "ask", "incomplete-analysis"),

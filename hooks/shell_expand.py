@@ -515,7 +515,8 @@ def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | 
         current = value(name.group(0), False) if name else None
         if current is None:
             return original
-        result = shell_params.apply(current, _expand_text(body[name.end():], value, False, assign))
+        result = shell_params.apply(current, _expand_text(body[name.end():], value, False, assign),
+                                    extglob=value(SHELL_OPTION + "extglob", False) == "on")
         return original if result is None else result
     name, op, word = match.groups()
     current = value(name, False)
