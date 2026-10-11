@@ -96,7 +96,8 @@ _SECRET_VALUE = re.compile(
 
 # `https://user:pass@host`: the password in a URL's userinfo.
 _URL_USERINFO = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s/:@]+:)[^\s/@]+@")
-# `curl -u user:pass`, `--user=user:pass`, `-uuser:pass`, `--proxy-user`: Basic-auth credentials.
+# The password half of Basic-auth credentials given to curl's -u / --user (spaced,
+# attached or with =) and -U / --proxy-user.
 _BASIC_AUTH_OPTION = re.compile(r"((?:\s-u|\s--user|\s--proxy-user|\s-U)(?:\s+|=)?[\"']?)([^\s:\"']+:)[^\s\"']+")
 # A PEM/OpenSSH/PGP private key block, or one cut off before its END line.
 _PRIVATE_KEY = re.compile(
