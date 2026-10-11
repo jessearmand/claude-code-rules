@@ -79,6 +79,15 @@ BASH_CASES = [
     ("uv --directory ~/.claude run --no-project sh -c 'printf x > settings.json'", "deny", "claude-settings"),
     ("pnpm --dir ~/.claude exec sh -c 'echo x > settings.json'", "deny", "claude-settings"),
     ("uv --directory ~/.claude run true; echo x > settings.json", None, None),
+    # A variable keeps every value it may hold; pipeline stages are subshells;
+    # curl/wget output options inside short-option clusters (PR review).
+    ("P=$HOME/.claude/settings.json || P=notes; printf x > \"$P\"", "deny", "claude-settings"),
+    ("if true; then P=$HOME/.claude/settings.json; fi; printf x > \"$P\"", "deny", "claude-settings"),
+    ("P=$HOME/.claude/settings.json; P=notes | cat; printf x > \"$P\"", "deny", "claude-settings"),
+    ("curl -sLo ~/.claude/settings.json https://example.com/s", "deny", "claude-settings"),
+    ("wget -qO ~/.claude/settings.json https://example.com/s", "deny", "claude-settings"),
+    ("P=$HOME/.claude/settings.json; P=notes; printf x > \"$P\"", None, None),
+    ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),

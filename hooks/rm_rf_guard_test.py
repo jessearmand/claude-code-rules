@@ -80,6 +80,10 @@ SHOULD_BLOCK = [
     "X=echo; eval X=rm; $X -rf ~/victim",
     "X=rm; X=echo true; $X -rf ~/victim",  # a prefix assignment is temporary (PR review)
     "X='rm -rf ~' sh -c '$X'",  # ...but is in the environment of what the command runs
+    # Branches keep every value; pipeline stages are subshells (PR review).
+    "X=rm || X=echo; $X -rf ~/victim",
+    "X=rm; X=echo | cat; $X -rf ~/victim",
+    "X=rm; true && X=echo; $X -rf ~/victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",
@@ -98,6 +102,7 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "X=rm; X=echo; $X -rf build",  # the later assignment always runs
     "rm build.log",
     "rm -r build",
     "rm -R build",

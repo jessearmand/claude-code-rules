@@ -25,6 +25,7 @@ to be in either case.
 
 from __future__ import annotations
 
+import itertools
 import os
 import re
 import shlex
@@ -52,6 +53,11 @@ _PARAMETER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_
 _UNRESOLVED = re.compile(r"\$|`")
 _SEPARATORS = frozenset({"&&", "||", ";", ";;", ";&", ";;&", "&", "\n", "(", ")"})
 _PIPES = frozenset({"|", "|&"})
+_AND_OR = frozenset({"&&", "||"})
+# Reserved words that open and close a compound command whose body may not run.
+_BLOCK_OPENERS = frozenset({"if", "while", "until", "for", "select", "case", "{"})
+_BLOCK_CLOSERS = frozenset({"fi", "done", "esac", "}"})
+_MAX_VARIANTS = 8
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
@@ -84,6 +90,10 @@ class SimpleCommand:
     # Every directory it might run in. A `cd` can fail (missing directory) and
     # `cd a || cd b` runs only one of them, so earlier directories stay possible.
     cwd_options: tuple[str | None, ...] = ()
+    # Values each variable may hold when the command starts: its prefix
+    # assignments (`X=1 cmd`) and assignments earlier in the line. Programs that
+    # read a variable by name (`git --config-env=key=VAR`) look it up here.
+    environment: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def possible_cwds(self) -> tuple[str | None, ...]:
@@ -102,6 +112,10 @@ class SimpleCommand:
 
     def origin(self) -> str:
         return " → ".join(self.via)
+
+    def env_values(self, name: str) -> tuple[str, ...]:
+        """Every value `name` may hold in this command's environment; () if unknown."""
+        return next((values for key, values in self.environment if key == name), ())
 
 
 @dataclass(frozen=True)
@@ -162,7 +176,11 @@ class _Context:
     # Every directory the line might be in at this point (see possible_cwds).
     cwd_options: tuple[str | None, ...] = ()
     pipeline_counter: list[int] = field(default_factory=lambda: [0])
-    variables: dict[str, str] = field(default_factory=dict)
+    # Every value each variable may hold, the latest assignment first. An
+    # assignment that may not run (`A && X=1`, an `if` body) keeps the old values.
+    variables: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # The command being parsed may not run: assignments add values, not replace them.
+    conditional: bool = False
     # Files this command line writes from literal text before running them:
     # `cat > x.sh <<'EOF' ... EOF; bash x.sh`. Absolute path -> content.
     written_files: dict[str, WrittenFile] = field(default_factory=dict)
@@ -204,12 +222,23 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
 
     pipeline, stage = ctx.next_pipeline(), 0
     segment: list = []
-    subshells: list[tuple[str | None, tuple[str | None, ...], dict[str, str]]] = []
+    subshells: list[tuple[str | None, tuple[str | None, ...], dict[str, tuple[str, ...]]]] = []
+    outer_conditional, previous, blocks = ctx.conditional, ";", 0
     for token in [*lexed.tokens, Operator("\n")]:
         if isinstance(token, Operator) and (token.op in _SEPARATORS or token.op in _PIPES):
             if segment:
-                _segment(segment, ctx, via, depth, indirect, pipeline, stage)
+                # After `&&`/`||`, or inside an if/loop/case body, the command may not run.
+                ctx.conditional = outer_conditional or previous in _AND_OR or blocks > 0
+                blocks = _track_blocks(segment, blocks)
+                if token.op in _PIPES or stage > 0:
+                    # Every part of a pipeline runs in its own subshell.
+                    saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
+                    _segment(segment, ctx, via, depth, indirect, pipeline, stage)
+                    ctx.cwd, ctx.cwd_options, ctx.variables = saved
+                else:
+                    _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                 segment = []
+            previous = token.op
             if token.op == "(":
                 subshells.append((ctx.cwd, ctx.cwd_options, dict(ctx.variables)))
             elif token.op == ")" and subshells:
@@ -221,13 +250,65 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                 pipeline, stage = ctx.next_pipeline(), 0
             continue
         segment.append(token)
+    ctx.conditional = outer_conditional
     if depth > 0 and not shares_shell:
         ctx.cwd, ctx.cwd_options, ctx.variables = entry
 
 
+def _track_blocks(tokens: list, blocks: int) -> int:
+    """Open if/loop/case/group bodies after this command's leading reserved words."""
+    for token in tokens:
+        if not isinstance(token, Word) or token.quoted or token.text not in RESERVED_PREFIXES:
+            break
+        if token.text in _BLOCK_OPENERS:
+            blocks += 1
+        elif token.text in _BLOCK_CLOSERS:
+            blocks = max(blocks - 1, 0)
+    return blocks
+
+
 def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
              pipeline: int, stage: int) -> None:
+    """Run one simple command: once per combination of values its variables may hold
+    (`P=a || P=b; cat > "$P"` may write a or b)."""
     _run_substitutions(tokens, ctx, via, depth, indirect)
+    choices = _variable_choices(tokens, ctx)
+    if len(choices) == 1:
+        _expand_and_emit(tokens, ctx, via, depth, indirect, pipeline, stage, choices[0])
+        return
+    start, conditional = (ctx.cwd, ctx.cwd_options), ctx.conditional
+    ends: list[tuple[str | None, tuple[str | None, ...]]] = []
+    for index, choice in enumerate(choices):
+        ctx.cwd, ctx.cwd_options = start
+        # Each reading adds to what an assignment may hold; only one of them runs.
+        ctx.conditional = conditional or index > 0
+        _expand_and_emit(tokens, ctx, via, depth, indirect, pipeline, stage, choice)
+        ends.append((ctx.cwd, ctx.cwd_options))
+    ctx.conditional = conditional
+    ctx.cwd = ends[0][0]
+    ctx.cwd_options = _bounded([option for _, options in ends for option in options])
+
+
+def _variable_choices(tokens: list, ctx: _Context) -> list[dict[str, str]]:
+    """One {name: value} per combination of values this command's variables may
+    hold, the current values first; [{}] when every variable has one value."""
+    names: list[str] = []
+    for token in tokens:
+        if not isinstance(token, Word) or not token.dynamic:
+            continue
+        for match in _PARAMETER.finditer(token.text):
+            name = match.group(1) or match.group(2)
+            if len(ctx.variables.get(name, ())) > 1 and name not in names:
+                names.append(name)
+    if not names:
+        return [{}]
+    combinations = itertools.product(*(ctx.variables[name] for name in names))
+    return [dict(zip(names, values, strict=True))
+            for values in itertools.islice(combinations, _MAX_VARIANTS)]
+
+
+def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
+                     pipeline: int, stage: int, choice: dict[str, str]) -> None:
     words: list[Word] = []
     redirects: list[Redirect] = []
     index = 0
@@ -239,12 +320,12 @@ def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indi
                 if token.op in HEREDOC_OPERATORS:
                     redirects.append(Redirect(token.op, target.text, False, target.heredoc_body))
                 else:
-                    expanded = _expand_word(target, ctx)
+                    expanded = _expand_word(target, ctx, choice)
                     redirects.append(Redirect(token.op, expanded.text, expanded.dynamic))
                 index += 2
                 continue
         elif isinstance(token, Word):
-            words.extend(_split_unquoted(token, _expand_word(token, ctx)))
+            words.extend(_split_unquoted(token, _expand_word(token, ctx, choice)))
         index += 1
 
     words, environment = _strip_prelude(words, ctx)
@@ -282,20 +363,23 @@ def _split_unquoted(original: Word, expanded: Word) -> list[Word]:
             for i, part in enumerate(parts)]
 
 
-def _expand_word(word: Word, ctx: _Context) -> Word:
+def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None) -> Word:
     """Substitute parameters whose value is known at this point in the line.
 
     `P=$HOME/.claude/settings.json; echo x > "$P"` writes a known path; so
     does `X=rm; $X -rf ~`. A word that still holds an expansion afterwards
-    (an unset variable, `${X:-d}`, `$(...)`) stays dynamic.
+    (an unset variable, `${X:-d}`, `$(...)`) stays dynamic. `choice` picks the
+    value of a variable that may hold several.
     """
     if not word.dynamic:
         return word
 
     def value(match: re.Match[str]) -> str:
         name = match.group(1) or match.group(2)
+        if choice and name in choice:
+            return choice[name]
         if name in ctx.variables:
-            return ctx.variables[name]
+            return ctx.variables[name][0]
         if name == "HOME":
             return os.path.expanduser("~")
         if name == "PWD":
@@ -335,23 +419,40 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
     rest = words[index:]
     if not rest:
         for text in assignments:
-            _assign(text, ctx)
+            _assign(text, ctx.variables, ctx.conditional)
         return rest, ()
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
         for word in rest[1:]:
             if _ASSIGNMENT.match(word.text):
-                _assign(word.text, ctx)
+                _assign(word.text, ctx.variables, ctx.conditional)
     return rest, tuple(assignments)
 
 
-def _assign(text: str, ctx: _Context) -> None:
-    """Remember `NAME=value` (already expanded); `NAME+=value` appends."""
+def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: bool = False) -> None:
+    """Remember `NAME=value` (already expanded); `NAME+=value` appends.
+
+    `keep_previous` is for an assignment that may not run: the variable may
+    still hold any of its earlier values.
+    """
     name, _, value = text.partition("=")
     if name.endswith("+"):
         name = name[:-1]
-        value = ctx.variables.get(name, "") + value
-    ctx.variables[name.split("[", 1)[0]] = value
+        values = tuple(earlier + value for earlier in variables.get(name.split("[", 1)[0], ("",)))
+    else:
+        values = (value,)
+    name = name.split("[", 1)[0]
+    if keep_previous:
+        values = (*values, *variables.get(name, ()))
+    variables[name] = tuple(dict.fromkeys(values))[:_MAX_VARIANTS]
+
+
+def _bounded(options: list[str | None]) -> tuple[str | None, ...]:
+    """Distinct directory options; past the limit, the rest become unknown (None)."""
+    distinct = list(dict.fromkeys(options))
+    if len(distinct) > _MAX_CWD_OPTIONS:
+        distinct = [*distinct[:_MAX_CWD_OPTIONS - 1], None]
+    return tuple(distinct)
 
 
 # --------------------------------------------------------------------------- #
@@ -389,13 +490,16 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
             break
         argv, wrappers, dynamic_head = inner, (*wrappers, label), False
 
+    variables = dict(ctx.variables)
+    for text in environment:
+        _assign(text, variables)
     command = SimpleCommand(tuple(argv), redirects, via, wrappers, dynamic_head, indirect,
-                            pipeline, stage, ctx.cwd, ctx.cwd_options)
+                            pipeline, stage, ctx.cwd, ctx.cwd_options, tuple(variables.items()))
     ctx.result.commands.append(command)
     _record_written_file(command, ctx)
-    caller_variables = dict(ctx.variables)
-    for text in environment:
-        _assign(text, ctx)
+    caller_variables = ctx.variables
+    if environment:
+        ctx.variables = variables
     _parse_payloads(command, ctx, depth)
     if environment:
         ctx.variables = caller_variables
@@ -418,10 +522,7 @@ def _follow_directory_change(command: SimpleCommand, ctx: _Context) -> None:
     # The `cd` may fail, or sit in a branch that does not run (`cd a || cd b`):
     # the directories possible before it stay possible after it.
     moved = [_change_directory(option, target) for option in ctx.cwd_options]
-    options = list(dict.fromkeys([*ctx.cwd_options, *moved]))
-    if len(options) > _MAX_CWD_OPTIONS:
-        options = [*options[:_MAX_CWD_OPTIONS - 1], None]
-    ctx.cwd_options = tuple(options)
+    ctx.cwd_options = _bounded([*ctx.cwd_options, *moved])
 
 
 def _change_directory(current: str | None, target: str | None) -> str | None:

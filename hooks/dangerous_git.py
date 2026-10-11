@@ -37,30 +37,47 @@ _GLOBAL_WITH_VALUE = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--names
 class Git:
     subcommand: str
     args: tuple[str, ...]
-    config: tuple[str, ...]  # values of -c / --config-env, lower-cased keys
+    config: tuple[str, ...]  # `key=value` from -c / --config-env, lower-cased keys
+    # --config-env keys whose environment variable has no value we can see.
+    unresolved: tuple[str, ...] = ()
 
 
 def git_invocation(command: SimpleCommand) -> Git | None:
     if command.name != "git" or command.dynamic_head:
         return None
-    args, config = list(command.args), []
+    args, config, from_env = list(command.args), [], []
     index = 0
     while index < len(args):
         arg = args[index]
         if arg in _GLOBAL_WITH_VALUE:
-            if arg in ("-c", "--config-env") and index + 1 < len(args):
+            if arg == "-c" and index + 1 < len(args):
                 config.append(args[index + 1])
+            elif arg == "--config-env" and index + 1 < len(args):
+                from_env.append(args[index + 1])
             index += 2
             continue
         if arg.startswith("-c") and len(arg) > 2:
             config.append(arg[2:])
         elif arg.startswith("--config-env="):
-            config.append(arg.split("=", 1)[1])
+            from_env.append(arg.split("=", 1)[1])
         if arg.startswith("-"):
             index += 1
             continue
-        return Git(arg, tuple(args[index + 1:]), tuple(_normalize_config(c) for c in config))
-    return Git("", (), tuple(_normalize_config(c) for c in config)) if config else None
+        break
+    else:
+        arg = ""
+    unresolved: list[str] = []
+    for item in from_env:
+        # `--config-env=key=VAR`: git reads the value from $VAR.
+        key, _, variable = item.partition("=")
+        values = command.env_values(variable)
+        config += [f"{key}={value}" for value in values]
+        if not values:
+            unresolved.append(key.lower())
+    if not arg and not config and not unresolved:
+        return None
+    rest = tuple(args[index + 1:]) if arg else ()
+    return Git(arg, rest, tuple(_normalize_config(c) for c in config), tuple(unresolved))
 
 
 def _normalize_config(item: str) -> str:
@@ -340,6 +357,14 @@ def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
     return None
 
 
+def _config_from_unknown_env(command: SimpleCommand, ctx: RuleContext) -> str | None:
+    git = git_invocation(command)
+    for key in git.unresolved if git else ():
+        if key.startswith("alias.") or key in _PROGRAM_KEYS or key in ("core.hookspath", "http.sslverify"):
+            return f"git --config-env={key}=<unknown value>"
+    return None
+
+
 def _no_verify(command: SimpleCommand, ctx: RuleContext) -> str | None:
     git = git_invocation(command)
     if git and git.subcommand in ("commit", "push", "merge", "am", "rebase") and has(git.args, "--no-verify"):
@@ -394,6 +419,10 @@ GIT_RULES: tuple[DangerRule, ...] = (
     DangerRule("git-unsafe-override", HIGH, "disables TLS verification or runs a program through git config",
                "Do not weaken transport security or inject programs via `-c`; fix the underlying issue.",
                _unsafe_override),
+    DangerRule("git-config-env-unknown", HIGH,
+               "sets an alias, hook path or program through --config-env from a variable that cannot be checked",
+               "Pass the value inline with `-c key=value` so it can be checked, or ask the user.",
+               _config_from_unknown_env, decision="ask"),
     DangerRule("git-no-verify", HIGH, "--no-verify skips the repository's hooks and checks",
                "Fix what the hook reports instead of skipping it, or ask the user.", _no_verify,
                decision="ask"),

@@ -108,20 +108,65 @@ def _dd(args: tuple[str, ...]) -> list[PathWrite]:
     return [PathWrite(arg[3:], WRITE) for arg in args if arg.startswith("of=")]
 
 
+# Short options that take a value: in a cluster, the rest of the argument (or
+# the next one) is that value, so `curl -sLo out URL` saves to `out`.
+_DOWNLOAD_SHORT_WITH_VALUE = {
+    "curl": frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz"),
+    "wget": frozenset("aABDeiIlOoPQRtTUwX"),
+}
+# (output, remote-name flag, directory) as (short letter, long names).
+_DOWNLOAD_OPTIONS = {
+    "curl": (("o", ("--output",)), ("O", ("--remote-name", "--remote-name-all")), ("", ("--output-dir",))),
+    "wget": (("O", ("--output-document",)), ("", ()), ("P", ("--directory-prefix",))),
+}
+
+
+def _short_options(name: str, args: tuple[str, ...]) -> list[tuple[str, str | None]]:
+    """Each short option of a curl/wget call with its value, clusters expanded:
+    `-sLo out` gives s, L and (o, "out"). wget's `-nv`/`-nc` are single options."""
+    with_value = _DOWNLOAD_SHORT_WITH_VALUE[name]
+    found: list[tuple[str, str | None]] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            break
+        if not arg.startswith("-") or arg.startswith("--") or len(arg) < 2:
+            continue
+        position = 1
+        while position < len(arg):
+            letter = arg[position]
+            if name == "wget" and letter == "n":
+                position += 2  # -nv, -nc, -nd, -nH, -np
+                continue
+            if letter in with_value:
+                value = arg[position + 1:]
+                if not value and index < len(args):
+                    value, index = args[index], index + 1
+                found.append((letter, value))
+                break
+            found.append((letter, None))
+            position += 1
+    return found
+
+
 def _download(name: str, args: tuple[str, ...]) -> list[PathWrite]:
     """Files a curl/wget call saves: an explicit output, or the URL's own file name
     (`curl -O URL`, and wget's default)."""
-    explicit = _option_value(args, ("-o", "--output") if name == "curl" else ("-O", "--output-document"))
-    if explicit == "-":
-        return []
-    directory = _option_value(args, ("--output-dir",) if name == "curl" else ("-P", "--directory-prefix"))
-    if explicit:
-        names = [explicit]
-    elif name == "wget" or any(a in ("-O", "--remote-name", "--remote-name-all") for a in args):
+    (out_letter, out_long), (remote_letter, remote_long), (dir_letter, dir_long) = _DOWNLOAD_OPTIONS[name]
+    short = _short_options(name, args)
+    explicit = [value for letter, value in short if letter == out_letter and value is not None]
+    long_output = _option_value(args, out_long)
+    if long_output is not None:
+        explicit.append(long_output)
+    directory = next((value for letter, value in short if dir_letter and letter == dir_letter), None)
+    directory = _option_value(args, dir_long) or directory
+    names = [path for path in explicit if path != "-"]
+    remote = any(letter == remote_letter for letter, _ in short) or any(a in remote_long for a in args)
+    if not explicit and (name == "wget" or remote):
         urls = [a for a in args if "://" in a and not a.startswith("-")]
         names = [url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] or "index.html" for url in urls]
-    else:
-        names = []
     return [PathWrite(f"{directory.rstrip('/')}/{n}" if directory and not n.startswith("/") else n, WRITE)
             for n in names]
 
