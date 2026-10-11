@@ -75,13 +75,15 @@ _DISKUTIL_DESTRUCTIVE = frozenset({"eraseDisk", "eraseVolume", "partitionDisk", 
                                    "apfs"})
 
 
-def _names_device(args: tuple[str, ...]) -> bool:
-    """A /dev path or a computed one; formatting an image file is harmless."""
-    return any(a.startswith("/dev/") or "$" in a or "`" in a for a in operands(args))
+def _names_device(command: SimpleCommand) -> bool:
+    """A /dev path, from any directory the command may run in (`cd /dev && mkfs
+    sdb1`), or a computed one; formatting an image file is harmless."""
+    return any(a.startswith("/dev/") or "$" in a or "`" in a or _device_paths(a, command)
+               for a in operands(command.args))
 
 
 def _disk_format(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    if _FORMATTERS.match(command.name) and _names_device(command.args):
+    if _FORMATTERS.match(command.name) and _names_device(command):
         return command.name
     if command.name in ("fdisk", "parted", "gdisk", "sgdisk") and not (short_flag(command.args, "l") or has(command.args, "print")):
         return command.name

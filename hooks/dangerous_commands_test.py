@@ -76,6 +76,8 @@ CASES = [
     ("dd if=in.img of=out.img", None, None),
     ("cat image > /dev/disk2", "deny", "device-write"),
     ("mkfs.ext4 /dev/sdb1", "deny", "disk-format"),
+    ("cd /dev && mkfs.ext4 sdb1", "deny", "disk-format"),  # relative to /dev (PR review)
+    ("cd /dev/disk && mkfs.ext4 ../sdb1", "deny", "disk-format"),
     ("diskutil eraseDisk APFS X disk4", "deny", "disk-format"),
     ("diskutil list", None, None),
     # ---- permissions and persistence ----
@@ -170,6 +172,7 @@ CASES = [
     ("git -c core.sshCommand=./helper fetch", "deny", "git-unsafe-override"),
     ("git push origin\r--force", None, None),
     ("mkfs.ext4 disk.img", None, None),
+    ("cd /tmp && mkfs.ext4 sdb1", None, None),
     ("find . -name -delete -print", None, None),
     ("find . -exec echo -delete \\;", None, None),
     ("find /tmp/build-cache -name '*.o' -delete", "ask", "find-delete"),

@@ -285,6 +285,8 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
         return word
 
     def value(name: str, at_start: bool) -> str | None:
+        if name.startswith(_WRITTEN_FILE):
+            return _written_text(name[len(_WRITTEN_FILE):], ctx)
         if name.isdigit() or name in ("#", "@", "*"):
             params = _positionals(ctx)
             if params is None or name == "0":
@@ -347,7 +349,7 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
     out: list[str] = []
     index = 0
     while index < len(text):
-        literal = _literal_substitution(text, index, value(SHELL_OPTION + "xpg_echo", False) == "on")
+        literal = _literal_substitution(text, index, value(SHELL_OPTION + "xpg_echo", False) == "on", value)
         if literal is not None:
             # `$(printf git)` / `` `echo git` ``: the output of a literal echo is known.
             output, index = literal
@@ -375,7 +377,21 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
     return "".join(out)
 
 
-def _literal_substitution(text: str, index: int, xpg_echo: bool = False) -> tuple[str, int] | None:
+# `value("\0written:PATH")` is the text this line wrote to PATH, if it did.
+_WRITTEN_FILE = "\0written:"
+
+
+def _written_text(path: str, ctx: _Context) -> str | None:
+    """The text this line wrote to `path` (`printf r > f; printf m >> f`), when the
+    directory is known; files on disk are not read here."""
+    if ctx.cwd is None or len(set(ctx.cwd_options)) > 1:
+        return None
+    entry = ctx.written_files.get(os.path.normpath(os.path.join(ctx.cwd, os.path.expanduser(path))))
+    return entry.text if entry is not None and entry.replaces else None
+
+
+def _literal_substitution(text: str, index: int, xpg_echo: bool = False,
+                          value: Callable[[str, bool], str | None] | None = None) -> tuple[str, int] | None:
     """(output, end) for a command substitution at `index` whose body only echoes
     literal text; trailing newlines are dropped, as bash does. None otherwise."""
     from shell_parse import parse  # re-entry: parsed as a command list
@@ -399,13 +415,24 @@ def _literal_substitution(text: str, index: int, xpg_echo: bool = False) -> tupl
     if temporary is not None:
         return temporary, end
     if not producer.commands or producer.unparseable or any(
-            c.name not in ("echo", "printf") or c.dynamic_head or c.via or c.redirects
+            c.name not in ("echo", "printf", "cat") or c.dynamic_head or c.via or c.redirects
             or any("$" in a or "`" in a for a in c.argv) for c in producer.commands):
         return None
-    printed = [shell_printf.printed_text(c.name, c.args, xpg_echo) for c in producer.commands]
+    printed = [_printed(c, xpg_echo, value) for c in producer.commands]
     if any(p is None for p in printed):
         return None
-    return "".join(printed).rstrip("\n"), end
+    return "".join(p for p in printed if p is not None).rstrip("\n"), end
+
+
+def _printed(command: SimpleCommand, xpg_echo: bool, value: Callable[[str, bool], str | None] | None) -> str | None:
+    """What one producer command prints: echo/printf text, or `cat FILE...` of
+    files written earlier on the line (`printf r > f; "$(cat f)"`)."""
+    if command.name != "cat":
+        return shell_printf.printed_text(command.name, command.args, xpg_echo)
+    if value is None or not command.args or any(a.startswith("-") for a in command.args):
+        return None
+    texts = [value(_WRITTEN_FILE + path, False) for path in command.args]
+    return None if any(t is None for t in texts) else "".join(t for t in texts if t is not None)
 
 
 def _mktemp_path(producer: ParseResult) -> str | None:
