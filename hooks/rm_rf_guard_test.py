@@ -190,7 +190,10 @@ SHOULD_BLOCK = [
     "X=r''m; read -t0 X <<<echo; \"$X\" -rf victim",  # read -t 0 assigns nothing (PR review)
     "X=rm; read -t \"$T\" X <<<echo; $X -rf victim",
     "X=echo; trap '\"$X\" -rf victim' EXIT; X=r; X+=m; exit; X=echo",  # exit ends the shell (PR review)
-    "f(){ false && exit; }; f; rm -rf victim",  # an exit that may not run ends nothing (PR review)
+    "f(){ false && exit; }; f; rm -rf victim",
+    "sqlite3 :memory: '.read \"|rm -rf victim\"'",  # a `|CMD` file name runs CMD (PR review)
+    "sqlite3 app.db '.once |rm -rf victim'",
+    "exec 3<<<'rm -rf victim'; bash <&3",  # a shell reading a descriptor exec opened  # an exit that may not run ends nothing (PR review)
     "X=echo; trap '\"$X\" -rf victim' USR1; X=r; X+=m; kill -USR1 $$; X=echo",  # signal traps (PR review)
     "X=r; X+=m; coproc X=echo; \"$X\" -rf victim",  # coproc runs on its own (PR review)
     "X=r; X+=m; coproc name { X=echo; }; \"$X\" -rf victim",
@@ -245,6 +248,7 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "bash <<< 'rm -rf victim' <<< :",  # only the last stdin redirect is read (PR review)
     "read -r X <<<'r\\m'; \"$X\" -rf victim",
     "npm exec -- eslint .",
     "pnpm --dir . exec sh -c 'echo hi'",
@@ -511,6 +515,13 @@ def main() -> int:
         decision = _decision(_run_hook("printf %b '\\162\\155 -rf victim\\n' > env.sh; "
                                        "BASH_ENV=\"$PWD/env.sh\" bash -c :", project))
         _check(decision == "ask", f"BASH_ENV startup file -> {decision}", failures)
+        decision = _decision(_run_hook("printf %b '\\162\\155 -rf victim\\n' > env.sh; "
+                                       "BASH_ENV='$PWD/env.sh' bash -c :", project))
+        _check(decision == "ask", f"bash expands BASH_ENV itself (PR review) -> {decision}", failures)
+        os.makedirs(os.path.join(project, "safe"))
+        _write(os.path.join(project, "safe"), "cleanup_guard_test", "echo ok\n")
+        decision = _decision(_run_hook("PATH=bin; false && PATH=safe; source cleanup_guard_test", project))
+        _check(decision == "ask", f"source searches every PATH the line may have (PR review) -> {decision}", failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)

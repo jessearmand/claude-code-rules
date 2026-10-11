@@ -71,7 +71,11 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
             return []  # command strings and stdin are parsed by the parser itself
         return _script(shell.script, cwd, written, require_shebang=False)
     if name in ("source", "."):
-        return _script(_source_path(args[0], command, cwd, written), cwd, written, require_shebang=False) if args else []
+        if not args:
+            return []
+        # Each PATH the line may have gives the file `source` may read.
+        return [entry for path in _source_paths(args[0], command, cwd, written)
+                for entry in _script(path, cwd, written, require_shebang=False)]
     if "/" in head:
         return _script(head, cwd, written, require_shebang=True)
     if name in _PACKAGE_RUNNERS:
@@ -81,13 +85,19 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
     return []
 
 
-def _source_path(operand: str, command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) -> str:
-    """The file `source NAME` reads: a NAME without a slash is looked up in PATH
-    first (bash's default), then in the current directory."""
+def _source_paths(operand: str, command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) -> list[str]:
+    """The files `source NAME` may read, one per value PATH may hold: a NAME
+    without a slash is looked up in PATH first (bash's default), then in the
+    current directory."""
     if "/" in operand:
-        return operand
+        return [operand]
     path_values = command.env_values("PATH") or (os.environ.get("PATH", ""),)
-    for directory in path_values[0].split(os.pathsep):
+    return list(dict.fromkeys(_source_path(operand, value, cwd, written) for value in path_values))
+
+
+def _source_path(operand: str, path_value: str, cwd: str, written: dict[str, WrittenFile]) -> str:
+    """The file `source NAME` reads when PATH is `path_value`."""
+    for directory in path_value.split(os.pathsep):
         candidate = os.path.join(os.path.expanduser(directory or "."), operand)
         absolute = os.path.normpath(os.path.join(cwd, candidate))
         if absolute in written or os.path.isfile(absolute):

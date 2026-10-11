@@ -7,6 +7,7 @@ Each is parsed again as a nested command list. Part of shell_parse.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from collections.abc import Callable
@@ -27,11 +28,12 @@ from shell_model import (
     _POSITIONALS,
     MAX_DEPTH,
     SOURCE_TOO_LARGE,
+    Redirect,
     SimpleCommand,
     _Context,
     _Trap,
 )
-from shell_state import _MAPFILE_WITH_VALUE
+from shell_state import _MAPFILE_WITH_VALUE, _opened_text
 from shell_streams import (
     _producer_output,
     parse_producer,
@@ -158,8 +160,8 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         return  # `-n`: read and syntax-check only, never execute
     if command.name == "bash":
         # A non-interactive bash first runs the file $BASH_ENV names, `bash -c` included.
-        for path in command.env_values("BASH_ENV"):
-            if path and "$" not in path:
+        for value in command.env_values("BASH_ENV"):
+            for path in _startup_paths(value, command, ctx):
                 _run_file(path, command, ctx, nested)
     prelude = _option_prelude(command.name, args)
     for text in shell.commands:
@@ -168,16 +170,12 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         _produced_script(shell.script, command, ctx, nested)  # `bash <(echo CMD)`
     if not shell.reads_stdin:
         return  # a command string or a script file (shell_sources resolves the file)
-    for redirect in command.redirects:
-        if redirect.op in HEREDOC_OPERATORS and redirect.body is not None:
-            nested(redirect.body, f"{command.name} <<heredoc")
-        elif redirect.op == "<<<":
-            nested(redirect.target, f"{command.name} <<<")
-        elif redirect.op == "<" and _produced_script(redirect.target, command, ctx, nested):
-            pass  # `bash < <(printf CMD)`
-        elif redirect.op == "<" and not redirect.dynamic:
-            # `bash < script.sh` runs the file just like `bash script.sh`.
-            _run_file(redirect.target, command, ctx, nested)
+    # Redirections apply in order: the shell reads only the last one to stdin,
+    # which also replaces a pipe (`bash <<< 'rm -rf x' <<< :` runs only `:`).
+    stdin = [r for r in command.redirects if r.op in _STDIN_OPERATORS and (r.fd is None or r.fd == 0)]
+    if stdin:
+        _stdin_script(stdin[-1], command, ctx, nested)
+        return
     feeder = ctx.result.previous_stage(command)
     if feeder is None or feeder.dynamic_head:
         return
@@ -190,6 +188,62 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         _run_file(feeder.args[0], command, ctx, nested)
 
 
+_STARTUP_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _startup_paths(value: str, command: SimpleCommand, ctx: _Context) -> list[str]:
+    """The files a `BASH_ENV` value names once bash expands it: `$PWD/env.sh` in
+    each directory the command may run in, `$HOME` and the command's other
+    variables by value. One it cannot expand leaves the analysis incomplete."""
+    if not value:
+        return []
+    if "$" not in value:
+        return [value]
+    paths: list[str] = []
+    for cwd in command.possible_cwds or (None,):
+        def replace(match: re.Match[str], cwd: str | None = cwd) -> str:
+            name = match.group(1) or match.group(2)
+            values = (cwd,) if name == "PWD" else (os.path.expanduser("~"),) if name == "HOME" \
+                else command.env_values(name)
+            if len(values) != 1 or values[0] is None:
+                raise LookupError(name)
+            return values[0]
+        try:
+            expanded = _STARTUP_REFERENCE.sub(replace, value)
+        except LookupError:
+            ctx.result.truncated = True
+            continue
+        if "$" in expanded or "`" in expanded:
+            ctx.result.truncated = True  # command or arithmetic substitution
+            continue
+        paths.append(expanded)
+    return list(dict.fromkeys(paths))
+
+
+_STDIN_OPERATORS = frozenset({"<", "<<<", "<&", "<>"}) | HEREDOC_OPERATORS
+
+
+def _stdin_script(redirect: Redirect, command: SimpleCommand, ctx: _Context, nested: Callable[..., None]) -> None:
+    """Parse the script a shell reads from its stdin redirection."""
+    if redirect.op in HEREDOC_OPERATORS and redirect.body is not None:
+        nested(redirect.body, f"{command.name} <<heredoc")
+    elif redirect.op == "<<<":
+        nested(redirect.target, f"{command.name} <<<")
+    elif redirect.op in ("<", "<>") and _produced_script(redirect.target, command, ctx, nested):
+        pass  # `bash < <(printf CMD)`
+    elif redirect.op in ("<", "<>") and not redirect.dynamic:
+        # `bash < script.sh` runs the file just like `bash script.sh`.
+        _run_file(redirect.target, command, ctx, nested)
+    elif redirect.op == "<&" and redirect.target.isdigit():
+        text, _ = _opened_text(int(redirect.target), ctx)  # `exec 3<<< CMD; bash <&3`
+        if text is None:
+            ctx.result.truncated = True  # the descriptor's text is not known
+        else:
+            nested(text, f"{command.name} <&{redirect.target}")
+    elif redirect.dynamic:
+        ctx.result.truncated = True  # a computed file: the script is not known
+
+
 def _option_prelude(name: str, args: list[str]) -> str:
     """Options a new shell starts with, as commands to parse first: dash's and
     sh's echo always expands escapes, as does bash's with `-O xpg_echo`."""
@@ -199,14 +253,21 @@ def _option_prelude(name: str, args: list[str]) -> str:
 
 
 _SQLITE_SHELL = re.compile(r"^\s*\.(?:shell|system)\s+(.+)$", re.MULTILINE)
+# `.read "|CMD"`, `.import '|CMD' t`, `.output |CMD`, `.once |CMD`: a file name
+# starting with `|` is a command sqlite3 runs and reads from or writes to. Unquoted,
+# the rest of the line is the command (sqlite3 joins the remaining arguments).
+_SQLITE_PIPE = re.compile(r"""^\s*\.(?:read|import|output|once)\s+(?:"\|([^"]*)"|'\|([^']*)'|\|(.+?)\s*$)""",
+                          re.MULTILINE)
 
 
 def _sqlite_shell_commands(command: SimpleCommand) -> list[str]:
-    """`.shell CMD` / `.system CMD` lines sqlite3 runs in a system shell, from its
-    SQL arguments, `-cmd` options, a heredoc or here-string."""
+    """Commands sqlite3 runs in a system shell (`.shell CMD`, `.system CMD`, and
+    a `|CMD` file name), from its SQL arguments, `-cmd` options, a heredoc or
+    here-string."""
     texts = [a for a in command.args if not a.startswith("-") or a.startswith("-cmd")]
     texts += [r.body or "" for r in command.redirects if r.body] + [r.target for r in command.redirects if r.op == "<<<"]
-    return [m.group(1) for text in texts for m in _SQLITE_SHELL.finditer(text)]
+    found = [m.group(1) for text in texts for m in _SQLITE_SHELL.finditer(text)]
+    return found + [next(g for g in m.groups() if g is not None) for text in texts for m in _SQLITE_PIPE.finditer(text)]
 
 
 def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],
