@@ -105,7 +105,10 @@ def _mark_readonly(builtin: str, words: list[Word], ctx: _Context) -> None:
     for word in words:
         name = word.text.split("=", 1)[0].rstrip("+")
         if not word.text.startswith("-") and _NAME.fullmatch(name):
-            _assign_setting(f"{READONLY}{name}", "on", "", ctx.variables, ctx.conditional)
+            # `declare -r R` on a nameref makes the variable R names readonly;
+            # `declare -rn R=X` makes the reference itself readonly.
+            target = name if "n" in flags else _target_name(name, ctx)
+            _assign_setting(f"{READONLY}{target}", "on", "", ctx.variables, ctx.conditional)
 
 
 # POSIX special builtins: assignments before them stay in the shell (sh, dash,
@@ -244,11 +247,13 @@ def _declare_attributes(builtin: str, words: list[Word], ctx: _Context) -> list[
                 _assign(f"{NAMEREF}{name}={UNSET}", ctx.variables, ctx.conditional)
                 ctx.variables.pop(name, None)
             continue
+        # Attributes on a nameref apply to the variable it names (`declare -l R`).
+        target = _target_name(name, ctx)
         for letter in "lu":
             if letter in flags:
-                _assign_setting(f"{CASE}{name}", letter, "", ctx.variables, ctx.conditional)
+                _assign_setting(f"{CASE}{target}", letter, "", ctx.variables, ctx.conditional)
         if "i" in flags:
-            ctx.variables.pop(name, None)  # integer: whatever is assigned evaluates to a number
+            ctx.variables.pop(target, None)  # integer: whatever is assigned evaluates to a number
             continue
         remaining.append(word)
     return remaining
