@@ -161,6 +161,9 @@ def main() -> int:
     _check(argv == ("echo", "3", "a", "b c", "d", "a", "b", "c", "d", "d", "d"), f"array subscripts: {argv}", failures)
     argv = [c.argv for c in parse("X=echo; (exit); X=ls; exit; X=rm; echo $X", "/").commands]
     _check(argv == [("exit",), ("exit",)], f"exit ends the shell, ( exit ) only the subshell: {argv}", failures)
+    argv = [c.argv for c in parse("read X 3<<< no <<< yes; echo $X; exec 3<<<a; exec 3<&-; read -u 3 Y; echo $Y",
+                                  "/").commands if c.name == "echo"]
+    _check(argv == [("echo", "yes"), ("echo", "$Y")], f"descriptors: 3<<< is not stdin; 3<&- closes: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

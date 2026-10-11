@@ -70,6 +70,7 @@ class Word:
 @dataclass(frozen=True)
 class Operator:
     op: str
+    fd: int | None = None  # `3<<<x`: the descriptor a redirect names, if any
 
 
 @dataclass
@@ -87,6 +88,7 @@ class _Lexer:
         self.n = len(text)
         self.result = LexResult()
         self._pending_heredocs: list[tuple[Word, bool]] = []
+        self._fd: int | None = None  # digits just read that name the next redirect's descriptor
 
     # ------------------------------------------------------------------ #
     # Driver
@@ -113,7 +115,8 @@ class _Lexer:
                 op = self._match_operator()
                 if op:
                     self.i += len(op)
-                    self.result.tokens.append(Operator(op))
+                    self.result.tokens.append(Operator(op, self._fd))
+                    self._fd = None
                     if op in HEREDOC_OPERATORS:
                         self._heredoc_delimiter(strip_tabs=op == "<<-")
                 else:
@@ -142,6 +145,7 @@ class _Lexer:
         word = self._read_word()
         # `2>file`: digits glued to a redirect are a file descriptor, not an argument.
         if word.text.isdigit() and not word.quoted and self.i < self.n and self.s[self.i] in "<>":
+            self._fd = int(word.text)
             return
         self.result.tokens.append(word)
 

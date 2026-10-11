@@ -195,6 +195,10 @@ SHOULD_BLOCK = [
     "X=(r m); ${X[-2]}${X[-1]} -rf victim",  # negative and arithmetic subscripts (PR review)
     "i=1; X=(a rm); ${X[i]} -rf victim",
     "X=(rm -rf victim); \"${X[@]}\"",  # every element as its own word
+    "exec 3<<<$'\\x72m'; read -u 3 X; \"$X\" -rf victim",  # descriptors exec opened (PR review)
+    "exec 3<<<$'echo\\nrm'; read -u 3 A; read -u 3 B; \"$B\" -rf victim",
+    "exec <<< rm; read X; $X -rf victim",
+    "exec 4<<<rm; read X <&4; $X -rf victim",
     "X='a[$(rm -rf victim)]'; Y=X; let Y+1",
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return

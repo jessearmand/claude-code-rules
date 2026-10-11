@@ -392,10 +392,10 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
             target = tokens[index + 1] if index + 1 < len(tokens) else None
             if isinstance(target, Word):
                 if token.op in HEREDOC_OPERATORS:
-                    redirects.append(Redirect(token.op, target.text, False, target.heredoc_body))
+                    redirects.append(Redirect(token.op, target.text, False, target.heredoc_body, token.fd))
                 else:
                     expanded = _expand_word(target, ctx, choice)
-                    redirects.append(Redirect(token.op, expanded.text, expanded.dynamic))
+                    redirects.append(Redirect(token.op, expanded.text, expanded.dynamic, None, token.fd))
                 index += 2
                 continue
         elif isinstance(token, Word) and token.elements is not None:

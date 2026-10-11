@@ -25,6 +25,7 @@ from shell_model import (
     _FIELD,
     _NAME,
     _POSITIONALS,
+    DESCRIPTOR,
     SHELL_OPTION,
     UNSET,
     Redirect,
@@ -233,6 +234,8 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
             ctx.variables.pop(target, None)  # a format we do not model: the value is unknown
     elif argv and argv[0] == "getopts" and len(argv) >= 3:
         _getopts_builtin(argv[1], argv[2], argv[3:], ctx)
+    elif argv == ["exec"]:
+        _exec_redirects(redirects, ctx)
     elif argv and argv[0] == "shopt":
         _shopt_builtin(argv[1:], ctx)
     elif argv and argv[0] == "hash":
@@ -311,12 +314,16 @@ def _read_assign(args: list[str], options: dict[str, str], names: list[str], del
         for name in names:
             ctx.variables.pop(name, None)  # `read -n "$K"`: how much is read is not known
         return
-    text = _stdin_text(redirects, ctx)
+    text, persisted = _stdin_text(redirects, ctx, _descriptor_option(options))
     array = "a" in options
     if text is None:
         for name in names:
             ctx.variables.pop(name, None)
         return
+    if persisted is not None:
+        # Reading from a descriptor `exec` opened takes the line off it.
+        size = int(options["N"]) if count_option == "N" else text.find(delimiter) + 1 or len(text)
+        _assign(f"{DESCRIPTOR}{persisted}={text[size:]}", ctx.variables, ctx.conditional)
     if count_option == "N":
         # `-N K`: exactly K characters, delimiter or not, and no field splitting.
         line = text[:int(options["N"])]
@@ -425,22 +432,72 @@ def _hash_builtin(args: list[str], ctx: _Context) -> None:
                 ctx.hashed[name] = path
 
 
-def _stdin_text(redirects: list[Redirect], ctx: _Context) -> str | None:
-    """What a builtin reads on stdin, when it is literal text: a here-string or
-    heredoc, what `< <(producer)` prints, or a file written earlier on the line
-    or on disk (`< file`). None otherwise (a pipe, the terminal).
+_INPUT_OPERATORS = frozenset({"<", "<<<", "<&", "<>"}) | HEREDOC_OPERATORS
 
-    Redirections apply in order, so the last one to stdin is what is read:
+
+def _descriptor_option(options: dict[str, str]) -> int | None:
+    """The descriptor `read -u N` / `mapfile -u N` reads; 0 by default, None if computed."""
+    if "u" not in options:
+        return 0
+    return int(options["u"]) if options["u"].isdigit() else None
+
+
+def _stdin_text(redirects: list[Redirect], ctx: _Context, fd: int | None = 0) -> tuple[str | None, int | None]:
+    """What a builtin reads from descriptor `fd`, when it is literal text, and
+    which descriptor `exec` opened it came from (None if from this command's own
+    redirects or a pipe). Sources: a here-string or heredoc, `< <(producer)`,
+    a file (written earlier on the line or on disk), `<&N`, the pipe feeding
+    stdin, or a descriptor `exec 3<<< text` opened earlier.
+
+    Redirections apply in order, so the last one to `fd` is what is read:
     `read X <<< echo <<< rm` reads rm."""
-    inputs = [r for r in redirects if r.op in ("<", "<<<") or r.op in HEREDOC_OPERATORS]
-    if not inputs:
-        return ctx.piped_text  # `printf r | read X`
-    last = inputs[-1]
-    if last.op == "<<<":
-        return None if last.dynamic else last.target + "\n"
-    if last.op in HEREDOC_OPERATORS:
-        return last.body
-    return None if last.dynamic else _input_text(last.target, ctx)
+    if fd is None:
+        return None, None
+    inputs = [r for r in redirects if r.op in _INPUT_OPERATORS and (r.fd if r.fd is not None else 0) == fd]
+    if inputs:
+        last = inputs[-1]
+        if last.op == "<&" and last.target.isdigit():
+            return _opened_text(int(last.target), ctx)
+        return _redirect_text(last, ctx), None
+    if fd == 0 and ctx.piped_text is not None:
+        return ctx.piped_text, None  # `printf r | read X`
+    return _opened_text(fd, ctx)
+
+
+def _opened_text(fd: int, ctx: _Context) -> tuple[str | None, int | None]:
+    values = ctx.variables.get(f"{DESCRIPTOR}{fd}")
+    if not values or values[0] == UNSET:
+        return None, None
+    return values[0], fd
+
+
+def _redirect_text(redirect: Redirect, ctx: _Context) -> str | None:
+    """The text an input redirection supplies, when it is known."""
+    if redirect.op == "<<<":
+        return None if redirect.dynamic else redirect.target + "\n"
+    if redirect.op in HEREDOC_OPERATORS:
+        return redirect.body
+    if redirect.op in ("<", "<>"):
+        return None if redirect.dynamic else _input_text(redirect.target, ctx)
+    return None
+
+
+def _exec_redirects(redirects: list[Redirect], ctx: _Context) -> None:
+    """`exec 3<<< text` / `exec < file` / `exec 3<&-`: with no command, exec's
+    redirections change this shell's descriptors for every later command."""
+    for redirect in redirects:
+        if redirect.op not in _INPUT_OPERATORS and redirect.op != ">&":
+            continue
+        fd = redirect.fd if redirect.fd is not None else 0
+        if redirect.op in ("<&", ">&") and redirect.target == "-":
+            text = None  # closed
+        elif redirect.op == "<&" and redirect.target.isdigit():
+            text = _opened_text(int(redirect.target), ctx)[0]
+        elif redirect.op == ">&":
+            continue
+        else:
+            text = _redirect_text(redirect, ctx)
+        _assign(f"{DESCRIPTOR}{fd}={UNSET if text is None else text}", ctx.variables, ctx.conditional)
 
 
 def _input_text(target: str, ctx: _Context) -> str | None:
@@ -477,7 +534,9 @@ def _mapfile_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) 
     if not _NAME.fullmatch(name):
         return
     numbers = {k: options[k] for k in "nOs" if k in options}
-    text = _stdin_text(redirects, ctx) if "u" not in options else None
+    text, persisted = _stdin_text(redirects, ctx, _descriptor_option(options))
+    if text is not None and persisted is not None:
+        _assign(f"{DESCRIPTOR}{persisted}=", ctx.variables, ctx.conditional)  # read to the end
     if text is None or not all(v.isdigit() for v in numbers.values()):
         # Input or counts not known: so are the elements.
         for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:

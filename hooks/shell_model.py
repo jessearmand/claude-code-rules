@@ -36,6 +36,9 @@ _ARRAY = "\x1e"
 # Shell options (`shopt -s xpg_echo`) live in the variable table under these
 # names, value "on", so commands carry them and subshells scope them.
 SHELL_OPTION = "\0shopt:"
+# Descriptors `exec 3<<< text` opened for later reads: "\0fd:3" holds the text
+# not read yet (UNSET when closed or unknown).
+DESCRIPTOR = "\0fd:"
 # A variable value meaning "may be unset" (`true || unset X`).
 UNSET = "\0unset"
 
@@ -46,6 +49,7 @@ class Redirect:
     target: str
     dynamic: bool = False
     body: str | None = None  # heredoc body, when op is << or <<-
+    fd: int | None = None  # `3< file`: the descriptor named; None is the default (0 or 1)
 
 
 @dataclass(frozen=True)
