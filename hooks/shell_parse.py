@@ -32,6 +32,7 @@ import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import shell_params
 from shell_interpreters import awk_commands, inline_programs, shell_strings
 from shell_lexer import HEREDOC_OPERATORS, REDIRECT_OPERATORS, Operator, Word, lex
 from shell_wrappers import (
@@ -330,7 +331,7 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
                 index += 2
                 continue
         elif isinstance(token, Word):
-            for piece in _brace_expand(token):
+            for piece in _brace_expand(token, ctx):
                 words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
         index += 1
 
@@ -357,17 +358,33 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
 
 
-def _brace_expand(word: Word) -> list[Word]:
+def _brace_expand(word: Word, ctx: _Context) -> list[Word]:
     """Brace expansion, which bash does first: `{rm,-rf,~/x}` is three words,
-    `a{b,c}d` is `abd acd`. Only unquoted braces and commas count."""
+    `a{b,c}d` is `abd acd`. Only unquoted braces and commas count.
+
+    Past _MAX_BRACE_WORDS, every alternative's text becomes a word of its own
+    (nothing is dropped, so `rm {x,...,-rf} v` still shows `-rf`) and the
+    parse is marked truncated."""
     if not word.braces:
         return [word]
     texts = _expand_brace_text(word.text, frozenset(word.braces))
+    if len(texts) > _MAX_BRACE_WORDS:
+        ctx.result.truncated = True
+        texts = _brace_fragments(word.text, word.braces)
     if len(texts) == 1:
         return [word]
     return [Word(text, dynamic=word.dynamic and bool(_UNRESOLVED.search(text)), quoted=word.quoted, splits=word.splits,
                  substitutions=word.substitutions if index == 0 else [])
-            for index, text in enumerate(texts[:_MAX_BRACE_WORDS])]
+            for index, text in enumerate(texts)]
+
+
+def _brace_fragments(text: str, braces: tuple[int, ...]) -> list[str]:
+    """The text between unquoted braces and commas, each piece once."""
+    pieces, start = [], 0
+    for position in (*braces, len(text)):
+        pieces.append(text[start:position])
+        start = position + 1
+    return list(dict.fromkeys(piece for piece in pieces if piece))
 
 
 def _expand_brace_text(text: str, active: frozenset[int]) -> list[str]:
@@ -394,8 +411,8 @@ def _expand_brace_text(text: str, active: frozenset[int]) -> list[str]:
                      | {p - left - 1 + len(prefix) for p in active if left < p < right}
                      | {p - end - 1 + len(prefix) + len(piece) for p in active if p > end})
             expanded += _expand_brace_text(prefix + piece + suffix, frozenset(moved))
-            if len(expanded) >= _MAX_BRACE_WORDS:
-                break
+            if len(expanded) > _MAX_BRACE_WORDS:
+                break  # the caller falls back to fragments
         return expanded
     return [text]
 
@@ -490,9 +507,18 @@ def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | 
     if _NAME.fullmatch(body):
         found = value(body, at_start)
         return original if found is None else found
+    if body.startswith("#") and _NAME.fullmatch(body[1:]):
+        found = value(body[1:], False)
+        return original if found is None else str(len(found))  # ${#X}
     match = _BRACED.fullmatch(body)
     if not match:
-        return original
+        # Substring, pattern removal/replacement, case: computable once X is known.
+        name = _NAME.match(body)
+        current = value(name.group(0), False) if name else None
+        if current is None:
+            return original
+        result = shell_params.apply(current, _expand_text(body[name.end():], value, False))
+        return original if result is None else result
     name, op, word = match.groups()
     current = value(name, False)
     if op.endswith("?"):
@@ -616,6 +642,12 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
         if step is None:
             break
         inner, label, chdir = step
+        if name == "xargs" and inner:
+            # Arguments xargs reads from a statically known feeder join the command.
+            runs = _xargs_runs(argv[1:], inner, _feeder(ctx, pipeline, stage))
+            for extra in runs[1:]:
+                _emit(extra, (), ctx, via, depth, indirect, pipeline, stage, False, (*wrappers, label))
+            inner = runs[0]
         if chdir is not None:
             # `env -C dir cmd`, `sudo -D dir cmd`: cmd (and what it runs) starts in dir.
             outer = outer or (ctx.cwd, ctx.cwd_options)
@@ -976,6 +1008,40 @@ def _bind_positionals(script: str, arguments: list[str]) -> str:
     return _POSITIONAL.sub(replace, script)
 
 
+def _feeder(ctx: _Context, pipeline: int, stage: int) -> SimpleCommand | None:
+    """The command piping into stage `stage` of `pipeline`, if already recorded."""
+    if stage == 0:
+        return None
+    return next((c for c in reversed(ctx.result.commands) if c.pipeline == pipeline and c.stage == stage - 1),
+                None)
+
+
+def _xargs_runs(args: list[str], inner: list[str], feeder: SimpleCommand | None) -> list[list[str]]:
+    """The command lines xargs builds when its input is known text
+    (`printf '%s\\n' -rf x | xargs rm` runs `rm -rf x`). `[inner]` otherwise."""
+    own = args[:len(args) - len(inner)]
+    if (feeder is None or feeder.dynamic_head or feeder.name not in ("echo", "printf")
+            or option_value(own, frozenset({"-a", "--arg-file"})) is not None):
+        return [inner]
+    text = _echoed_text(feeder)
+    replace = option_value(own, frozenset({"-I", "--replace"}))
+    replace = replace or next((a[2:] or "{}" for a in own if a.startswith("-i")), None)
+    delimiter = "\0" if ("-0" in own or "--null" in own) else option_value(own, frozenset({"-d", "--delimiter"}))
+    if replace:
+        separator = delimiter.encode().decode("unicode_escape") if delimiter else "\n"
+        items = [item.strip() for item in text.split(separator) if item.strip()]
+        runs = [[arg.replace(replace, item) for arg in inner] for item in items[:_MAX_BRACE_WORDS]]
+        return runs or [inner]
+    if delimiter:
+        items = [item for item in text.split(delimiter.encode().decode("unicode_escape")) if item]
+    else:
+        try:
+            items = shlex.split(text)
+        except ValueError:
+            items = text.split()
+    return [inner + items]
+
+
 def _echoed_text(command: SimpleCommand) -> str:
     args = list(command.args)
     if command.name == "echo":
@@ -984,7 +1050,9 @@ def _echoed_text(command: SimpleCommand) -> str:
         return " ".join(args)
     if args and "%" not in args[0]:
         return args[0].replace("\\n", "\n")
-    return " ".join(args[1:]) if args and args[0] in ("%s", "%s\\n", "%b") else ""
+    if args and args[0] in ("%s\\n", "%b\\n"):
+        return "\n".join(args[1:])
+    return "".join(args[1:]) if args and args[0] in ("%s", "%b") else ""
 
 
 def _find_exec_commands(args: list[str]) -> list[list[str]]:

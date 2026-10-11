@@ -97,6 +97,12 @@ def main() -> int:
     argv = parse("X=r; Y='a b'; echo $X'm' \"$X\"m '$X'm $Y'' \"$Y\"", "/").commands[-1].argv
     _check(argv == ("echo", "rm", "rm", "$Xm", "a", "b", "a b"), f"quote boundaries and splitting: {argv}", failures)
 
+    argv = parse("X=hello.tar.gz; echo ${X:1} ${#X} ${X/l/L} ${X//l/L} ${X^} ${X%%.*} ${X%.*} ${X#*.} "
+                 "${X##*.} ${X: -2} ${X:1:-2} ${!X}", "/").commands[-1].argv
+    _check(argv[1:] == ("ello.tar.gz", "12", "heLlo.tar.gz", "heLLo.tar.gz", "Hello.tar.gz", "hello",
+                        "hello.tar", "tar.gz", "gz", "gz", "ello.tar.", "${!X}"),
+           f"parameter operators on a known value: {argv}", failures)
+
     print("\nWorking directory:")
     cwd_cases = [
         ("cd /a; cd b; ls", "/a/b"),

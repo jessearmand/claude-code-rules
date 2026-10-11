@@ -93,6 +93,7 @@ BASH_CASES = [
     ("printf x > \"${OUT:+$HOME/.claude/settings.json}\"", "deny", "claude-settings"),
     ("OUT=notes; printf x > \"${OUT:-$HOME/.claude/settings.json}\"", None, None),
     ("printf x > \"${OUT:-notes.txt}\"", None, None),
+    ("P=$HOME/.claude/settings.json.bak; printf x > \"${P%.bak}\"", "deny", "claude-settings"),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),

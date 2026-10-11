@@ -99,6 +99,14 @@ SHOULD_BLOCK = [
     "X=r; $X'm' -rf victim",
     "X=r; \"$X\"m -rf victim",
     "X='rm -rf victim'; $X''",
+    # Parameter operators on known values; xargs input; brace overflow (PR review).
+    "X=rm; ${X:0:2} -rf victim",
+    "X=RM; ${X,,} -rf victim",
+    "X=rmdir; ${X%dir} -rf victim",
+    "printf '%s\\n' '-rf victim' | xargs rm",
+    "echo -rf victim | xargs rm",
+    "printf 'rm -rf victim\\n' | xargs -I{} sh -c '{}'",
+    "rm {" + ",".join(["x"] * 70) + ",-rf} victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",
@@ -117,6 +125,7 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "printf '%s\\n' a.txt b.txt | xargs rm",
     "mkdir -p src/{lib,bin} && echo '{rm,-rf,x}'",  # quoted braces stay one word
     "source <(kubectl completion bash)",
     "X=echo; env X=rm true; $X -rf build",  # env's assignment is for `true` only
