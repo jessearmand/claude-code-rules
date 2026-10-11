@@ -24,7 +24,7 @@ from danger_rule import (
     positional_words,
     short_flag,
 )
-from shell_parse import SimpleCommand
+from shell_parse import SimpleCommand, echoed_text
 
 # --------------------------------------------------------------------------- #
 # Terraform / OpenTofu
@@ -237,7 +237,7 @@ _NOSQL = re.compile(r"\b(?:dropDatabase|\.drop\(\)|deleteMany\(\s*\{\s*\}\s*\)|F
                     re.IGNORECASE)
 
 
-def _sql_texts(command: SimpleCommand) -> list[str]:
+def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
     flags = _SQL_CLIENTS.get(command.name)
     if flags is None:
         if command.name in ("mongosh", "mongo"):
@@ -250,11 +250,15 @@ def _sql_texts(command: SimpleCommand) -> list[str]:
     if command.name == "sqlite3":
         texts += [a for a in operands(command.args)[1:]]
     texts += [r.body or r.target for r in command.redirects if r.op in ("<<", "<<-", "<<<")]
+    # `printf 'DROP TABLE t;' | sqlite3 db`: statements piped in from literal text.
+    feeder = ctx.parsed.previous_stage(command)
+    if feeder is not None and feeder.name in ("echo", "printf") and not feeder.dynamic_head:
+        texts.append(echoed_text(feeder))
     return texts
 
 
 def _destructive_sql(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    for text in _sql_texts(command):
+    for text in _sql_texts(command, ctx):
         match = _SQL_DESTRUCTIVE.search(text) or _NOSQL.search(text)
         if match:
             return f"{command.name}: {match.group(0).strip()}"

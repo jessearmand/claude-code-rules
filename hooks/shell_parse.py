@@ -470,12 +470,13 @@ def _glob_words(words: list[Word], ctx: _Context) -> list[Word]:
     if ctx.cwd is None:
         return words
     expanded: list[Word] = []
-    for word in words:
-        expanded += _glob_word(word, ctx.cwd)
+    for index, word in enumerate(words):
+        expanded += _glob_word(word, ctx, command_word=index == 0)
     return expanded
 
 
-def _glob_word(word: Word, cwd: str) -> list[Word]:
+def _glob_word(word: Word, ctx: _Context, command_word: bool = False) -> list[Word]:
+    cwd = ctx.cwd or "/"
     if word.quoted or word.dynamic or not _GLOB_CHARS.search(word.text):
         return [word]
     try:
@@ -485,8 +486,11 @@ def _glob_word(word: Word, cwd: str) -> list[Word]:
     if not matches:
         return [word]
     if len(matches) > _MAX_BRACE_WORDS:
-        # Too many to list: keep the pattern, plus any match that reads as an option.
-        return [word, *(Word(m) for m in matches if m.startswith("-"))]
+        # Too many to list: keep the pattern, plus any match that reads as an option,
+        # and in command position the first match, which is what runs. Incomplete.
+        ctx.result.truncated = True
+        head = [Word(matches[0])] if command_word else []
+        return [*head, word, *(Word(m) for m in matches if m.startswith("-"))]
     return [Word(match) for match in matches]
 
 
@@ -1402,6 +1406,11 @@ def _xargs_runs(args: list[str], inner: list[str], feeder: SimpleCommand | None,
         except ValueError:
             items = text.split()
     return [inner + items]
+
+
+def echoed_text(command: SimpleCommand) -> str:
+    """The text an `echo`/`printf` prints, when it is literal ("" if not modelled)."""
+    return _echoed_text(command)
 
 
 def _echoed_text(command: SimpleCommand) -> str:

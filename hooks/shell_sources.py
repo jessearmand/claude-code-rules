@@ -75,7 +75,7 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
     if "/" in head:
         return _script(head, cwd, written, require_shebang=True)
     if name in _PACKAGE_RUNNERS:
-        return _package_script(name, args, cwd)
+        return _package_script(name, args, cwd, written)
     if name in ("make", "gmake"):
         return _make(args, cwd, written)
     return []
@@ -171,7 +171,8 @@ _WORKSPACE_OPTIONS = frozenset({"-w", "--workspace", "-F", "--filter"})
 _ALL_WORKSPACES = frozenset({"-ws", "--workspaces", "-r", "--recursive"})
 
 
-def _package_script(runner: str, args: list[str], cwd: str) -> list[tuple[str, str]]:
+def _package_script(runner: str, args: list[str], cwd: str,
+                    written: dict[str, WrittenFile]) -> list[tuple[str, str]]:
     """package.json scripts a package-manager command runs, in the package it selects.
 
     `npm -w app run clean`, `pnpm --filter app clean` and `yarn workspace app clean`
@@ -198,13 +199,15 @@ def _package_script(runner: str, args: list[str], cwd: str) -> list[tuple[str, s
 
     found: list[tuple[str, str]] = []
     for directory in directories:
-        scripts = _package_scripts(directory)
+        scripts, typed = _package_scripts(directory, written)
         if script not in scripts:
             continue
         where = "" if directory == root else f" in {os.path.relpath(directory, root)}"
+        # A package.json this same line wrote: its scripts count as typed by the agent.
+        prefix = "written " if typed else ""
         for name in (f"pre{script}", script, f"post{script}"):
             if name in scripts:
-                found.append((scripts[name], f"{runner} script {name}{where}"))
+                found.append((scripts[name], f"{prefix}{runner} script {name}{where}"))
     return found
 
 
@@ -283,15 +286,21 @@ def _select_workspaces(root: str, selectors: list[str]) -> list[str]:
     return list(dict.fromkeys(chosen)) or [root]
 
 
-def _package_scripts(cwd: str) -> dict[str, str]:
-    text = _read_text(os.path.join(cwd, "package.json"))
+def _package_scripts(cwd: str, written: dict[str, WrittenFile]) -> tuple[dict[str, str], bool]:
+    """The `scripts` of cwd/package.json, and whether that file was written by this line."""
+    path = os.path.normpath(os.path.join(cwd, "package.json"))
+    entry = written.get(path)
+    if entry is not None:
+        text = entry.text if entry.replaces else (_read_text(path) or "") + entry.text
+    else:
+        text = _read_text(path)
     if text is None:
-        return {}
+        return {}, False
     data = json.loads(text)
     scripts = data.get("scripts") if isinstance(data, dict) else None
     if not isinstance(scripts, dict):
-        return {}
-    return {key: value for key, value in scripts.items() if isinstance(value, str)}
+        return {}, entry is not None
+    return {key: value for key, value in scripts.items() if isinstance(value, str)}, entry is not None
 
 
 # --------------------------------------------------------------------------- #

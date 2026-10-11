@@ -239,6 +239,17 @@ def main() -> int:
         os.chmod(os.path.join(tmp, "latin.sh"), 0o755)
         invocations, _ = find_recursive_force_invocations("./latin.sh", tmp, shell_sources.resolve)
         _check(bool(invocations), "script with a non-UTF-8 byte is still read", failures)
+        # A package.json written earlier in the line is what npm runs (PR review).
+        command = "cat > package.json <<'EOF'\n{\"scripts\":{\"boom\":\"rm -rf victim\"}}\nEOF\nnpm run boom"
+        invocations, _ = find_recursive_force_invocations(command, tmp, shell_sources.resolve)
+        _check(bool(invocations) and not invocations[0].indirect, "same-line package.json script", failures)
+        # A command-word glob with more matches than are listed still runs its first match.
+        os.mkdir(os.path.join(tmp, "bin"))
+        os.symlink("/bin/rm", os.path.join(tmp, "bin", "rm"))
+        for i in range(70):
+            open(os.path.join(tmp, "bin", f"s{i}"), "w").close()
+        invocations, _ = find_recursive_force_invocations("bin/[r-z]* -rf victim", tmp, shell_sources.resolve)
+        _check(bool(invocations), "overflowing command-word glob keeps its first match", failures)
 
     print("\nTarget analysis:")
     with tempfile.TemporaryDirectory() as tmp:
