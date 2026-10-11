@@ -31,6 +31,7 @@ import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from math import prod
 
 import shell_params
 from shell_interpreters import awk_commands, inline_programs, shell_strings
@@ -236,8 +237,8 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                 # After `&&`/`||`, or inside an if/loop/case body, the command may not run.
                 ctx.conditional = outer_conditional or previous in _AND_OR or blocks > 0
                 blocks = _track_blocks(segment, blocks)
-                if token.op in _PIPES or stage > 0:
-                    # Every part of a pipeline runs in its own subshell.
+                if token.op in _PIPES or stage > 0 or token.op == "&":
+                    # Every part of a pipeline, and a background command, runs in its own subshell.
                     saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                     ctx.cwd, ctx.cwd_options, ctx.variables = saved
@@ -308,9 +309,14 @@ def _variable_choices(tokens: list, ctx: _Context) -> list[dict[str, str]]:
                 names.append(name)
     if not names:
         return [{}]
-    combinations = itertools.product(*(ctx.variables[name] for name in names))
-    return [dict(zip(names, values, strict=True))
-            for values in itertools.islice(combinations, _MAX_VARIANTS)]
+    options = [ctx.variables[name] for name in names]
+    if prod(len(values) for values in options) <= _MAX_VARIANTS:
+        return [dict(zip(names, values, strict=True)) for values in itertools.product(*options)]
+    # Too many combinations: still give every value of every variable one turn,
+    # so no possible value goes unchecked.
+    longest = max(len(values) for values in options)
+    return [{name: values[index % len(values)] for name, values in zip(names, options, strict=True)}
+            for index in range(longest)]
 
 
 def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
@@ -337,6 +343,10 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
 
     words, environment = _strip_prelude(words, ctx)
     if not words:
+        if redirects:
+            # `> file` and `X=1 > file` still open (and truncate) the file.
+            ctx.result.commands.append(SimpleCommand((), tuple(redirects), via, (), False, indirect, pipeline,
+                                                     stage, ctx.cwd, ctx.cwd_options))
         return
     argv = [w.text for w in words]
     _emit(argv, tuple(redirects), ctx, via, depth, indirect, pipeline, stage, words[0].dynamic, (),
@@ -579,7 +589,9 @@ def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: boo
     name = name.split("[", 1)[0]
     if keep_previous:
         values = (*values, *variables.get(name, ()))
-    variables[name] = tuple(dict.fromkeys(values))[:_MAX_VARIANTS]
+    # Not capped: every value stays possible. Their number is bounded by the
+    # assignments written in the command line itself.
+    variables[name] = tuple(dict.fromkeys(values))
 
 
 def _bounded(options: list[str | None]) -> tuple[str | None, ...]:

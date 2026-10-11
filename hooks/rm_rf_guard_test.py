@@ -107,6 +107,9 @@ SHOULD_BLOCK = [
     "echo -rf victim | xargs rm",
     "printf 'rm -rf victim\\n' | xargs -I{} sh -c '{}'",
     "rm {" + ",".join(["x"] * 70) + ",-rf} victim",
+    # Every possible value is kept; background commands are subshells (PR review).
+    "X=rm; " + "; ".join(f"true || X=echo{i}" for i in range(10)) + "; $X -rf victim",
+    "X=rm; X=echo & $X -rf victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",

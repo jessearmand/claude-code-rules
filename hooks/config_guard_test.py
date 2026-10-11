@@ -94,6 +94,11 @@ BASH_CASES = [
     ("OUT=notes; printf x > \"${OUT:-$HOME/.claude/settings.json}\"", None, None),
     ("printf x > \"${OUT:-notes.txt}\"", None, None),
     ("P=$HOME/.claude/settings.json.bak; printf x > \"${P%.bak}\"", "deny", "claude-settings"),
+    # Redirection-only commands still open the file (PR review).
+    ("> ~/.claude/settings.json", "deny", "claude-settings"),
+    ("X=1 > ~/.claude/settings.json", "deny", "claude-settings"),
+    ("P=$HOME/.claude/settings.json; P=notes & printf x > \"$P\"", "deny", "claude-settings"),
+    ("> notes.txt", None, None),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
