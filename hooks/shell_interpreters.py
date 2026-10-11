@@ -118,6 +118,13 @@ _SINK_CALL = re.compile(
 _BACKTICK_RUNS = frozenset({"ruby", "perl", "php"})
 
 
+def string_literals(program: str) -> list[str]:
+    """Every string literal in `program`, unescaped, in order (no duplicates)."""
+    found = (_unescape(next((g for g in m.groups() if g is not None), ""))
+             for m in _STRING_LITERAL.finditer(program))
+    return [text for text in dict.fromkeys(found) if text.strip()]
+
+
 def direct_shell_strings(program: str, kind: str | None) -> list[str]:
     """The literals in `program` that a shell or exec certainly receives: the
     first argument of a sink call (a string, or a list joined into argv), and

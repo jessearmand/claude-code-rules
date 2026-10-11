@@ -32,6 +32,8 @@ REDIRECT_OPERATORS = frozenset({"<<-", "<<<", "&>>", "&>", "<<", ">>", ">|", "<&
 HEREDOC_OPERATORS = frozenset({"<<", "<<-"})
 # Only space and tab are blanks to the shell; a carriage return is part of a word.
 _METACHARACTERS = frozenset(" \t\n|&;()<>")
+# `${NAME<op>word}` where the operator decides whether `word` is expanded.
+_GUARDED_WORD = re.compile(r"([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])(:?[-=+?])", re.DOTALL)
 # The text before `(` in a compound array assignment: `X=`, `X+=`.
 _COMPOUND_TARGET = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 _ANSI_C_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b",
@@ -60,6 +62,9 @@ class Word:
     braces: tuple[int, ...] = ()
     # `X=(a "b c")`: the elements of a compound array assignment; None otherwise.
     elements: list[Word] | None = None
+    # `${X:-$(cmd)}`: substitution index -> (X, operator). Bash runs such a
+    # substitution only when the operator selects that word.
+    guards: dict[int, tuple[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -317,7 +322,12 @@ class _Lexer:
         if nxt == "{":
             self.i += 2
             body = self._balanced("}", "{")
+            first = len(word.substitutions)
             self._substitute(word, nested_substitutions(body))
+            guarded = _GUARDED_WORD.match(body)
+            if guarded:
+                for index in range(first, len(word.substitutions)):
+                    word.guards.setdefault(index, (guarded.group(1), guarded.group(2)))
             word.dynamic = True
             return self.s[start:self.i]
         if nxt and (nxt.isalnum() or nxt in "_@*#?$!-"):

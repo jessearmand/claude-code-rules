@@ -82,6 +82,7 @@ from shell_model import (
     _bounded,
     _Context,
     _positionals,
+    _target_name,
     program_name,
 )
 from shell_payloads import (
@@ -368,9 +369,42 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
     move the caller.
     """
     for token in tokens:
-        for body in getattr(token, "substitutions", ()):
+        guards = getattr(token, "guards", {})
+        for index, body in enumerate(getattr(token, "substitutions", ())):
+            guard = guards.get(index)
+            if guard is not None and _branch_skipped(guard, ctx):
+                # `X=ok; echo "${X:-$(cmd)}"`: bash never runs cmd. It is still
+                # checked, as text the agent did not type to run, so it asks.
+                _parse_into(body, ctx, (*via, f"${{{guard[0]}{guard[1]}$(...)}} (not taken)"), depth + 1, True)
+                continue
             # A subshell: _parse_into restores the caller's directory and variables.
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+
+
+def _branch_skipped(guard: tuple[str, str], ctx: _Context) -> bool:
+    """Whether `${NAME<op>word}` certainly does not expand `word` here: NAME's
+    every possible value picks NAME itself (`-`, `=`, `?`) or nothing (`+`).
+    An unknown NAME may pick either, so it is not skipped."""
+    name, op = guard
+    if name.isdigit() or name in ("@", "*", "#"):
+        params = _positionals(ctx)
+        if params is None:
+            return False
+        values: tuple[str, ...] = (str(len(params)) if name == "#" else
+                                   " ".join(params) if name in ("@", "*") else
+                                   params[int(name) - 1] if 0 < int(name) <= len(params) else UNSET,)
+    elif _target_name(name, ctx) in ctx.variables:
+        values = ctx.variables[_target_name(name, ctx)]
+    elif name == "HOME":
+        values = (os.path.expanduser("~"),)
+    else:
+        return False
+
+    def selects_word(value: str) -> bool:
+        is_set = value != UNSET and (value != "" or not op.startswith(":"))
+        return is_set if op.endswith("+") else not is_set
+
+    return not any(selects_word(value) for value in values)
 
 
 def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: tuple[str, ...],

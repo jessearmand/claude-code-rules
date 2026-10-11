@@ -21,6 +21,7 @@ from secrets_guard import (  # noqa: E402
     DEFAULT_LEVEL,
     check_command,
     check_path,
+    evaluate,
     find_command_rule,
     is_allowlisted,
 )
@@ -298,6 +299,14 @@ def main() -> int:
     found = find_command_rule("python3 -c \"import subprocess; subprocess.run(['echo', 'cat ~/.ssh/id_rsa'])\"", level)
     _check(found is not None and found[0].rule_id == "read-private-key" and found[2],
            "a secret read in an interpreter string is found and asked about", failures)
+
+    print("\nSecret files named in interpreter code (asked about):")
+    for command in ("python3 -c \"print(open('/home/u/.ssh/id_rsa').read())\"",
+                    "node -e 'require(\"fs\").readFileSync(process.env.HOME + \"/.aws/credentials\")'"):
+        found = evaluate("Bash", {"command": command}, level, "/tmp")
+        _check(found is not None and found[2], f"{command[:60]} -> {found and found[0].rule_id}", failures)
+    _check(evaluate("Bash", {"command": "python3 -c 'print(1)'"}, level, "/tmp") is None,
+           "interpreter code without a secret path -> nothing", failures)
 
     print("\nLevel gating:")
     for threshold, command, expected in LEVEL_COMMAND_CASES:

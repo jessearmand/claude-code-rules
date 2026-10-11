@@ -75,6 +75,7 @@ from secrets_guard_rules import (  # noqa: E402
     CommandRule,
     FileRule,
 )
+from shell_interpreters import inline_programs, string_literals
 from shell_parse import parse  # noqa: E402
 
 HOOK_NAME = "secrets-guard"
@@ -208,6 +209,23 @@ def find_command_rule(
     return indirect_hit
 
 
+def find_interpreter_secret(command: str, threshold: str, cwd: str = "") -> tuple[FileRule, str] | None:
+    """A secret file named in a string literal of an interpreter program the
+    command runs: `python3 -c "open('/home/u/.ssh/id_rsa').read()"`. The program
+    may only mention the path, so this is asked about, never denied."""
+    if not command:
+        return None
+    for simple in parse(command, cwd or os.getcwd()).commands:
+        for program in inline_programs(simple.name, simple.args, simple.redirects):
+            for literal in string_literals(program):
+                if any(char.isspace() for char in literal):
+                    continue  # prose or code, not a path
+                rule = check_path(literal, threshold)
+                if rule:
+                    return rule, literal
+    return None
+
+
 def check_command(command: str, threshold: str, cwd: str = "") -> CommandRule | None:
     """Return the first rule that forbids running `command` as typed."""
     found = find_command_rule(command, threshold, cwd)
@@ -223,7 +241,10 @@ def evaluate(
         if not isinstance(command, str):
             return None
         found = find_command_rule(command, threshold, cwd)
-        return (found[0], command, found[2]) if found else None
+        if found:
+            return found[0], command, found[2]
+        literal = find_interpreter_secret(command, threshold, cwd)
+        return (literal[0], literal[1], True) if literal else None
 
     for path in paths_from(inputs):
         rule = check_path(path, threshold)
@@ -237,9 +258,10 @@ def evaluate(
 # --------------------------------------------------------------------------- #
 
 
-def build_reason(rule: FileRule | CommandRule, tool_name: str, target: str) -> str:
+def build_reason(rule: FileRule | CommandRule, tool_name: str, target: str, decision: str = "deny") -> str:
+    verb = "BLOCKED" if decision == "deny" else "Confirm"
     lines = [
-        f"{LEVEL_MARKS[rule.level]} BLOCKED by secrets-guard [{rule.rule_id}] — "
+        f"{LEVEL_MARKS[rule.level]} {verb} by secrets-guard [{rule.rule_id}] — "
         f"cannot {action_verb(tool_name)}: {rule.reason}",
         f"    target: {truncate(target)}",
         "",
@@ -291,7 +313,7 @@ def run(data: dict) -> Decision | None:
     )
     return Decision(
         decision,
-        build_reason(rule, tool_name, target),
+        build_reason(rule, tool_name, target, decision),
         f"secrets-guard [{rule.rule_id}]: {rule.reason}",
         HOOK_NAME,
     )
