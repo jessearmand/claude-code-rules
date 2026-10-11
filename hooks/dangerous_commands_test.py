@@ -195,6 +195,7 @@ CASES = [
     ("{git,clean,-fdx}", "deny", "git-clean-force"),
     # Anything the parser had to stop analysing asks (PR review).
     ("env " * 17 + "true", "ask", "incomplete-analysis"),
+    ("printf '" + "echo ok\\n" * 70 + "' | xargs -I{} sh -c '{}'", "ask", "incomplete-analysis"),
     ("eval " * 1 + "'" + "eval " * 7 + "git status'", "ask", "incomplete-analysis"),
     # ---- git config read from the environment (PR review) ----
     ("PAYLOAD='!rm -rf ~/victim' git --config-env=alias.wipe=PAYLOAD wipe", "deny", "git-shell-alias"),

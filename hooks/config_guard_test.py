@@ -110,6 +110,7 @@ BASH_CASES = [
     ("ln -s ~/.claude cfg && echo x > cfg/settings.json", "deny", "claude-settings"),
     ("ln -s ../notes harmless; printf x > harmless", None, None),
     ("read P <<< \"$HOME/.claude/settings.json\"; printf x > \"$P\"", "deny", "claude-settings"),
+    ("for P in notes $HOME/.claude/settings.json; do printf x > \"$P\"; done", "deny", "claude-settings"),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),

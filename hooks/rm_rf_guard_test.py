@@ -119,6 +119,10 @@ SHOULD_BLOCK = [
     "set -- rm -rf victim; \"$@\"",
     "set -- x rm; ${2} -rf victim",
     "read X <<< rm; $X -rf victim",  # read from a here-string (PR review)
+    # Loop variables; function bodies apply their effects when called (PR review).
+    "for X in rm; do \"$X\" -rf victim; done",
+    "X=rm; function f { X=echo; }; $X -rf victim",
+    "X=echo; f() { X=rm; }; f; $X -rf victim",
     "X=rm; true || unset X; $X -rf victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
@@ -138,6 +142,7 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "X=echo; f() { X=rm; }; $X -rf victim",  # declared, never called
     "printf '%s\\n' a.txt b.txt | xargs rm",
     "mkdir -p src/{lib,bin} && echo '{rm,-rf,x}'",  # quoted braces stay one word
     "source <(kubectl completion bash)",

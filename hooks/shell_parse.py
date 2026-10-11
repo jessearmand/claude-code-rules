@@ -204,6 +204,8 @@ class _Context:
     variables: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # The command being parsed may not run: assignments add values, not replace them.
     conditional: bool = False
+    # Declared functions: name -> variables their body sets (None: makes unknown).
+    functions: dict[str, dict[str, tuple[str, ...] | None]] = field(default_factory=dict)
     # Files this command line writes from literal text before running them:
     # `cat > x.sh <<'EOF' ... EOF; bash x.sh`. Absolute path -> content.
     written_files: dict[str, WrittenFile] = field(default_factory=dict)
@@ -247,11 +249,18 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     segment: list = []
     subshells: list[tuple[str | None, tuple[str | None, ...], dict[str, tuple[str, ...]]]] = []
     outer_conditional, previous, blocks = ctx.conditional, ";", 0
+    # Function bodies being declared: (block depth before the body, state to restore at its end).
+    functions: list[tuple[int, tuple[str | None, tuple[str | None, ...], dict[str, tuple[str, ...]]], str]] = []
+    header = _FunctionHeader()
     for token in [*lexed.tokens, Operator("\n")]:
         if isinstance(token, Operator) and (token.op in _SEPARATORS or token.op in _PIPES):
             if segment:
                 # After `&&`/`||`, or inside an if/loop/case body, the command may not run.
                 ctx.conditional = outer_conditional or previous in _AND_OR or blocks > 0
+                if header.opens_body(segment):
+                    # A declared function runs only when called: check its body, but
+                    # do not let its assignments or cd change the declaring shell.
+                    functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name))
                 blocks = _track_blocks(segment, blocks)
                 if token.op in _PIPES or stage > 0 or token.op == "&":
                     # Every part of a pipeline, and a background command, runs in its own subshell.
@@ -260,7 +269,16 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                     ctx.cwd, ctx.cwd_options, ctx.variables = saved
                 else:
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
+                while functions and blocks <= functions[-1][0]:
+                    _, saved, name = functions.pop()
+                    if name:
+                        # What calling it later does to the caller's variables.
+                        ctx.functions[name] = {key: ctx.variables.get(key) for key in {*saved[2], *ctx.variables}
+                                               if ctx.variables.get(key) != saved[2].get(key)}
+                    ctx.cwd, ctx.cwd_options, ctx.variables = saved
+                header.after_segment(segment)
                 segment = []
+            header.after_operator(token.op)
             previous = token.op
             if token.op == "(":
                 subshells.append((ctx.cwd, ctx.cwd_options, dict(ctx.variables)))
@@ -278,10 +296,46 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
         ctx.cwd, ctx.cwd_options, ctx.variables = entry
 
 
+class _FunctionHeader:
+    """Spots where a function body starts: `function NAME {` or `NAME() {`."""
+
+    def __init__(self) -> None:
+        self._name_seen = ""  # a one-word command, possibly a function name
+        self._parens = 0  # 1 after `NAME (`, 2 after `NAME ( )`
+        self.name = ""  # the function whose body opens_body last found
+
+    def opens_body(self, segment: list) -> bool:
+        words = [t for t in segment if isinstance(t, Word)]
+        if words and words[0].text == "function" and not words[0].quoted:
+            self.name = words[1].text if len(words) > 1 else ""
+            return True
+        if self._parens == 2 and words and words[0].text == "{" and not words[0].quoted:
+            self.name = self._name_seen
+            return True
+        return False
+
+    def after_segment(self, segment: list) -> None:
+        single = len(segment) == 1 and isinstance(segment[0], Word)
+        self._name_seen = segment[0].text if single else ""
+        self._parens = 0
+
+    def after_operator(self, op: str) -> None:
+        if op == "(" and self._name_seen and self._parens == 0:
+            self._parens = 1
+        elif op == ")" and self._parens == 1:
+            self._parens = 2
+        elif not (op == "\n" and self._parens == 2):  # `f()` may end a line before `{`
+            self._name_seen, self._parens = "", 0
+
+
 def _track_blocks(tokens: list, blocks: int) -> int:
-    """Open if/loop/case/group bodies after this command's leading reserved words."""
-    for token in tokens:
-        if not isinstance(token, Word) or token.quoted or token.text not in RESERVED_PREFIXES:
+    """Open if/loop/case/group bodies after this command's leading reserved words
+    (`function NAME` included: its `{` opens the body)."""
+    words = [t for t in tokens if isinstance(t, Word)]
+    if words and words[0].text == "function" and not words[0].quoted:
+        words = words[2:]
+    for token in words:
+        if token.quoted or token.text not in RESERVED_PREFIXES | _BLOCK_OPENERS | _BLOCK_CLOSERS:
             break
         if token.text in _BLOCK_OPENERS:
             blocks += 1
@@ -656,6 +710,18 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context)
     `set -- ARGS`, `read X <<< TEXT`."""
     if argv and argv[0] == "read":
         _read_builtin(argv[1:], redirects, ctx)
+    elif len(argv) >= 2 and argv[0] in ("for", "select") and _NAME.fullmatch(argv[1]):
+        # `for X in a b; do ... done`: X takes each word, or keeps its value if the
+        # list is empty. Without `in`, the words are the positional parameters.
+        if len(argv) >= 3 and argv[2] == "in":
+            items = tuple(argv[3:])
+        else:
+            items = _positionals(ctx)
+        if items is None:
+            ctx.variables.pop(argv[1], None)
+        else:
+            earlier = ctx.variables.get(argv[1], (UNSET,))
+            ctx.variables[argv[1]] = tuple(dict.fromkeys((*items, *earlier)))
     elif len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and _NAME.fullmatch(argv[2]):
         text = _echoed_text(SimpleCommand(("printf", *argv[3:])))
         if text or "%" not in argv[3]:
@@ -808,7 +874,7 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
         inner, label, chdir = step
         if name == "xargs" and inner:
             # Arguments xargs reads from a statically known feeder join the command.
-            runs = _xargs_runs(argv[1:], inner, _feeder(ctx, pipeline, stage))
+            runs = _xargs_runs(argv[1:], inner, _feeder(ctx, pipeline, stage), ctx)
             for extra in runs[1:]:
                 _emit(extra, (), ctx, via, depth, indirect, pipeline, stage, False, (*wrappers, label))
             inner = runs[0]
@@ -831,10 +897,23 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
     _record_written_file(command, ctx)
     _record_link(command, ctx)
     _parse_payloads(command, ctx, depth)
+    _call_function(command, ctx)
     if outer is not None:
         ctx.cwd, ctx.cwd_options = outer  # the wrapper's directory applied to the child only
     else:
         _follow_directory_change(command, ctx)
+
+
+def _call_function(command: SimpleCommand, ctx: _Context) -> None:
+    """Calling a declared function applies what its body assigns, in this shell."""
+    effects = ctx.functions.get(command.name) if not command.dynamic_head else None
+    for name, values in (effects or {}).items():
+        if values is None:
+            ctx.variables.pop(name, None)
+        elif ctx.conditional:
+            ctx.variables[name] = tuple(dict.fromkeys((*values, *ctx.variables.get(name, ()))))
+        else:
+            ctx.variables[name] = values
 
 
 def _follow_directory_change(command: SimpleCommand, ctx: _Context) -> None:
@@ -1247,7 +1326,8 @@ def _feeder(ctx: _Context, pipeline: int, stage: int) -> SimpleCommand | None:
                 None)
 
 
-def _xargs_runs(args: list[str], inner: list[str], feeder: SimpleCommand | None) -> list[list[str]]:
+def _xargs_runs(args: list[str], inner: list[str], feeder: SimpleCommand | None,
+                ctx: _Context) -> list[list[str]]:
     """The command lines xargs builds when its input is known text
     (`printf '%s\\n' -rf x | xargs rm` runs `rm -rf x`). `[inner]` otherwise."""
     own = args[:len(args) - len(inner)]
@@ -1261,6 +1341,8 @@ def _xargs_runs(args: list[str], inner: list[str], feeder: SimpleCommand | None)
     if replace:
         separator = delimiter.encode().decode("unicode_escape") if delimiter else "\n"
         items = [item.strip() for item in text.split(separator) if item.strip()]
+        if len(items) > _MAX_BRACE_WORDS:
+            ctx.result.truncated = True  # more input lines than are checked
         runs = [[arg.replace(replace, item) for arg in inner] for item in items[:_MAX_BRACE_WORDS]]
         return runs or [inner]
     if delimiter:
