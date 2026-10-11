@@ -36,12 +36,12 @@ from shell_lexer import HEREDOC_OPERATORS, REDIRECT_OPERATORS, Operator, Word, l
 from shell_wrappers import (
     PREFIX_WRAPPERS,
     RESERVED_PREFIXES,
-    SHELL_OPTIONS_WITH_ARG,
     SHELLS,
     SSH_OPTIONS_WITH_ARG,
     STRING_RUNNERS,
     SUBCOMMAND_RUNNERS,
     WrapperSpec,
+    shell_invocation,
 )
 
 MAX_DEPTH = 6
@@ -378,15 +378,17 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
     body = next((r.body for r in command.redirects if r.op in HEREDOC_OPERATORS and r.body is not None), None)
     if body is None and command.name in ("echo", "printf") and not command.dynamic_head:
         body = _echoed_text(command)
-    if body is None or command.cwd is None:
+    directories = [d for d in command.possible_cwds if d is not None]
+    if body is None or not directories:
         return
     targets = [(r.target, r.op == ">>") for r in command.redirects
                if r.op in (">", ">>", ">|") and not r.dynamic]
     if command.name == "tee":
         appends = any(a in ("-a", "--append") for a in command.args)
         targets += [(arg, appends) for arg in command.args if not arg.startswith("-")]
-    for target, appends in targets:
-        path = os.path.normpath(os.path.join(command.cwd, os.path.expanduser(target)))
+    paths = [(os.path.normpath(os.path.join(d, os.path.expanduser(t))), appends)
+             for t, appends in targets for d in directories]
+    for path, appends in dict.fromkeys(paths):
         earlier = ctx.written_files.get(path)
         if appends and earlier is not None:
             ctx.written_files[path] = WrittenFile(_join_lines(earlier.text, body), earlier.replaces)
@@ -543,8 +545,8 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
         if inner:
             nested(" ".join(inner), "parallel")
 
-    if ctx.sources is not None and depth < MAX_DEPTH:
-        for text, label in ctx.sources(command, command.cwd, ctx.written_files) if command.cwd else ():
+    if depth < MAX_DEPTH:
+        for text, label in _sources_for(command, ctx):
             # A file written earlier in this same command line was typed by the agent.
             nested(text, label, from_file=not label.startswith("written "))
 
@@ -560,38 +562,16 @@ def _long_command(args: list[str]) -> str | None:
 
 def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
                    nested: Callable[..., None]) -> None:
-    """`bash -c STR`, and a script read from stdin: `bash <<EOF`, `bash <<< STR`,
-    `bash < file`, `echo STR | bash`, `cat file | bash`, `bash -s args < file`."""
-    index = 0
-    runs_string = False
-    reads_stdin = False  # `-s`: the script comes from stdin; positionals are its $1...
-    while index < len(args):
-        arg = args[index]
-        if arg == "--":
-            index += 1
-            break
-        if arg in SHELL_OPTIONS_WITH_ARG:
-            index += 2
-            continue
-        if arg.startswith("-") and not arg.startswith("--") and "n" in arg[1:]:
-            return  # `-n`: read and syntax-check only, never execute
-        if arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]:
-            runs_string = True
-            index += 1
-            continue
-        if arg.startswith("-") and not arg.startswith("--") and "s" in arg[1:]:
-            reads_stdin = True
-        if arg.startswith(("-", "+")) and arg not in ("-", "+"):
-            index += 1
-            continue
-        break
-    positionals = args[index:]
-    if runs_string:
-        if positionals:
-            nested(_bind_positionals(positionals[0], positionals[1:]), f"{command.name} -c")
-        return
-    if positionals and positionals[0] != "-" and not reads_stdin:
-        return  # a script file; shell_sources resolves it when enabled
+    """`bash -c STR` (and fish's command options), and a script read from stdin:
+    `bash <<EOF`, `bash <<< STR`, `bash < file`, `echo STR | bash`,
+    `cat file | bash`, `bash -s args < file`."""
+    shell = shell_invocation(command.name, args)
+    if shell.syntax_only:
+        return  # `-n`: read and syntax-check only, never execute
+    for text in shell.commands:
+        nested(_bind_positionals(text, list(shell.command_args)), f"{command.name} -c")
+    if not shell.reads_stdin:
+        return  # a command string or a script file (shell_sources resolves the file)
     for redirect in command.redirects:
         if redirect.op in HEREDOC_OPERATORS and redirect.body is not None:
             nested(redirect.body, f"{command.name} <<heredoc")
@@ -614,11 +594,25 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
 
 def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None]) -> None:
     """Parse a file a shell reads as its program, via the source resolver."""
-    if ctx.sources is None or shell.cwd is None:
-        return
-    as_script = SimpleCommand((shell.argv[0], path), indirect=shell.indirect, cwd=shell.cwd)
-    for text, label in ctx.sources(as_script, shell.cwd, ctx.written_files):
+    as_script = SimpleCommand((shell.argv[0], path), indirect=shell.indirect, cwd=shell.cwd,
+                              cwd_options=shell.cwd_options)
+    for text, label in _sources_for(as_script, ctx):
         nested(text, label, not label.startswith("written "))
+
+
+def _sources_for(command: SimpleCommand, ctx: _Context) -> list[tuple[str, str]]:
+    """Program text `command` runs from disk, looked up in every directory it might
+    run in (`cd a || cd b; ./x.sh` may run a/x.sh or b/x.sh). Duplicates are dropped."""
+    if ctx.sources is None:
+        return []
+    found: list[tuple[str, str]] = []
+    for directory in command.possible_cwds:
+        if directory is None:
+            continue
+        for item in ctx.sources(command, directory, ctx.written_files):
+            if item not in found:
+                found.append(item)
+    return found
 
 
 _POSITIONAL = re.compile(r'"\$\{?(\d)\}?"|\$\{(\d+)\}|\$(\d)|"\$[@*]"|\$[@*]')

@@ -30,7 +30,7 @@ from danger_rule import (
 )
 from shell_interpreters import interpreter_kind
 from shell_parse import SimpleCommand
-from shell_wrappers import SHELLS
+from shell_wrappers import SHELLS, shell_invocation
 
 # --------------------------------------------------------------------------- #
 # Disks and devices
@@ -89,10 +89,8 @@ def _executes_stdin(command: SimpleCommand) -> bool:
     """A shell or interpreter that will run whatever arrives on stdin."""
     name, args = command.name, command.args
     if name in SHELLS:
-        if short_flag(args, "cn"):
-            return False
-        # `-s` reads the script from stdin; anything after it is $1, $2, ...
-        return short_flag(args, "s") or not operands(args) or operands(args)[0] == "-"
+        shell = shell_invocation(name, args)
+        return shell.reads_stdin and not shell.syntax_only
     if interpreter_kind(name):
         script_args = operands(args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M"}))
         return not script_args or script_args[0] == "-"

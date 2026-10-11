@@ -73,6 +73,11 @@ SHOULD_BLOCK = [
     # Computed command names.
     "X=rm; $X -rf ~",
     "T=$HOME; rm -rf \"$T\"",
+    # fish command options and substitutions inside arithmetic (PR review).
+    "fish -C 'rm -rf ~/victim'",
+    "fish --command='rm -rf ~/victim'",
+    "fish --init-command='rm -rf ~/victim' script.fish",
+    "echo $(( $(rm -rf ~/victim) + 0 ))",
     "$(which rm) -rf build",
     "f(){ rm -rf ~; }; f",
     "$'\\x72m' -rf build",
@@ -228,18 +233,42 @@ def main() -> int:
     reason = (_run_hook("cd ~ && rm -rf .") or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
     _check("entire home directory" in reason, "target analysis follows `cd` (cd ~ && rm -rf .)", failures)
 
+    print("\nPackage scripts in the selected workspace (PR review):")
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "packages", "app"))
+        os.makedirs(os.path.join(root, "packages", "lib"))
+        os.makedirs(os.path.join(root, "sub"))
+        _write(root, "package.json", json.dumps({"workspaces": ["packages/*"], "scripts": {"clean": "echo root"}}))
+        _write(root, os.path.join("packages", "app", "package.json"),
+               json.dumps({"name": "@me/app", "scripts": {"clean": "rm -rf ~/victim"}}))
+        _write(root, os.path.join("packages", "lib", "package.json"),
+               json.dumps({"name": "lib", "scripts": {"build": "tsc"}}))
+        _write(root, os.path.join("sub", "package.json"), json.dumps({"scripts": {"x": "rm -rf ~/a"}}))
+        for command in ("npm -w packages/app run clean", "npm --workspace=@me/app run clean",
+                        "npm -ws run clean", "pnpm --filter @me/app clean", "yarn workspace @me/app clean",
+                        "npm -w unknown-name run clean", "npm --prefix sub run x", "pnpm -C sub x"):
+            decision = _decision(_run_hook(command, root))
+            _check(decision == "ask", f"{command} -> {decision}", failures)
+        for command in ("npm run clean", "npm -w lib run build"):
+            decision = _decision(_run_hook(command, root))
+            _check(decision is None, f"{command} -> {decision}", failures)
+
     print("\nCommands run from files the agent did not type here -> ask:")
     with tempfile.TemporaryDirectory() as project:
         _write(project, "clean.sh", "#!/usr/bin/env bash\nset -e\nrm -rf ~/stuff\n")
         _write(project, "notes.txt", "rm -rf ~\n")
         _write(project, "package.json", json.dumps({"scripts": {"prebuild": "rm -rf dist", "build": "tsc"}}))
         _write(project, "Makefile", "all: build\nbuild: clean\n\t@echo built\nclean:\n\t-rm -rf out\n")
+        os.makedirs(os.path.join(project, "tools"))
+        _write(project, os.path.join("tools", "wipe.sh"), "#!/bin/sh\nrm -rf ~/stuff\n")
         for command in ("./clean.sh", "bash clean.sh", "source clean.sh", "npm run build", "make", "make clean"):
             decision = _decision(_run_hook(command, project))
             _check(decision == "ask", f"{command} -> {decision}", failures)
         for command in ("bash < clean.sh", "sh -s -- --verbose < clean.sh", "cat clean.sh | bash"):
             decision = _decision(_run_hook(command, project))
             _check(decision == "ask", f"script on stdin (PR review): {command} -> {decision}", failures)
+        _check(_decision(_run_hook("cd tools || cd other; ./wipe.sh", project)) == "ask",
+               "script found in a directory a conditional cd may leave (PR review)", failures)
         decision = _decision(_run_hook("bash -n < clean.sh", project))
         _check(decision is None, f"bash -n < clean.sh only checks syntax -> {decision}", failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):

@@ -237,7 +237,9 @@ class _Lexer:
         nxt = self._peek(1)
         if nxt == "(" and self._peek(2) == "(":
             self.i += 3
-            self._balanced(")", "(")  # arithmetic: no commands to run
+            # Arithmetic runs any command substitution inside it: `$(( $(cmd) + 1 ))`.
+            body = self._balanced(")", "(")
+            self.result.substitutions.extend(nested_substitutions(body))
             word.dynamic = True
             return self.s[start:self.i]
         if nxt == "(":

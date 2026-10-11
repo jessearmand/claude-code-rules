@@ -75,6 +75,13 @@ def main() -> int:
            "bash -n runs nothing", failures)
     _check(parse("a\rb", "/").commands[0].argv == ("a\rb",), "carriage return stays in the word", failures)
 
+    print("\nShell invocations:")
+    for command, expected in (("fish -c 'a'", ["a"]), ("fish -C 'a' x.fish", ["a"]), ("fish --command=a", ["a"]),
+                              ("fish --init-command=a", ["a"]), ("bash -lc a", ["a"]),
+                              ("echo $(( $(a) + 1 ))", ["a"]), ("bash -n -c a", [])):
+        names = [c.name for c in parse(command, "/").commands if c.name == "a"]
+        _check(names == expected, f"{command!r} runs {names}", failures)
+
     print("\nVariables:")
     parsed = parse("P=$HOME/.claude/s.json; echo x > \"$P\"; echo '$P'", "/")
     target = parsed.commands[0].redirects[0]

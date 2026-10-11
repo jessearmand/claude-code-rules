@@ -92,6 +92,83 @@ PREFIX_WRAPPERS: dict[str, WrapperSpec] = {
 # positional at all means the program is read from stdin.
 SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "yash", "posh"})
 SHELL_OPTIONS_WITH_ARG = _opts("-o", "+o", "-O", "+O", "--rcfile", "--init-file")
+# Options whose value is itself a command string the shell runs. fish takes
+# them as `-c CMD`, `--command=CMD`, `-C CMD`, `--init-command=CMD`.
+SHELL_COMMAND_OPTIONS: dict[str, frozenset[str]] = {
+    "fish": _opts("-c", "--command", "-C", "--init-command"),
+}
+# Other value-taking options, per shell.
+SHELL_EXTRA_OPTIONS_WITH_ARG: dict[str, frozenset[str]] = {
+    "fish": _opts("-d", "--debug", "-o", "--debug-output", "-p", "--profile", "-f", "--features",
+                  "--profile-startup"),
+}
+
+
+@dataclass(frozen=True)
+class ShellInvocation:
+    """What a shell command line will run."""
+
+    # Command strings run directly: `bash -c STR`, `fish -C STR --command=STR`.
+    commands: tuple[str, ...] = ()
+    # Positional arguments after a `-c` string: $0, $1, ...
+    command_args: tuple[str, ...] = ()
+    script: str | None = None  # `bash script.sh`
+    reads_stdin: bool = False  # `bash`, `bash -s args`, `bash -`
+    syntax_only: bool = False  # `-n`: parse and check, run nothing
+
+
+def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvocation:
+    """Parse a shell's own arguments. The single source of truth for every guard."""
+    command_options = SHELL_COMMAND_OPTIONS.get(name, frozenset())
+    with_arg = SHELL_OPTIONS_WITH_ARG | SHELL_EXTRA_OPTIONS_WITH_ARG.get(name, frozenset())
+    commands: list[str] = []
+    dash_c = reads_stdin = syntax_only = False
+    command_given = False  # fish `-c CMD`: the string came with the option
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            index += 1
+            break
+        key = arg.split("=", 1)[0] if arg.startswith("--") else arg
+        if key in command_options:
+            # `-c`/`--command` replace the script; `-C`/`--init-command` run before it.
+            if key in ("-c", "--command"):
+                dash_c = command_given = True
+            if arg.startswith("--") and "=" in arg:
+                commands.append(arg.split("=", 1)[1])
+                index += 1
+            else:
+                if index + 1 < len(args):
+                    commands.append(args[index + 1])
+                index += 2
+            continue
+        if key in with_arg:
+            index += 1 if "=" in arg else 2
+            continue
+        if arg.startswith("-") and not arg.startswith("--") and len(arg) > 1:
+            letters = arg[1:]
+            syntax_only = syntax_only or "n" in letters
+            dash_c = dash_c or "c" in letters
+            reads_stdin = reads_stdin or "s" in letters
+            index += 1
+            continue
+        if arg.startswith(("+", "--")) and arg not in ("+", "--"):
+            index += 1
+            continue
+        break
+    positionals = list(args[index:])
+    command_args: tuple[str, ...] = ()
+    script = None
+    if dash_c and not command_given and positionals:
+        commands.append(positionals[0])  # `bash -c STR $0 $1 ...`
+        command_args = tuple(positionals[1:])
+    elif dash_c:
+        command_args = tuple(positionals)
+    elif not reads_stdin and positionals and positionals[0] != "-":
+        script = positionals[0]
+    stdin = reads_stdin or (not dash_c and script is None)
+    return ShellInvocation(tuple(commands), command_args, script, stdin, syntax_only)
 
 # Wrappers whose command is a string the shell parses again.
 STRING_RUNNERS: dict[str, WrapperSpec] = {

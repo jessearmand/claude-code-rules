@@ -23,12 +23,14 @@ cannot be read cleanly is skipped.
 
 from __future__ import annotations
 
+import fnmatch
+import glob
 import json
 import os
 import re
 
 from shell_parse import SimpleCommand, WrittenFile
-from shell_wrappers import CLI_OPTIONS_WITH_VALUE, SHELL_OPTIONS_WITH_ARG, SHELLS
+from shell_wrappers import CLI_OPTIONS_WITH_VALUE, SHELLS, shell_invocation
 
 MAX_SOURCE_BYTES = 256 * 1024
 _SHEBANG_SHELL = re.compile(r"^#!\s*\S*?(?:/env\s+(?:-S\s+)?)?\S*?\b(?:ba|z|da|k|mk|a)?sh\b")
@@ -64,8 +66,10 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
     head = command.argv[0]
 
     if name in SHELLS:
-        script = _shell_script_argument(args)
-        return _script(script, cwd, written, require_shebang=False) if script else []
+        shell = shell_invocation(name, args)
+        if shell.syntax_only or shell.script is None:
+            return []  # command strings and stdin are parsed by the parser itself
+        return _script(shell.script, cwd, written, require_shebang=False)
     if name in ("source", "."):
         return _script(args[0], cwd, written, require_shebang=False) if args else []
     if "/" in head:
@@ -82,24 +86,6 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
 # --------------------------------------------------------------------------- #
 
 
-def _shell_script_argument(args: list[str]) -> str | None:
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == "--":
-            index += 1
-            break
-        if arg in SHELL_OPTIONS_WITH_ARG:
-            index += 2
-            continue
-        if arg.startswith("-") and not arg.startswith("--") and any(f in arg[1:] for f in "cns"):
-            # `-c STRING` and `-s` (stdin) are parsed by the parser itself; `-n` runs nothing.
-            return None
-        if arg.startswith(("-", "+")) and arg not in ("-", "+"):
-            index += 1
-            continue
-        break
-    return args[index] if index < len(args) and args[index] != "-" else None
 
 
 def _read_text(path: str) -> str | None:
@@ -165,27 +151,122 @@ def _operands(args: list[str], with_value: frozenset[str]) -> list[str]:
     return words
 
 
+# Options naming the package directory to run in, and options selecting workspaces.
+_PACKAGE_DIR_OPTIONS = frozenset({"--prefix", "-C", "--dir", "--cwd"})
+_WORKSPACE_OPTIONS = frozenset({"-w", "--workspace", "-F", "--filter"})
+_ALL_WORKSPACES = frozenset({"-ws", "--workspaces", "-r", "--recursive"})
+
+
 def _package_script(runner: str, args: list[str], cwd: str) -> list[tuple[str, str]]:
+    """package.json scripts a package-manager command runs, in the package it selects.
+
+    `npm -w app run clean`, `pnpm --filter app clean` and `yarn workspace app clean`
+    run app/package.json's script, not the root's; `npm --prefix dir run x` and
+    `pnpm -C dir x` run dir's. An unresolvable workspace selector is checked
+    against every workspace package.
+    """
     positionals = _operands(args, CLI_OPTIONS_WITH_VALUE.get(runner, frozenset()))
-    if not positionals:
-        return []
-    verb = positionals[0]
-    if verb in ("run", "run-script"):
-        if len(positionals) < 2:
-            return []
-        script = positionals[1]
-    elif runner == "npm" and verb in _NPM_LIFECYCLE:
-        script = verb
-    elif runner in ("yarn", "bun", "pnpm"):
-        script = verb  # `yarn build` runs the script when one is defined
-    else:
+    selectors = _option_values(args, _WORKSPACE_OPTIONS)
+    if runner == "yarn" and positionals[:1] == ["workspace"] and len(positionals) > 1:
+        selectors.append(positionals[1])
+        positionals = positionals[2:]
+    elif runner == "yarn" and positionals[:2] == ["workspaces", "foreach"]:
+        positionals = positionals[2:]
+        selectors.append("*")
+    script = _script_name(runner, positionals)
+    if script is None:
         return []
 
-    scripts = _package_scripts(cwd)
-    if script not in scripts:
-        return []
-    names = [f"pre{script}", script, f"post{script}"]
-    return [(scripts[name], f"{runner} script {name}") for name in names if name in scripts]
+    root = _package_root(args, cwd)
+    if any(a in _ALL_WORKSPACES or a.startswith("--workspaces=") for a in args):
+        selectors.append("*")
+    directories = _select_workspaces(root, selectors) if selectors else [root]
+
+    found: list[tuple[str, str]] = []
+    for directory in directories:
+        scripts = _package_scripts(directory)
+        if script not in scripts:
+            continue
+        where = "" if directory == root else f" in {os.path.relpath(directory, root)}"
+        for name in (f"pre{script}", script, f"post{script}"):
+            if name in scripts:
+                found.append((scripts[name], f"{runner} script {name}{where}"))
+    return found
+
+
+def _script_name(runner: str, positionals: list[str]) -> str | None:
+    if not positionals:
+        return None
+    verb = positionals[0]
+    if verb in ("run", "run-script"):
+        return positionals[1] if len(positionals) > 1 else None
+    if runner == "npm":
+        return verb if verb in _NPM_LIFECYCLE else None
+    return verb if runner in ("yarn", "bun", "pnpm") else None  # `yarn build` runs a script
+
+
+def _option_values(args: list[str], names: frozenset[str]) -> list[str]:
+    values: list[str] = []
+    for index, arg in enumerate(args):
+        key, sep, value = arg.partition("=")
+        if key in names and sep:
+            values.append(value)
+        elif arg in names and index + 1 < len(args):
+            values.append(args[index + 1])
+    return values
+
+
+def _package_root(args: list[str], cwd: str) -> str:
+    chosen = _option_values(args, _PACKAGE_DIR_OPTIONS)
+    return _absolute(chosen[-1], cwd) if chosen else cwd
+
+
+def _workspace_dirs(root: str) -> list[str]:
+    """Package directories listed by package.json `workspaces` or pnpm-workspace.yaml."""
+    patterns: list[str] = []
+    text = _read_text(os.path.join(root, "package.json"))
+    data = json.loads(text) if text else {}
+    declared = data.get("workspaces") if isinstance(data, dict) else None
+    if isinstance(declared, dict):
+        declared = declared.get("packages")
+    if isinstance(declared, list):
+        patterns += [p for p in declared if isinstance(p, str)]
+    pnpm = _read_text(os.path.join(root, "pnpm-workspace.yaml")) or ""
+    patterns += re.findall(r"^\s*-\s*['\"]?([^'\"#\n]+?)['\"]?\s*$", pnpm, re.MULTILINE)
+    found: list[str] = []
+    for pattern in patterns:
+        if pattern.startswith("!"):
+            continue
+        for path in sorted(glob.glob(os.path.join(root, pattern)))[:200]:
+            if os.path.isfile(os.path.join(path, "package.json")) and path not in found:
+                found.append(os.path.normpath(path))
+    return found
+
+
+def _package_name(directory: str) -> str:
+    text = _read_text(os.path.join(directory, "package.json"))
+    data = json.loads(text) if text else {}
+    name = data.get("name") if isinstance(data, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+def _select_workspaces(root: str, selectors: list[str]) -> list[str]:
+    """Workspace directories matching any selector by path, directory name or package name."""
+    candidates = _workspace_dirs(root)
+    chosen: list[str] = []
+    for selector in selectors:
+        target = selector.strip("{}").lstrip("./") if selector not in (".", "./") else ""
+        direct = _absolute(selector, root)
+        if os.path.isfile(os.path.join(direct, "package.json")):
+            chosen.append(direct)
+            continue
+        matches = [d for d in candidates
+                   if selector == "*" or fnmatch.fnmatch(_package_name(d), target)
+                   or fnmatch.fnmatch(os.path.relpath(d, root), target)
+                   or fnmatch.fnmatch(os.path.basename(d), target)]
+        # Cannot tell which package is meant: judge every workspace, never none.
+        chosen += matches or candidates
+    return list(dict.fromkeys(chosen)) or [root]
 
 
 def _package_scripts(cwd: str) -> dict[str, str]:
