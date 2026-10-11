@@ -186,8 +186,9 @@ class _Trap:
     indirect: bool
     on_exit: bool  # EXIT (or 0): runs when the shell ends
     on_signal: bool  # any other condition: may run after any later command
-    # The variable table it was last checked with; checked again when that changes.
-    checked: dict[str, tuple[str, ...]] | None = None
+    # The shell state it was last checked in (variables, directories, files the
+    # line wrote, links and copies); checked again when any of that changes.
+    checked: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -242,6 +243,11 @@ class _Context:
     # The (index, line) records the last `mapfile` read, one list per stream it
     # may have read; None when its input is not known. Its -C callback runs on them.
     mapfile_records: list[list[tuple[int, str]]] | None = None
+
+    def trap_state(self) -> tuple:
+        """What a signal handler's meaning can depend on, to tell when it changed."""
+        return (dict(self.variables), self.cwd, self.cwd_options, dict(self.written_files),
+                dict(self.copies), dict(self.result.links))
 
     def next_pipeline(self) -> int:
         self.pipeline_counter[0] += 1

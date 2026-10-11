@@ -296,14 +296,17 @@ def _run_exit_traps(ctx: _Context) -> None:
 
 
 def _run_signal_traps(ctx: _Context) -> None:
-    """Check this shell's signal handlers again when the variables changed since
-    they were last checked: `X=echo; trap '$X reset --hard' TERM; X=git; kill
-    -TERM $$` runs git, and a signal may arrive after any command."""
-    if ctx.trapping:
+    """Check this shell's signal handlers again when the state they depend on
+    (variables, directory, files the line wrote) changed since they were last
+    checked: `X=echo; trap '$X reset --hard' TERM; X=git; kill -TERM $$` runs
+    git, and a signal may arrive after any command."""
+    traps = [trap for trap in ctx.trap_frames[-1] if trap.on_signal]
+    if ctx.trapping or not traps:
         return
-    for trap in ctx.trap_frames[-1]:
-        if trap.on_signal and trap.checked != ctx.variables:
-            trap.checked = dict(ctx.variables)
+    state = ctx.trap_state()
+    for trap in traps:
+        if trap.checked != state:
+            trap.checked = state
             _check_trap(trap, "on signal", ctx)
 
 
@@ -625,7 +628,8 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
             argv = argv[1:]
         if not argv:
             return
-        argv = [_executable(argv[0], ctx), *argv[1:]]
+        argv = [_executable(argv[0], ctx, functions=_finds_functions(wrappers),
+                            hashed=_finds_functions(wrappers) or wrappers[-1:] == ("command",)), *argv[1:]]
         name = program_name(argv[0])
         step = _unwrap_once(name, argv, ctx, via, depth, indirect)
         if step is None:
@@ -672,10 +676,19 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
         _follow_directory_change(command, ctx)
 
 
+def _finds_functions(wrappers: tuple[str, ...]) -> bool:
+    """Whether the shell looks a command name up as a function: not behind
+    `command`/`builtin`, which skip functions, or a program such as `sudo`,
+    `env` or `xargs`, which runs an executable (`time` is a keyword)."""
+    return all(w == "time" for w in wrappers)
+
+
 def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     """Calling a declared function runs its body here, in this shell, with the
     call's arguments as $1..$n: `f(){ "$1" -rf x; }; f rm` runs rm."""
-    keys = () if command.dynamic_head else ctx.variables.get(FUNCTION + command.name, ())
+    if command.dynamic_head or not _finds_functions(command.wrappers):
+        return
+    keys = ctx.variables.get(FUNCTION + command.name, ())
     bodies = [ctx.functions[key] for key in keys if key != UNSET]
     if not bodies or command.name in ctx.calling:
         return

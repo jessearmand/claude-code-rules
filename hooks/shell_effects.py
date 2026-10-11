@@ -78,20 +78,22 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
             ctx.written_files[path] = WrittenFile(body, replaces=not appends)
 
 
-def _executable(word: str, ctx: _Context) -> str:
+def _executable(word: str, ctx: _Context, functions: bool = True, hashed: bool = True) -> str:
     """The program a path runs once this line's links and copies are followed:
     `ln -s /bin/rm x; ./x` and `cp /bin/rm x; ./x` run /bin/rm. A bare name runs
     what `hash -p` set for it, unless a function of that name comes first;
     otherwise it is looked up in PATH, which is not modelled, and stays."""
     if "/" not in word:
-        hashed = ctx.variables.get(HASHED + word, (UNSET,))
-        if UNSET not in ctx.variables.get(FUNCTION + word, (UNSET,)) or hashed == (UNSET,):
+        # `functions`: the shell looks the name up as a function first; `hashed`:
+        # it consults `hash -p` (the shell itself and `command` do; `sudo` does not).
+        mapping = ctx.variables.get(HASHED + word, (UNSET,)) if hashed else (UNSET,)
+        if (functions and UNSET not in ctx.variables.get(FUNCTION + word, (UNSET,))) or mapping == (UNSET,):
             return word
-        if len(hashed) > 1:
+        if len(mapping) > 1:
             # A mapping that may not have been made (`false && hash -p …`): which
             # program runs is not known; the most recent possibility is checked.
             ctx.result.truncated = True
-        word = next((path for path in hashed if path != UNSET), word)
+        word = next((path for path in mapping if path != UNSET), word)
     if ctx.cwd is None:
         return word
     path = os.path.normpath(os.path.join(ctx.cwd, os.path.expanduser(word)))

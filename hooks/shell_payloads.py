@@ -95,7 +95,7 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             nested(handler, "trap")
             exits = [s.upper().removeprefix("SIG") in ("EXIT", "0") for s in _trap_signals(args)]
             ctx.trap_frames[-1].append(_Trap(handler, (*via, "trap"), depth + 1, indirect, on_exit=any(exits),
-                                             on_signal=not all(exits), checked=dict(ctx.variables)))
+                                             on_signal=not all(exits), checked=ctx.trap_state()))
     elif name in ("mapfile", "readarray"):
         callback = _mapfile_option(args, "C")
         if callback:

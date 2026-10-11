@@ -201,6 +201,7 @@ SHOULD_BLOCK = [
     "X=r; X+=m; \"${X/m/&}\" -rf victim",  # `&` is the matched text (PR review)
     "readonly X=$'\\x72m'; printf -v X %s echo; \"$X\" -rf victim",  # readonly keeps its value (PR review)
     "X=rM; \"${X,,[[:upper:]]}\" -rf victim",  # bash character classes (PR review)
+    "hash -p /bin/rm x; x(){ echo ok; }; command x -rf victim",  # command skips functions (PR review)
     "X=; f(){ X+=$2; }; mapfile -t -C f -c 1 A <<< $'r\\nm'; \"$X\" -rf victim",  # -C per line (PR review)  # an exit that may not run ends nothing (PR review)
     "X=echo; trap '\"$X\" -rf victim' USR1; X=r; X+=m; kill -USR1 $$; X=echo",  # signal traps (PR review)
     "X=r; X+=m; coproc X=echo; \"$X\" -rf victim",  # coproc runs on its own (PR review)
@@ -530,6 +531,10 @@ def main() -> int:
         _write(os.path.join(project, "safe"), "cleanup_guard_test", "echo ok\n")
         decision = _decision(_run_hook("PATH=bin; false && PATH=safe; source cleanup_guard_test", project))
         _check(decision == "ask", f"source searches every PATH the line may have (PR review) -> {decision}", failures)
+        decision = _decision(_run_hook("cd safe; trap 'source ./cleanup_guard_test' TERM; cd ../bin; kill -TERM $$",
+                                       project))
+        _check(decision == "ask", f"a signal handler is checked in the directory it runs in (PR review) -> {decision}",
+               failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)
