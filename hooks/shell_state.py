@@ -291,6 +291,21 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
     if "a" in options:
         names.insert(0, options["a"])
     names = [_target_name(n, ctx) for n in names if _NAME.fullmatch(n)] or ["REPLY"]
+    timeout = options.get("t")
+    if timeout is not None and re.fullmatch(r"0*\.?0*", timeout) and timeout.strip("."):
+        return  # `read -t 0`: only tests for input; nothing is read or assigned
+    saved = ctx.conditional
+    if timeout is not None and not re.fullmatch(r"\d*\.?\d+|\d+\.", timeout):
+        ctx.conditional = True  # a computed timeout may be 0: the variables may keep their values
+    try:
+        _read_assign(args, options, names, delimiter, redirects, ctx, ifs_values)
+    finally:
+        ctx.conditional = saved
+
+
+def _read_assign(args: list[str], options: dict[str, str], names: list[str], delimiter: str,
+                 redirects: list[Redirect], ctx: _Context, ifs_values: tuple[str, ...]) -> None:
+    """The assignments `read` makes once its options are known."""
     count_option = "N" if "N" in options else "n" if "n" in options else None
     if count_option and not options[count_option].isdigit():
         for name in names:
@@ -413,16 +428,19 @@ def _hash_builtin(args: list[str], ctx: _Context) -> None:
 def _stdin_text(redirects: list[Redirect], ctx: _Context) -> str | None:
     """What a builtin reads on stdin, when it is literal text: a here-string or
     heredoc, what `< <(producer)` prints, or a file written earlier on the line
-    or on disk (`< file`). None otherwise (a pipe, the terminal)."""
-    text = next((r.target + "\n" if r.op == "<<<" else r.body for r in redirects
-                 if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
-                None)
-    if text is None:
-        text = next((t for r in redirects if r.op == "<" and not r.dynamic
-                     and (t := _input_text(r.target, ctx)) is not None), None)
-    if text is None and not any(r.op in ("<", "<<<") or r.op in HEREDOC_OPERATORS for r in redirects):
-        text = ctx.piped_text  # `printf r | read X`
-    return text
+    or on disk (`< file`). None otherwise (a pipe, the terminal).
+
+    Redirections apply in order, so the last one to stdin is what is read:
+    `read X <<< echo <<< rm` reads rm."""
+    inputs = [r for r in redirects if r.op in ("<", "<<<") or r.op in HEREDOC_OPERATORS]
+    if not inputs:
+        return ctx.piped_text  # `printf r | read X`
+    last = inputs[-1]
+    if last.op == "<<<":
+        return None if last.dynamic else last.target + "\n"
+    if last.op in HEREDOC_OPERATORS:
+        return last.body
+    return None if last.dynamic else _input_text(last.target, ctx)
 
 
 def _input_text(target: str, ctx: _Context) -> str | None:
