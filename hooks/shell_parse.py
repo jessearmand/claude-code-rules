@@ -197,9 +197,6 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     # Nested code (`bash -c`, `$(...)`, scripts) runs in its own process: a
     # `cd` inside it does not move the caller.
     entry = (ctx.cwd, ctx.cwd_options)
-    for body in lexed.substitutions:
-        _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
-        ctx.cwd, ctx.cwd_options = entry
 
     pipeline, stage = ctx.next_pipeline(), 0
     segment: list = []
@@ -225,6 +222,7 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
 
 def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
              pipeline: int, stage: int) -> None:
+    _run_substitutions(tokens, ctx, via, depth, indirect)
     words: list[Word] = []
     redirects: list[Redirect] = []
     index = 0
@@ -251,6 +249,22 @@ def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indi
     _emit(argv, tuple(redirects), ctx, via, depth, indirect, pipeline, stage, words[0].dynamic, ())
 
 
+def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int,
+                       indirect: bool) -> None:
+    """Parse the command substitutions in this command's words, left to right.
+
+    They run when this command is reached, so they see the directory and
+    variables left by the commands before it (`cd ~/.claude && echo $(...)`,
+    `X=rm; echo $($X ...)`). Each runs in a subshell: a `cd` inside does not
+    move the caller.
+    """
+    for token in tokens:
+        for body in getattr(token, "substitutions", ()):
+            entry = (ctx.cwd, ctx.cwd_options)
+            _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+            ctx.cwd, ctx.cwd_options = entry
+
+
 def _expand_word(word: Word, ctx: _Context) -> Word:
     """Substitute parameters whose value is known at this point in the line.
 
@@ -273,7 +287,7 @@ def _expand_word(word: Word, ctx: _Context) -> Word:
 
     text = _PARAMETER.sub(value, word.text)
     return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted,
-                heredoc_body=word.heredoc_body)
+                heredoc_body=word.heredoc_body, substitutions=word.substitutions)
 
 
 def _strip_prelude(words: list[Word], ctx: _Context) -> list[Word]:

@@ -109,9 +109,21 @@ def _dd(args: tuple[str, ...]) -> list[PathWrite]:
 
 
 def _download(name: str, args: tuple[str, ...]) -> list[PathWrite]:
-    names = ("-o", "--output") if name == "curl" else ("-O", "--output-document")
-    value = _option_value(args, names)
-    return [PathWrite(value, WRITE)] if value and value != "-" else []
+    """Files a curl/wget call saves: an explicit output, or the URL's own file name
+    (`curl -O URL`, and wget's default)."""
+    explicit = _option_value(args, ("-o", "--output") if name == "curl" else ("-O", "--output-document"))
+    if explicit == "-":
+        return []
+    directory = _option_value(args, ("--output-dir",) if name == "curl" else ("-P", "--directory-prefix"))
+    if explicit:
+        names = [explicit]
+    elif name == "wget" or any(a in ("-O", "--remote-name", "--remote-name-all") for a in args):
+        urls = [a for a in args if "://" in a and not a.startswith("-")]
+        names = [url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] or "index.html" for url in urls]
+    else:
+        names = []
+    return [PathWrite(f"{directory.rstrip('/')}/{n}" if directory and not n.startswith("/") else n, WRITE)
+            for n in names]
 
 
 _TARGET_ONLY = {

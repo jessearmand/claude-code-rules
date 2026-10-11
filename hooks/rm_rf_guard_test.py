@@ -73,6 +73,7 @@ SHOULD_BLOCK = [
     # Computed command names.
     "X=rm; $X -rf ~",
     "T=$HOME; rm -rf \"$T\"",
+    "X=rm; echo $($X -rf ~/victim)",
     # fish command options and substitutions inside arithmetic (PR review).
     "fish -C 'rm -rf ~/victim'",
     "fish --command='rm -rf ~/victim'",

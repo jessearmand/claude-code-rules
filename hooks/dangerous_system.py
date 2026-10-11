@@ -31,6 +31,7 @@ from danger_rule import (
 from shell_interpreters import interpreter_kind
 from shell_parse import SimpleCommand
 from shell_wrappers import SHELLS, shell_invocation
+from shell_writes import written_paths
 
 # --------------------------------------------------------------------------- #
 # Disks and devices
@@ -120,6 +121,51 @@ def _fetch_and_execute(command: SimpleCommand, ctx: RuleContext) -> str | None:
             for redirect in command.redirects:
                 if redirect.op == "<" and _FETCH_IN_ARG.search(redirect.target):
                     return f"{command.name} < downloaded code: {redirect.target[:60]}"
+    return None
+
+
+def _executed_files(command: SimpleCommand) -> list[str]:
+    """Files `command` runs as a program: a script argument, `./tool`, `source f`,
+    or a file a shell or interpreter reads on stdin."""
+    files: list[str] = []
+    if command.name in SHELLS:
+        shell = shell_invocation(command.name, command.args)
+        if shell.script and not shell.syntax_only:
+            files.append(shell.script)
+    elif interpreter_kind(command.name):
+        script = operands(command.args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M", "-c", "-e"}))[:1]
+        files += [s for s in script if s != "-"]
+    elif command.name in ("source", ".") and command.args:
+        files.append(command.args[0])
+    elif "/" in (command.argv[0] if command.argv else "") and not command.dynamic_head:
+        files.append(command.argv[0])
+    if _executes_stdin(command):
+        files += [r.target for r in command.redirects if r.op == "<" and not r.dynamic]
+    return files
+
+
+def _absolute(path: str, directory: str | None) -> str | None:
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+    return None if directory is None else os.path.normpath(os.path.join(directory, expanded))
+
+
+def _run_downloaded(command: SimpleCommand, ctx: RuleContext) -> str | None:
+    """`curl -o x.sh URL && bash x.sh`: running a file this same line downloaded."""
+    executed = {a for f in _executed_files(command) for d in command.possible_cwds
+                if (a := _absolute(f, d))}
+    if not executed:
+        return None
+    for earlier in ctx.parsed.commands:
+        if earlier is command:
+            break
+        if earlier.name not in _FETCHERS:
+            continue
+        for write in written_paths(earlier):
+            for directory in earlier.possible_cwds:
+                if _absolute(write.path, directory) in executed:
+                    return f"{earlier.name} downloads {write.path}, then {command.name} runs it"
     return None
 
 
@@ -349,8 +395,23 @@ def _power(command: SimpleCommand, ctx: RuleContext) -> str | None:
     return None
 
 
+def _kill_targets(args: tuple[str, ...]) -> list[str]:
+    """PIDs passed to kill. `kill [-s SIG | -n NUM | -SIG] pid...`: only the first
+    dash word is a signal, so in `kill -9 -1` the `-1` is the PID for everything."""
+    index = 0
+    if args[:1] and args[0] in ("-l", "-L", "--list"):
+        return []
+    if args[:1] and args[0] in ("-s", "-n", "--signal"):
+        index = 2
+    elif args[:1] and args[0].startswith("-") and args[0] != "--":
+        index = 1
+    if index < len(args) and args[index] == "--":
+        index += 1
+    return list(args[index:])
+
+
 def _kill_everything(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    if command.name == "kill" and any(a in ("-1", "1") for a in operands(command.args)):
+    if command.name == "kill" and any(pid in ("-1", "1") for pid in _kill_targets(command.args)):
         return "kill -1 / kill 1 (every process / init)"
     if command.name in ("killall5",):
         return command.name
@@ -430,6 +491,8 @@ SYSTEM_RULES: tuple[DangerRule, ...] = (
     DangerRule("disk-format", CRITICAL, "formats, partitions or wipes a disk", _DISK_HINT, _disk_format),
     DangerRule("fetch-and-execute", CRITICAL, "runs code downloaded from the network", _FETCH_HINT,
                _fetch_and_execute),
+    DangerRule("run-downloaded", CRITICAL, "runs a file downloaded earlier in the same command", _FETCH_HINT,
+               _run_downloaded),
     DangerRule("decode-and-execute", CRITICAL, "decodes and runs hidden code", _FETCH_HINT,
                _decode_and_execute),
     DangerRule("fork-bomb", CRITICAL, "exhausts process limits", _DISK_HINT, _fork_bomb),

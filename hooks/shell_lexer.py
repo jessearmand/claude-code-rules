@@ -43,6 +43,10 @@ class Word:
     dynamic: bool = False
     quoted: bool = False
     heredoc_body: str | None = None
+    # Command lists this word runs while it is expanded ($(...), backticks,
+    # <(...), and $(...) inside ${...}, $((...)) or an unquoted heredoc), in
+    # order. They run when the command holding the word runs, not before.
+    substitutions: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -230,7 +234,7 @@ class _Lexer:
         c = self.s[self.i]
         if c == "`":
             body = self._backtick_body()
-            self.result.substitutions.append(body)
+            self._substitute(word, [body])
             word.dynamic = True
             return self.s[start:self.i]
 
@@ -239,19 +243,19 @@ class _Lexer:
             self.i += 3
             # Arithmetic runs any command substitution inside it: `$(( $(cmd) + 1 ))`.
             body = self._balanced(")", "(")
-            self.result.substitutions.extend(nested_substitutions(body))
+            self._substitute(word, nested_substitutions(body))
             word.dynamic = True
             return self.s[start:self.i]
         if nxt == "(":
             self.i += 2
             body = self._balanced(")", "(")
-            self.result.substitutions.append(body)
+            self._substitute(word, [body])
             word.dynamic = True
             return self.s[start:self.i]
         if nxt == "{":
             self.i += 2
             body = self._balanced("}", "{")
-            self.result.substitutions.extend(nested_substitutions(body))
+            self._substitute(word, nested_substitutions(body))
             word.dynamic = True
             return self.s[start:self.i]
         if nxt and (nxt.isalnum() or nxt in "_@*#?$!-"):
@@ -361,12 +365,17 @@ class _Lexer:
                 return
         self.result.unterminated = True
 
+    def _substitute(self, word: Word, bodies: list[str]) -> None:
+        word.substitutions.extend(bodies)
+        self.result.substitutions.extend(bodies)
+
     def _process_substitution(self) -> None:
         start = self.i
         self.i += 2
         body = self._balanced(")", "(")
-        self.result.substitutions.append(body)
-        self.result.tokens.append(Word(self.s[start:self.i], dynamic=True))
+        word = Word(self.s[start:self.i], dynamic=True)
+        self._substitute(word, [body])
+        self.result.tokens.append(word)
 
     # ------------------------------------------------------------------ #
     # Heredocs
@@ -403,7 +412,7 @@ class _Lexer:
                 self.result.unterminated = True
             if not word.quoted:
                 # An unquoted heredoc expands $(...) and backticks in its body.
-                self.result.substitutions.extend(nested_substitutions(word.heredoc_body))
+                self._substitute(word, nested_substitutions(word.heredoc_body))
 
 
 def nested_substitutions(text: str) -> list[str]:

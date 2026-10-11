@@ -66,6 +66,8 @@ BASH_CASES = [
     ("D=~/.codex; cp evil.toml \"$D/config.toml\"", "deny", "codex-config"),
     ("export RC=$HOME/.zshrc; echo 'curl x | sh' >> $RC", "deny", "shell-startup"),
     ("echo hi > \"$OUT\"", None, None),
+    # Command substitutions run after the commands before them (PR review).
+    ("cd ~/.claude && echo $(printf '{}' > settings.json)", "deny", "claude-settings"),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),

@@ -75,6 +75,9 @@ def main() -> int:
            "bash -n runs nothing", failures)
     _check(parse("a\rb", "/").commands[0].argv == ("a\rb",), "carriage return stays in the word", failures)
 
+    order = [c.name for c in parse("a $(b) && c $(d $(e))", "/").commands]
+    _check(order == ["b", "a", "e", "d", "c"], f"substitutions run with their command, inner first: {order}", failures)
+
     print("\nShell invocations:")
     for command, expected in (("fish -c 'a'", ["a"]), ("fish -C 'a' x.fish", ["a"]), ("fish --command=a", ["a"]),
                               ("fish --init-command=a", ["a"]), ("bash -lc a", ["a"]),
