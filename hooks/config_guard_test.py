@@ -105,6 +105,9 @@ BASH_CASES = [
     ("printf -v P %s $HOME/.claude/settings.json; printf x > \"$P\"", "deny", "claude-settings"),
     ("P=notes; unset P; printf x > \"${P-$HOME/.claude/settings.json}\"", "deny", "claude-settings"),
     ("P=notes; printf x > \"${P-$HOME/.claude/settings.json}\"", None, None),
+    # Writes through a link made earlier in the line (PR review).
+    ("ln -s ~/.claude cfg && echo x > cfg/settings.json", "deny", "claude-settings"),
+    ("ln -s ../notes harmless; printf x > harmless", None, None),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),

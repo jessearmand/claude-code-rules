@@ -103,6 +103,12 @@ def main() -> int:
                         "hello.tar", "tar.gz", "gz", "gz", "ello.tar.", "${!X}"),
            f"parameter operators on a known value: {argv}", failures)
 
+    argv = [c.argv for c in parse('set -- a "b c"; echo "$@" "$*" $# $2; (set -- z); echo $1', "/").commands]
+    _check(argv[1] == ("echo", "a", "b c", "a b c", "2", "b", "c") and argv[-1] == ("echo", "a"),
+           f"positional parameters from set --: {argv}", failures)
+    links = parse("ln -s /etc/hosts h; ln -st /tmp /a/b", "/w").links
+    _check(links == {"/w/h": "/etc/hosts", "/tmp/b": "/a/b"}, f"links recorded: {links}", failures)
+
     print("\nWorking directory:")
     cwd_cases = [
         ("cd /a; cd b; ls", "/a/b"),

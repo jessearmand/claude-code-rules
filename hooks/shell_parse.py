@@ -25,6 +25,7 @@ to be in either case.
 
 from __future__ import annotations
 
+import glob
 import itertools
 import os
 import re
@@ -54,6 +55,7 @@ _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
 # A parameter reference: `$NAME`, `${NAME}`, `${NAME:-default}` and the like.
 _REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ONE_CHAR = re.compile(r".")
 # `${NAME<op>word}` forms whose result is NAME's value or `word`.
 _BRACED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(:?[-=+?])(.*)", re.DOTALL)
 _UNRESOLVED = re.compile(r"\$|`")
@@ -67,6 +69,11 @@ _MAX_VARIANTS = 64
 _MAX_BRACE_WORDS = 64
 # Program text a source resolver found but could not inspect (too large).
 SOURCE_TOO_LARGE = "\0too-large"
+# Positional parameters (`set -- a b`) live in the variable table under this
+# name, joined by _FIELD, so subshells and branches treat them like variables.
+_POSITIONALS = "@"
+_FIELD = "\x1f"
+_GLOB_CHARS = re.compile(r"[*?[]")
 # A variable value meaning "may be unset" (`true || unset X`).
 UNSET = "\0unset"
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
@@ -145,6 +152,8 @@ class ParseResult:
     # Every string that was parsed as shell code beyond the top level, with
     # how it was reached. Regex-based guards rescan these.
     nested_sources: list[NestedSource] = field(default_factory=list)
+    # Symlinks and hard links the line creates: absolute link path -> absolute target.
+    links: dict[str, str] = field(default_factory=dict)
     # (command, label) for program text a command runs that was too large to read.
     skipped_sources: list[tuple[SimpleCommand, str]] = field(default_factory=list)
     unparseable: bool = False
@@ -346,11 +355,18 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
                 index += 2
                 continue
         elif isinstance(token, Word):
-            for piece in _brace_expand(token, ctx):
-                words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
+            params = _positionals(ctx) if token.text in ("$@", "${@}", "$*", "${*}") else None
+            if params is not None:
+                # `"$@"`: one word per positional parameter; quoted `"$*"` joins them.
+                joined = token.quoted and "*" in token.text
+                words.extend([Word(" ".join(params))] if joined else [Word(p) for p in params])
+            else:
+                for piece in _brace_expand(token, ctx):
+                    words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
         index += 1
 
     words, environment = _strip_prelude(words, ctx)
+    words = _glob_head(words, ctx)
     if not words:
         if redirects:
             # `> file` and `X=1 > file` still open (and truncate) the file.
@@ -375,6 +391,27 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
         for body in getattr(token, "substitutions", ()):
             # A subshell: _parse_into restores the caller's directory and variables.
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+
+
+def _glob_head(words: list[Word], ctx: _Context) -> list[Word]:
+    """Pathname expansion of an unquoted command word: `/bin/r[m]` runs /bin/rm.
+    A pattern matching nothing stays literal, as in bash."""
+    if not words or words[0].quoted or words[0].dynamic or ctx.cwd is None \
+            or not _GLOB_CHARS.search(words[0].text):
+        return words
+    try:
+        matches = sorted(glob.glob(os.path.expanduser(words[0].text), root_dir=ctx.cwd))
+    except (OSError, ValueError):
+        return words
+    return [Word(match) for match in matches[:_MAX_BRACE_WORDS]] + words[1:] if matches else words
+
+
+def _positionals(ctx: _Context) -> tuple[str, ...] | None:
+    """The positional parameters `set --` gave this line, or None if unknown."""
+    values = ctx.variables.get(_POSITIONALS)
+    if not values or values[0] == UNSET:
+        return None
+    return tuple(values[0].split(_FIELD)) if values[0] else ()
 
 
 def _brace_expand(word: Word, ctx: _Context) -> list[Word]:
@@ -460,6 +497,11 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
         return word
 
     def value(name: str, at_start: bool) -> str | None:
+        if name.isdigit() or name == "#":
+            params = _positionals(ctx)
+            if params is None or name == "0":
+                return None
+            return str(len(params)) if name == "#" else (params[int(name) - 1] if int(name) <= len(params) else "")
         if choice and name in choice:
             return None if choice[name] == UNSET else choice[name]
         if name in ctx.variables:
@@ -500,6 +542,8 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
             index = end + 1
             continue
         name = _NAME.match(text, index + 1) if text[index] == "$" else None
+        if name is None and text[index] == "$" and index + 1 < len(text) and text[index + 1] in "0123456789#":
+            name = _ONE_CHAR.match(text, index + 1)  # `$1`, `$#`
         if name:
             found = value(name.group(0), at_start and index == 0)
             out.append(text[index:name.end()] if found is None else found)
@@ -524,7 +568,7 @@ def _closing_brace(text: str, start: int) -> int | None:
 
 def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | None],
                    at_start: bool) -> str:
-    if _NAME.fullmatch(body):
+    if _NAME.fullmatch(body) or body.isdigit():
         found = value(body, at_start)
         return original if found is None else found
     if body.startswith("!") and _NAME.fullmatch(body[1:]):
@@ -601,10 +645,30 @@ def _builtin_mutation(argv: list[str], ctx: _Context) -> None:
             _assign(f"{argv[2]}={text}", ctx.variables, ctx.conditional)
         else:
             ctx.variables.pop(argv[2], None)  # a format we do not model: the value is unknown
+    elif argv and argv[0] == "set":
+        params = _set_positionals(argv[1:])
+        if params is not None:
+            _assign(f"{_POSITIONALS}={_FIELD.join(params)}", ctx.variables, ctx.conditional)
     elif argv and argv[0] == "unset":
         for name in argv[1:]:
             if _NAME.fullmatch(name):
                 _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)
+
+
+def _set_positionals(args: list[str]) -> list[str] | None:
+    """The new positional parameters of `set [options] [--] args`, or None if unchanged."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return args[index + 1:]
+        if arg in ("-o", "+o"):
+            index += 2
+        elif arg.startswith(("-", "+")) and len(arg) > 1:
+            index += 1
+        else:
+            return args[index:]
+    return None
 
 
 def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: bool = False) -> None:
@@ -709,6 +773,7 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
                             pipeline, stage, ctx.cwd, ctx.cwd_options, tuple(ctx.variables.items()))
     ctx.result.commands.append(command)
     _record_written_file(command, ctx)
+    _record_link(command, ctx)
     _parse_payloads(command, ctx, depth)
     if outer is not None:
         ctx.cwd, ctx.cwd_options = outer  # the wrapper's directory applied to the child only
@@ -766,6 +831,54 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
             ctx.written_files[path] = WrittenFile(_join_lines(earlier.text, body), earlier.replaces)
         else:
             ctx.written_files[path] = WrittenFile(body, replaces=not appends)
+
+
+def _record_link(command: SimpleCommand, ctx: _Context) -> None:
+    """Remember the links `ln` creates, so later writes through them resolve to the
+    target: `ln -s ~/.claude/settings.json x; printf y > x` writes settings.json."""
+    if command.name != "ln" or command.dynamic_head:
+        return
+    args = list(command.args)
+    operands: list[str] = []
+    directory: str | None = None
+    index, ended = 0, False
+    while index < len(args):
+        arg = args[index]
+        short = arg.startswith("-") and not arg.startswith("--") and len(arg) > 1
+        if ended or not arg.startswith("-") or arg == "-":
+            operands.append(arg)
+        elif arg == "--":
+            ended = True
+        elif arg.startswith("--target-directory"):
+            directory, index = (arg.split("=", 1)[1], index) if "=" in arg else (_at(args, index + 1), index + 1)
+        elif arg in ("-S", "--suffix"):
+            index += 1
+        elif short and "t" in arg:
+            # `-t DIR`, `-sfDIR`-style clusters: the rest of the cluster, or the next word.
+            rest = arg[arg.index("t") + 1:]
+            directory, index = (rest, index) if rest else (_at(args, index + 1), index + 1)
+        index += 1
+    if directory is None and len(operands) == 1:
+        directory = "."
+    if directory is None and len(operands) < 2:
+        return
+    sources = operands if directory is not None else operands[:-1]
+    symbolic = any(a == "--symbolic" or (a.startswith("-") and not a.startswith("--") and "s" in a)
+                   for a in args)
+    for cwd in (d for d in command.possible_cwds if d is not None):
+        for source in sources:
+            destination = os.path.join(cwd, os.path.expanduser(directory if directory is not None else operands[-1]))
+            if directory is not None or len(sources) > 1 or os.path.isdir(destination):
+                destination = os.path.join(destination, os.path.basename(source.rstrip("/")))
+            link = os.path.normpath(destination)
+            target = os.path.expanduser(source)
+            if not os.path.isabs(target):
+                target = os.path.join(os.path.dirname(link) if symbolic else cwd, target)
+            ctx.result.links[link] = os.path.normpath(target)
+
+
+def _at(args: list[str], index: int) -> str | None:
+    return args[index] if index < len(args) else None
 
 
 def _join_lines(first: str, second: str) -> str:

@@ -261,7 +261,20 @@ def _inherited(path: str) -> str:
     return _VARIABLE.sub(value, path) if "$" in path else path
 
 
-def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: SimpleCommand) -> Finding | None:
+def _through_links(path: str, links: dict[str, str]) -> str:
+    """`path` after following links created earlier in the same command line."""
+    for _ in range(8):
+        for link, target in links.items():
+            if path == link or path.startswith(link + "/"):
+                path = target + path[len(link):]
+                break
+        else:
+            return path
+    return path
+
+
+def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: SimpleCommand,
+                 links: dict[str, str] | None = None) -> Finding | None:
     """Check one write as if its command runs in `directory` (None: unknown)."""
     uncertain = None
     path = _inherited(write.path)
@@ -273,6 +286,11 @@ def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: Simp
         uncertain = "copied into a protected directory under names that cannot be known"
     else:
         rule = check_path(path, directory, write.action)
+        if rule is None and links:
+            absolute = os.path.normpath(os.path.join(directory, os.path.expanduser(path)))
+            linked = _through_links(absolute, links)
+            if linked != absolute:
+                rule = check_path(linked, directory, write.action)
         if rule is None and glob_overflows(path, directory):
             rule, uncertain = CONFIG_DIR_RULE, "a glob matching more files than can be checked"
     return Finding(rule, write.path, write.action, simple.indirect, uncertain) if rule else None
@@ -290,7 +308,7 @@ def check_command(command: str, cwd: str) -> Finding | None:
     for simple in parsed.commands:
         for write in written_paths(simple):
             for directory in simple.possible_cwds:
-                finding = _finding_for(write, directory, cwd, simple)
+                finding = _finding_for(write, directory, cwd, simple, parsed.links)
                 if finding is None:
                     continue
                 if not (finding.indirect or finding.uncertain):
