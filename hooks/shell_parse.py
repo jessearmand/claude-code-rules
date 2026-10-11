@@ -285,6 +285,33 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
         ctx.returned = outer_returned
 
 
+def _record_created_paths(command: SimpleCommand, ctx: _Context) -> None:
+    """Remember the paths `command` creates, so a later glob on the line sees
+    them: `touch -- -rf; rm -* victim` runs `rm -rf victim`."""
+    from shell_writes import (  # shell_writes imports this module
+        INTO_DIR,
+        LINK,
+        WRITE,
+        written_paths,
+    )
+    paths = [(w.path, w.dynamic) for w in written_paths(command) if w.action in (WRITE, LINK, INTO_DIR)]
+    if command.name == "mkdir" and not command.dynamic_head:
+        # Directories it makes; after `--` every word is one (`mkdir -- -rf`).
+        args = list(command.args)
+        cut = args.index("--") if "--" in args else len(args)
+        names = [a for a in args[:cut] if not a.startswith("-")] + args[cut + 1:]
+        paths += [(a, "$" in a or "`" in a) for a in names]
+    for path, dynamic in paths:
+        if dynamic or "$" in path or "`" in path:
+            ctx.created_unknown = True
+            continue
+        for directory in command.possible_cwds:
+            if directory is None and not os.path.isabs(os.path.expanduser(path)):
+                ctx.created_unknown = True
+                continue
+            ctx.created_paths.add(os.path.normpath(os.path.join(directory or "/", os.path.expanduser(path))))
+
+
 def _run_exit_traps(ctx: _Context) -> None:
     """Check the shell's trap handlers again with the state it exits in:
     `X=echo; trap '"$X" -rf v' EXIT; X=rm` runs rm. They run in a scope of
@@ -667,6 +694,7 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
         ctx.returned = True
         ctx.exited = ctx.exited or command.name == "exit"
     _record_written_file(command, ctx)
+    _record_created_paths(command, ctx)
     _record_link(command, ctx)
     _parse_payloads(command, ctx, depth)
     _call_function(command, ctx, depth)

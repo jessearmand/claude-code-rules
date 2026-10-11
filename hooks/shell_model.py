@@ -229,6 +229,10 @@ class _Context:
     # What the previous pipeline stage prints, while a builtin in the next stage
     # reads it (`printf r | read X`); None when not known.
     piped_text: str | None = None
+    # Absolute paths this line creates (`touch -- -rf`, `cp`, `ln`, `mkdir`, `> f`), which
+    # later globs can match; `created_unknown`: one was created under a computed name.
+    created_paths: set[str] = field(default_factory=set)
+    created_unknown: bool = False
     # Names the parsed text uses other than as `$NAME` (`X=...`, `read X`,
     # `declare -A X`): variables this line sets, as opposed to the environment's.
     set_names: set[str] = field(default_factory=set)

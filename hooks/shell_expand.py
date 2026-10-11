@@ -13,6 +13,7 @@ import itertools
 import os
 import re
 from collections.abc import Callable
+from fnmatch import fnmatchcase
 
 import shell_arith
 import shell_ifs
@@ -156,10 +157,13 @@ def _glob_word(word: Word, ctx: _Context, command_word: bool = False) -> list[Wo
     cwd = ctx.cwd or "/"
     if word.quoted or word.dynamic or not _GLOB_CHARS.search(word.text):
         return [word]
+    if ctx.created_unknown:
+        ctx.result.truncated = True  # a file made earlier under a computed name may match
     try:
-        matches = sorted(glob.glob(os.path.expanduser(word.text), root_dir=cwd))
+        on_disk = glob.glob(os.path.expanduser(word.text), root_dir=cwd)
     except (OSError, ValueError):
         return [word]
+    matches = sorted({*on_disk, *_created_matches(word.text, cwd, ctx)})
     if not matches:
         return [word]
     if len(matches) > _MAX_BRACE_WORDS:
@@ -169,6 +173,24 @@ def _glob_word(word: Word, ctx: _Context, command_word: bool = False) -> list[Wo
         head = [Word(matches[0])] if command_word else []
         return [*head, word, *(Word(m) for m in matches if m.startswith("-"))]
     return [Word(match) for match in matches]
+
+
+def _created_matches(pattern: str, cwd: str, ctx: _Context) -> list[str]:
+    """Paths created earlier on the line that `pattern` matches, segment by segment
+    as pathname expansion does (a leading `.` must be matched explicitly)."""
+    expanded = os.path.expanduser(pattern)
+    absolute = os.path.isabs(expanded)
+    wanted = os.path.normpath(os.path.join(cwd, expanded)).split(os.sep)
+    found: list[str] = []
+    for path in ctx.created_paths:
+        parts = path.split(os.sep)
+        if len(parts) == len(wanted) and all(
+                fnmatchcase(part, want) and (not part.startswith(".") or want.startswith("."))
+                for part, want in zip(parts, wanted, strict=True)):
+            relative = os.path.relpath(path, cwd)
+            # Written as the pattern was: `./x*` gives `./x1`.
+            found.append(path if absolute else "./" + relative if expanded.startswith("./") else relative)
+    return found
 
 
 def _brace_expand(word: Word, ctx: _Context) -> list[Word]:
