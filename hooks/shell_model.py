@@ -261,6 +261,13 @@ def _target_name(name: str, ctx: _Context) -> str:
     return name
 
 
+def _variable_keys(name: str, variables: dict[str, tuple[str, ...]]) -> list[str]:
+    """Every table entry that belongs to variable `name`: its value, its
+    elements, and its case attribute and `declare -n` reference."""
+    return [key for key in variables
+            if key in (name, CASE + name, NAMEREF + name) or key.startswith(name + "[")]
+
+
 def _settings(variables: dict[str, tuple[str, ...]], key: str) -> tuple[str, ...]:
     """The values a pseudo-variable (ALIAS, NAMEREF, HASHED, FUNCTION) may hold
     that are set: () when it is surely unset."""

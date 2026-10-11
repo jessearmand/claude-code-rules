@@ -175,6 +175,13 @@ def main() -> int:
                                   "/").commands if c.name not in ("alias", "false", "unset")]
     _check(("ls",) in argv and ("pwd",) in argv and ("who",) not in argv[-3:] and argv[-1] == ("f",),
            f"aliases and functions follow branches, subshells and unset -f: {argv}", failures)
+    argv = [c.argv for c in parse("X=(a b); f(){ local -u X; X[1]=c; echo ${X[1]}; }; f; echo ${X[@]}", "/").commands
+            if c.name == "echo"]
+    _check(argv[-2:] == [("echo", "C"), ("echo", "a", "b")], f"a local array and its attributes end with the function: {argv}",
+           failures)
+    argv = [c.argv for c in parse("exec 3<<<$'a\\nb\\nc'; exec 4<&3; read -u3 X; read -u4 Y; exec 3<&-; read -u4 Z; "
+                                  "echo $X $Y $Z", "/").commands if c.name == "echo"]
+    _check(argv == [("echo", "a", "b", "c")], f"exec N<&M shares M's stream, and outlives closing M: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

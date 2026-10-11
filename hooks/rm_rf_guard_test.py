@@ -208,6 +208,10 @@ SHOULD_BLOCK = [
     "f(){ rm \"$@\"; }; false && f(){ echo; }; f -rf victim",
     "f(){ rm \"$@\"; }; (f(){ echo; }); f -rf victim",
     "declare -n R=X; false && declare -n R=Y; X=rm; Y=echo; \"$R\" -rf victim",
+    "X[0]=r; X[0]+=m; f(){ local X; X[0]=echo; }; f; \"${X[0]}\" -rf victim",  # locals restore elements
+    "X=rm; f(){ local -u X; X=echo; }; f; $X -rf victim",
+    "exec 3<<<$'echo\\nr'$'m\\n'; exec 4<&3; read -u4 A; read -u3 X; \"$X\" -rf victim",  # shared offset
+    "exec 3<<<$'echo\\nrm\\n'; exec 4<&3 5<&3; exec 3<&-; read -u4 A; read -u5 X; \"$X\" -rf victim",
     "exec <<< rm; read X; $X -rf victim",
     "exec 4<<<rm; read X <&4; $X -rf victim",
     "X[0]=echo; read 'X[0]' <<< rm; \"${X[0]}\" -rf victim",  # read into an element (PR review)

@@ -42,6 +42,7 @@ from shell_model import (
     _Context,
     _positionals,
     _target_name,
+    _variable_keys,
 )
 from shell_streams import (
     _input_file_text,
@@ -84,14 +85,9 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
         _persist_prefix(assignments, rest, ctx)
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
+        if ctx.local_scopes and rest[0].text in ("local", "declare", "typeset"):
+            _declare_locals(rest[1:], ctx)
         for word in _declare_attributes(rest[0].text, rest[1:], ctx):
-            if ctx.local_scopes and rest[0].text in ("local", "declare", "typeset"):
-                # Inside a function these shadow the caller's variable until it returns.
-                name = word.text.split("=", 1)[0].split("[", 1)[0].rstrip("+")
-                if _NAME.fullmatch(name):
-                    ctx.local_scopes[-1].add(name)
-                    if "=" not in word.text:
-                        ctx.variables[name] = (UNSET,)  # `local X`: a new, unset X
             if _ASSIGNMENT.match(word.text):
                 _assign(_through_nameref(word.text, ctx), ctx.variables, ctx.conditional)
     return rest, tuple(assignments)
@@ -113,6 +109,23 @@ def _persist_prefix(assignments: list[str], rest: list[Word], ctx: _Context) -> 
         if not certain and name not in ctx.variables:
             ctx.variables[name] = (UNSET,)
         _assign(_through_nameref(text, ctx), ctx.variables, ctx.conditional or not certain)
+
+
+def _declare_locals(words: list[Word], ctx: _Context) -> None:
+    """`local X`, `local -u X`, `declare -n R=Y` inside a function: each name
+    shadows the caller's variable (elements and attributes included) until the
+    function returns; without a value it starts out unset."""
+    for word in words:
+        if word.text.startswith(("-", "+")):
+            continue
+        name = word.text.split("=", 1)[0].split("[", 1)[0].rstrip("+")
+        if not _NAME.fullmatch(name):
+            continue
+        ctx.local_scopes[-1].add(name)
+        if "=" not in word.text:
+            for key in _variable_keys(name, ctx.variables):
+                ctx.variables[key] = ("",) if key.startswith(CASE) else (UNSET,)
+            ctx.variables[name] = (UNSET,)  # `local X`: a new, unset X
 
 
 def _through_nameref(text: str, ctx: _Context) -> str:
@@ -510,10 +523,10 @@ def _exec_descriptor(redirects: list[Redirect], ctx: _Context, fd: int | None) -
     inputs = [r for r in redirects if r.op in _INPUT_OPERATORS and (r.fd if r.fd is not None else 0) == fd]
     if inputs:
         last = inputs[-1]
-        return int(last.target) if last.op == "<&" and last.target.isdigit() else None
+        return _shared_descriptor(int(last.target), ctx) if last.op == "<&" and last.target.isdigit() else None
     if fd == 0 and ctx.piped_text is not None:
         return None
-    return fd
+    return _shared_descriptor(fd, ctx)
 
 
 def _each_stream(fd: int | None, ctx: _Context, read: Callable[[], None]) -> None:
@@ -537,9 +550,25 @@ def _each_stream(fd: int | None, ctx: _Context, read: Callable[[], None]) -> Non
     ctx.variables[key] = tuple(dict.fromkeys(remainders))
 
 
+# A descriptor `exec 4<&3` made holds "\0dup:3": it shares fd 3's stream and
+# position, so reading either advances both.
+_DUPLICATE = "\0dup:"
+
+
+def _shared_descriptor(fd: int, ctx: _Context) -> int:
+    """The descriptor whose stream `fd` reads: itself, or the one it duplicates."""
+    for _ in range(8):
+        values = ctx.variables.get(f"{DESCRIPTOR}{fd}", ())
+        if len(values) != 1 or not values[0].startswith(_DUPLICATE):
+            break
+        fd = int(values[0][len(_DUPLICATE):])
+    return fd
+
+
 def _opened_text(fd: int, ctx: _Context) -> tuple[str | None, int | None]:
+    fd = _shared_descriptor(fd, ctx)
     values = ctx.variables.get(f"{DESCRIPTOR}{fd}")
-    if not values or len(values) > 1 or values[0] == UNSET:
+    if not values or len(values) > 1 or values[0] == UNSET or values[0].startswith(_DUPLICATE):
         # Closed, or several streams may be open (`false && exec 3<<< x`): unknown.
         return None, None
     return values[0], fd
@@ -563,15 +592,32 @@ def _exec_redirects(redirects: list[Redirect], ctx: _Context) -> None:
         if redirect.op not in _INPUT_OPERATORS and redirect.op != ">&":
             continue
         fd = redirect.fd if redirect.fd is not None else 0
-        if redirect.op in ("<&", ">&") and redirect.target == "-":
-            text = None  # closed
-        elif redirect.op == "<&" and redirect.target.isdigit():
-            text = _opened_text(int(redirect.target), ctx)[0]
-        elif redirect.op == ">&":
+        if redirect.op == ">&" and redirect.target != "-":
             continue
+        if redirect.op == "<&" and redirect.target.isdigit():
+            source = _shared_descriptor(int(redirect.target), ctx)
+            if source == fd:
+                continue  # `exec 3<&3`: unchanged
+            value = f"{_DUPLICATE}{source}"
         else:
-            text = _redirect_text(redirect, ctx)
-        _assign(f"{DESCRIPTOR}{fd}={UNSET if text is None else text}", ctx.variables, ctx.conditional)
+            # `exec 3<&-` closes; anything else opens new text.
+            text = None if redirect.target == "-" and redirect.op in ("<&", ">&") else _redirect_text(redirect, ctx)
+            value = UNSET if text is None else text
+        _detach_duplicates(fd, ctx)
+        _assign(f"{DESCRIPTOR}{fd}={value}", ctx.variables, ctx.conditional)
+
+
+def _detach_duplicates(fd: int, ctx: _Context) -> None:
+    """Before `fd` is closed or reopened, its duplicates keep the stream they
+    share: the first takes it over and the rest now duplicate that one."""
+    marker = f"{_DUPLICATE}{fd}"
+    duplicates = [key for key, values in ctx.variables.items() if key.startswith(DESCRIPTOR) and values == (marker,)]
+    if not duplicates:
+        return
+    owner = duplicates[0]
+    ctx.variables[owner] = ctx.variables.get(f"{DESCRIPTOR}{fd}", (UNSET,))
+    for key in duplicates[1:]:
+        ctx.variables[key] = (f"{_DUPLICATE}{owner[len(DESCRIPTOR):]}",)
 
 
 def _input_text(target: str, ctx: _Context) -> str | None:

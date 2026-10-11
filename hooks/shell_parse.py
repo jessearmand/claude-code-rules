@@ -94,6 +94,7 @@ from shell_model import (
     _positionals,
     _settings,
     _target_name,
+    _variable_keys,
     program_name,
 )
 from shell_payloads import (
@@ -669,10 +670,11 @@ def _replay_body(body: list[_BodyStep], command: SimpleCommand, ctx: _Context, d
     finally:
         # `local` variables give the caller its own values back.
         for name in ctx.local_scopes.pop():
-            if name in before:
-                ctx.variables[name] = before[name]
-            else:
-                ctx.variables.pop(name, None)
+            for key in {*_variable_keys(name, before), *_variable_keys(name, ctx.variables)}:
+                if key in before:
+                    ctx.variables[key] = before[key]
+                else:
+                    ctx.variables.pop(key, None)
         ctx.calling.discard(command.name)
         ctx.conditional = conditional
         ctx.returned = False
