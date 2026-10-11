@@ -180,6 +180,14 @@ def _uninspected_program(command: SimpleCommand, ctx: RuleContext) -> str | None
     return None
 
 
+def _incomplete_analysis(command: SimpleCommand, ctx: RuleContext) -> str | None:
+    """The parser stopped early (nesting depth, wrapper chain, expansion limits):
+    what it did not see may be anything. Reported once, on the first command."""
+    if ctx.parsed.truncated and ctx.parsed.commands and command is ctx.parsed.commands[0]:
+        return "the command is nested or expanded beyond what the guards analyse"
+    return None
+
+
 def _decode_and_execute(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if not _executes_stdin(command):
         return None
@@ -507,6 +515,9 @@ SYSTEM_RULES: tuple[DangerRule, ...] = (
     DangerRule("uninspected-program", HIGH, "runs program text too large for the guards to read",
                "Confirm with the user, or run the steps it needs directly so they can be checked.",
                _uninspected_program, decision="ask"),
+    DangerRule("incomplete-analysis", HIGH, "could not be analysed completely",
+               "Simplify the command (fewer nested shells, wrappers or expansions) so it can be checked, "
+               "or confirm with the user.", _incomplete_analysis, decision="ask"),
     DangerRule("decode-and-execute", CRITICAL, "decodes and runs hidden code", _FETCH_HINT,
                _decode_and_execute),
     DangerRule("fork-bomb", CRITICAL, "exhausts process limits", _DISK_HINT, _fork_bomb),

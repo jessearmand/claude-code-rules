@@ -118,6 +118,7 @@ SHOULD_BLOCK = [
     "/bin/r[m] -rf victim",
     "set -- rm -rf victim; \"$@\"",
     "set -- x rm; ${2} -rf victim",
+    "read X <<< rm; $X -rf victim",  # read from a here-string (PR review)
     "X=rm; true || unset X; $X -rf victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",

@@ -366,7 +366,8 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
         index += 1
 
     words, environment = _strip_prelude(words, ctx)
-    words = _glob_head(words, ctx)
+    _builtin_mutation([word.text for word in words], redirects, ctx)
+    words = _glob_words(words, ctx)
     if not words:
         if redirects:
             # `> file` and `X=1 > file` still open (and truncate) the file.
@@ -393,17 +394,31 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
 
 
-def _glob_head(words: list[Word], ctx: _Context) -> list[Word]:
-    """Pathname expansion of an unquoted command word: `/bin/r[m]` runs /bin/rm.
-    A pattern matching nothing stays literal, as in bash."""
-    if not words or words[0].quoted or words[0].dynamic or ctx.cwd is None \
-            or not _GLOB_CHARS.search(words[0].text):
+def _glob_words(words: list[Word], ctx: _Context) -> list[Word]:
+    """Pathname expansion of unquoted words, in the directory the command runs in:
+    `/bin/r[m]` runs /bin/rm, and `rm -* x` next to a file named `-rf` is
+    `rm -rf x`. A pattern matching nothing stays literal, as in bash."""
+    if ctx.cwd is None:
         return words
+    expanded: list[Word] = []
+    for word in words:
+        expanded += _glob_word(word, ctx.cwd)
+    return expanded
+
+
+def _glob_word(word: Word, cwd: str) -> list[Word]:
+    if word.quoted or word.dynamic or not _GLOB_CHARS.search(word.text):
+        return [word]
     try:
-        matches = sorted(glob.glob(os.path.expanduser(words[0].text), root_dir=ctx.cwd))
+        matches = sorted(glob.glob(os.path.expanduser(word.text), root_dir=cwd))
     except (OSError, ValueError):
-        return words
-    return [Word(match) for match in matches[:_MAX_BRACE_WORDS]] + words[1:] if matches else words
+        return [word]
+    if not matches:
+        return [word]
+    if len(matches) > _MAX_BRACE_WORDS:
+        # Too many to list: keep the pattern, plus any match that reads as an option.
+        return [word, *(Word(m) for m in matches if m.startswith("-"))]
+    return [Word(match) for match in matches]
 
 
 def _positionals(ctx: _Context) -> tuple[str, ...] | None:
@@ -633,13 +648,15 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
         for word in rest[1:]:
             if _ASSIGNMENT.match(word.text):
                 _assign(word.text, ctx.variables, ctx.conditional)
-    _builtin_mutation([word.text for word in rest], ctx)
     return rest, tuple(assignments)
 
 
-def _builtin_mutation(argv: list[str], ctx: _Context) -> None:
-    """Builtins that set or clear a variable: `printf -v X FMT ARGS`, `unset X`."""
-    if len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and _NAME.fullmatch(argv[2]):
+def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context) -> None:
+    """Builtins that set or clear a variable: `printf -v X FMT ARGS`, `unset X`,
+    `set -- ARGS`, `read X <<< TEXT`."""
+    if argv and argv[0] == "read":
+        _read_builtin(argv[1:], redirects, ctx)
+    elif len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and _NAME.fullmatch(argv[2]):
         text = _echoed_text(SimpleCommand(("printf", *argv[3:])))
         if text or "%" not in argv[3]:
             _assign(f"{argv[2]}={text}", ctx.variables, ctx.conditional)
@@ -653,6 +670,43 @@ def _builtin_mutation(argv: list[str], ctx: _Context) -> None:
         for name in argv[1:]:
             if _NAME.fullmatch(name):
                 _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)
+
+
+_READ_OPTIONS_WITH_VALUE = frozenset({"-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"})
+
+
+def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> None:
+    """`read A B <<< "x y z"` sets A=x, B="y z". Input that is not literal text
+    (a pipe, a file, the terminal) makes the variables unknown."""
+    names: list[str] = []
+    delimiter = "\n"
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in _READ_OPTIONS_WITH_VALUE:
+            if arg == "-a":
+                names.append(_at(args, index + 1) or "")  # an array: its value is unknown
+            elif arg == "-d":
+                delimiter = (_at(args, index + 1) or "")[:1] or "\0"
+            index += 2
+            continue
+        if not arg.startswith("-"):
+            names += args[index:]
+            break
+        index += 1
+    names = [n for n in names if _NAME.fullmatch(n)] or ["REPLY"]
+    text = next((r.target + "\n" if r.op == "<<<" else r.body for r in redirects
+                 if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
+                None)
+    array = "-a" in args
+    if text is None or array:
+        for name in names:
+            ctx.variables.pop(name, None)
+        return
+    line = text.split(delimiter, 1)[0]
+    fields = line.split(maxsplit=len(names) - 1) if len(names) > 1 else [line.strip()]
+    for position, name in enumerate(names):
+        _assign(f"{name}={fields[position] if position < len(fields) else ''}", ctx.variables, ctx.conditional)
 
 
 def _set_positionals(args: list[str]) -> list[str] | None:
@@ -768,6 +822,8 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
             # already parsed; record the wrapper itself and stop.
             break
         argv, wrappers, dynamic_head = inner, (*wrappers, label), False
+    else:
+        ctx.result.truncated = True  # more nested wrappers than are unwrapped
 
     command = SimpleCommand(tuple(argv), redirects, via, wrappers, dynamic_head, indirect,
                             pipeline, stage, ctx.cwd, ctx.cwd_options, tuple(ctx.variables.items()))
