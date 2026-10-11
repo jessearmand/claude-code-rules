@@ -12,6 +12,9 @@ import re
 from shell_expand import command_output
 from shell_lexer import HEREDOC_OPERATORS
 from shell_model import (
+    FUNCTION,
+    HASHED,
+    UNSET,
     SimpleCommand,
     WrittenFile,
     _at,
@@ -81,9 +84,14 @@ def _executable(word: str, ctx: _Context) -> str:
     what `hash -p` set for it, unless a function of that name comes first;
     otherwise it is looked up in PATH, which is not modelled, and stays."""
     if "/" not in word:
-        if word not in ctx.hashed or word in ctx.functions:
+        hashed = ctx.variables.get(HASHED + word, (UNSET,))
+        if UNSET not in ctx.variables.get(FUNCTION + word, (UNSET,)) or hashed == (UNSET,):
             return word
-        word = ctx.hashed[word]
+        if len(hashed) > 1:
+            # A mapping that may not have been made (`false && hash -p …`): which
+            # program runs is not known; the most recent possibility is checked.
+            ctx.result.truncated = True
+        word = next((path for path in hashed if path != UNSET), word)
     if ctx.cwd is None:
         return word
     path = os.path.normpath(os.path.join(ctx.cwd, os.path.expanduser(word)))

@@ -71,9 +71,13 @@ from shell_model import (
     _ASSIGNMENT,
     _FIELD,
     _MAX_UNWRAP,
+    _NAME,
     _POSITIONALS,
     _REFERENCE,
+    FUNCTION,
+    HASHED,
     MAX_DEPTH,
+    NAMEREF,
     SHELL_OPTION,
     SOURCE_TOO_LARGE,
     UNSET,
@@ -83,10 +87,12 @@ from shell_model import (
     SimpleCommand,
     SourceResolver,
     WrittenFile,
+    _assign_setting,
     _BodyStep,
     _bounded,
     _Context,
     _positionals,
+    _settings,
     _target_name,
     program_name,
 )
@@ -177,18 +183,20 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     outer_conditional, previous, blocks = ctx.conditional, ";", 0
     # Function bodies being declared: (block depth before the body, state to restore
     # at its end, name, the body's commands).
+    # Whether the declaration itself may not run comes last.
     functions: list[tuple[int, tuple[str | None, tuple[str | None, ...], dict[str, tuple[str, ...]]], str,
-                          list[_BodyStep]]] = []
+                          list[_BodyStep], bool]] = []
     header = _FunctionHeader()
     for token in [*lexed.tokens, Operator("\n")]:
         if isinstance(token, Operator) and (token.op in _SEPARATORS or token.op in _PIPES):
             if segment:
                 # After `&&`/`||`, or inside an if/loop/case body, the command may not run.
                 ctx.conditional = outer_conditional or previous in _AND_OR or blocks > 0
-                if header.opens_body(segment):
+                if header.opens_body(segment, ctx.conditional):
                     # A declared function runs only when called: check its body, but
                     # do not let its assignments or cd change the declaring shell.
-                    functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name, []))
+                    functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name, [],
+                                      header.conditional))
                 isolated = token.op in _PIPES or stage > 0 or token.op == "&"
                 first = next((t for t in segment if isinstance(t, Word)), None)
                 if first is not None and first.text == "coproc" and not first.quoted:
@@ -239,11 +247,14 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                         break
                     outer_conditional = True
                 while functions and blocks <= functions[-1][0]:
-                    _, saved, name, body = functions.pop()
-                    if name:
-                        ctx.functions[name] = body  # replayed, with its arguments, at each call
+                    _, saved, name, body, declared_conditionally = functions.pop()
                     ctx.cwd, ctx.cwd_options, ctx.variables = saved
-                header.after_segment(segment)
+                    if name:
+                        # Replayed, with its arguments, at each call.
+                        key = f"{name}#{len(ctx.functions)}"
+                        ctx.functions[key] = body
+                        _assign_setting(f"{FUNCTION}{name}", key, UNSET, ctx.variables, declared_conditionally)
+                header.after_segment(segment, ctx.conditional)
                 segment = []
             header.after_operator(token.op)
             previous = token.op
@@ -288,18 +299,23 @@ class _FunctionHeader:
         self._name_seen = ""  # a one-word command, possibly a function name
         self._parens = 0  # 1 after `NAME (`, 2 after `NAME ( )`
         self.name = ""  # the function whose body opens_body last found
+        # Whether the `NAME` of `NAME() {` may not run (`false && f() {`).
+        self._name_conditional = False
+        self.conditional = False  # the same for the declaration opens_body last found
 
-    def opens_body(self, segment: list) -> bool:
+    def opens_body(self, segment: list, conditional: bool) -> bool:
         words = [t for t in segment if isinstance(t, Word)]
         if words and words[0].text == "function" and not words[0].quoted:
             self.name = words[1].text if len(words) > 1 else ""
+            self.conditional = conditional
             return True
         if self._parens == 2 and words and words[0].text == "{" and not words[0].quoted:
             self.name = self._name_seen
+            self.conditional = self._name_conditional or conditional
             return True
         return False
 
-    def after_segment(self, segment: list) -> None:
+    def after_segment(self, segment: list, conditional: bool) -> None:
         # `g`, or `{ g` / `then g` / `do g`: a nested declaration's name follows
         # the reserved word that opens the enclosing block.
         words = [t for t in segment if isinstance(t, Word)]
@@ -307,6 +323,7 @@ class _FunctionHeader:
             words = words[1:]
         single = len(words) == 1 and len(segment) == len([t for t in segment if isinstance(t, Word)])
         self._name_seen = words[0].text if single else ""
+        self._name_conditional = conditional
         self._parens = 0
 
     def after_operator(self, op: str) -> None:
@@ -349,11 +366,32 @@ def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indi
         ctx.cwd, ctx.cwd_options = start
         # Each reading adds to what an assignment may hold; only one of them runs.
         ctx.conditional = conditional or index > 0
+        # A `hash -p` or `declare -n` mapping is fixed for this reading, so the
+        # command runs once through each.
+        pinned = {key: ctx.variables[key] for key in choice if key.startswith("\0")}
+        for key in pinned:
+            ctx.variables[key] = (choice[key],)
         _expand_and_emit(tokens, ctx, via, depth, indirect, pipeline, stage, choice)
+        for key, values in pinned.items():
+            if ctx.variables.get(key) == (choice[key],):
+                ctx.variables[key] = values  # unchanged by the command: every mapping stays possible
         ends.append((ctx.cwd, ctx.cwd_options))
     ctx.conditional = conditional
     ctx.cwd = ends[0][0]
     ctx.cwd_options = _bounded([option for _, options in ends for option in options])
+
+
+def _referenced(name: str, ctx: _Context) -> list[str]:
+    """`name`, its `declare -n` reference, and every variable that may reach."""
+    found: list[str] = []
+    pending = [name]
+    while pending and len(found) < 16:
+        current = pending.pop()
+        if current in found:
+            continue
+        found += [current, NAMEREF + current]
+        pending += _settings(ctx.variables, NAMEREF + current)
+    return found
 
 
 def _variable_choices(tokens: list, ctx: _Context) -> list[dict[str, str]]:
@@ -361,10 +399,14 @@ def _variable_choices(tokens: list, ctx: _Context) -> list[dict[str, str]]:
     hold, the current values first; [{}] when every variable has one value."""
     names: list[str] = []
     for token in tokens:
-        if not isinstance(token, Word) or not token.dynamic:
+        if not isinstance(token, Word):
             continue
-        for match in _REFERENCE.finditer(token.text):
-            name = match.group(1)
+        if not token.dynamic:
+            # A name `hash -p` or `declare -n` may map more than one way: `x`, `read R`.
+            candidates = [HASHED + token.text, *_referenced(token.text, ctx)] if _NAME.fullmatch(token.text) else []
+        else:
+            candidates = [key for match in _REFERENCE.finditer(token.text) for key in _referenced(match.group(1), ctx)]
+        for name in candidates:
             if len(ctx.variables.get(name, ())) > 1 and name not in names:
                 names.append(name)
     if not names:
@@ -583,12 +625,26 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
 def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     """Calling a declared function runs its body here, in this shell, with the
     call's arguments as $1..$n: `f(){ "$1" -rf x; }; f rm` runs rm."""
-    body = ctx.functions.get(command.name) if not command.dynamic_head else None
-    if body is None or command.name in ctx.calling:
+    keys = () if command.dynamic_head else ctx.variables.get(FUNCTION + command.name, ())
+    bodies = [ctx.functions[key] for key in keys if key != UNSET]
+    if not bodies or command.name in ctx.calling:
         return
     if depth >= MAX_DEPTH:
         ctx.result.truncated = True
         return
+    conditional = ctx.conditional
+    # `f(){ rm; }; false && f(){ echo; }`: each body the name may run, each as a
+    # run that may not happen.
+    ctx.conditional = conditional or len(keys) > 1
+    try:
+        for body in bodies:
+            _replay_body(body, command, ctx, depth)
+    finally:
+        ctx.conditional = conditional
+
+
+def _replay_body(body: list[_BodyStep], command: SimpleCommand, ctx: _Context, depth: int) -> None:
+    """Run one function body for `command`'s call."""
     positionals = ctx.variables.get(_POSITIONALS)
     conditional = ctx.conditional
     before = dict(ctx.variables)

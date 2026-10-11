@@ -167,6 +167,14 @@ def main() -> int:
     argv = [c.argv for c in parse("exec 3<<<$'a\\\\bcd\\nefg'; read -u3 -n2 X; read -u3 Y; read -u3 -N2 Z; echo $X $Y $Z",
                                   "/").commands if c.name == "echo"]
     _check(argv == [("echo", "ab", "cd", "ef")], f"read -n/-N take K characters, an escape counts once: {argv}", failures)
+    argv = [c.argv for c in parse("X=a; declare -u X; echo $X; X+=b; echo $X; (declare -l X); X=c; echo $X; "
+                                  "unset X; X=d; echo $X", "/").commands if c.name == "echo"]
+    _check(argv == [("echo", "a"), ("echo", "AB"), ("echo", "C"), ("echo", "d")],
+           f"declare -u converts later assignments; a subshell's attribute stays there: {argv}", failures)
+    argv = [c.argv for c in parse("alias x=ls; false && alias x=pwd; x; f(){ id; }; (f(){ who; }); f; unset -f f; f",
+                                  "/").commands if c.name not in ("alias", "false", "unset")]
+    _check(("ls",) in argv and ("pwd",) in argv and ("who",) not in argv[-3:] and argv[-1] == ("f",),
+           f"aliases and functions follow branches, subshells and unset -f: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

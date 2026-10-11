@@ -39,6 +39,19 @@ SHELL_OPTION = "\0shopt:"
 # Descriptors `exec 3<<< text` opened for later reads: "\0fd:3" holds the text
 # not read yet (UNSET when closed or unknown).
 DESCRIPTOR = "\0fd:"
+# `declare -u X` / `-l`: "\0case:X" holds "u" or "l", applied when X is assigned.
+CASE = "\0case:"
+# `hash -p /bin/rm x`: "\0hash:x" holds the program x runs (UNSET: looked up in PATH).
+HASHED = "\0hash:"
+# `alias x=rm`: "\0alias:x" holds the replacement text (UNSET: no alias).
+ALIAS = "\0alias:"
+# `declare -n R=X`: "\0ref:R" holds X (UNSET: R is a plain variable).
+NAMEREF = "\0ref:"
+# `f() { ...; }`: "\0func:f" holds a key of _Context.functions (UNSET: no function).
+FUNCTION = "\0func:"
+# Each lives in the variable table, so a definition in a subshell does not reach
+# the caller, and one in a branch that may not run leaves the earlier one possible.
+
 # A variable value meaning "may be unset" (`true || unset X`).
 UNSET = "\0unset"
 
@@ -184,7 +197,8 @@ class _Context:
     variables: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # The command being parsed may not run: assignments add values, not replace them.
     conditional: bool = False
-    # Declared functions: name -> the body's commands, replayed at each call.
+    # Declared function bodies, replayed at each call: key -> the body's commands.
+    # Which body a name runs is in the variable table (FUNCTION).
     functions: dict[str, list[_BodyStep]] = field(default_factory=dict)
     calling: set[str] = field(default_factory=set)  # functions being replayed (no recursion)
     # Names declared `local` in each function call being replayed, innermost last.
@@ -192,16 +206,9 @@ class _Context:
     # Files this command line writes from literal text before running them:
     # `cat > x.sh <<'EOF' ... EOF; bash x.sh`. Absolute path -> content.
     written_files: dict[str, WrittenFile] = field(default_factory=dict)
-    # `alias x=/bin/rm`: name -> replacement text, expanded at the head of later commands.
-    aliases: dict[str, str] = field(default_factory=dict)
     expanding: set[str] = field(default_factory=set)  # aliases being expanded (no recursion)
-    # `declare -n Y=X`: Y names X. `declare -l/-u X`: X's value is lower/upper-cased.
-    namerefs: dict[str, str] = field(default_factory=dict)
-    case_attributes: dict[str, str] = field(default_factory=dict)
     # `cp /bin/rm x`: x is now that program (absolute paths); links are in result.links.
     copies: dict[str, str] = field(default_factory=dict)
-    # `hash -p /bin/rm x`: bare name -> the program it runs.
-    hashed: dict[str, str] = field(default_factory=dict)
     # What the previous pipeline stage prints, while a builtin in the next stage
     # reads it (`printf r | read X`); None when not known.
     piped_text: str | None = None
@@ -241,16 +248,35 @@ def _array_items(name: str, variables: dict[str, tuple[str, ...]]) -> list[tuple
 
 
 def _target_name(name: str, ctx: _Context) -> str:
-    """The variable `name` stands for: through `declare -n` references."""
+    """The variable `name` stands for: through `declare -n` references. A
+    reference that may not have been made leaves the analysis incomplete; the
+    most recent possibility is followed."""
     for _ in range(8):
-        if name not in ctx.namerefs:
+        targets = _settings(ctx.variables, NAMEREF + name)
+        if not targets:
             break
-        name = ctx.namerefs[name]
+        if len(ctx.variables[NAMEREF + name]) > 1:
+            ctx.result.truncated = True
+        name = targets[0]
     return name
 
 
-def _with_case(name: str, value: str, ctx: _Context) -> str:
-    attribute = ctx.case_attributes.get(name)
+def _settings(variables: dict[str, tuple[str, ...]], key: str) -> tuple[str, ...]:
+    """The values a pseudo-variable (ALIAS, NAMEREF, HASHED, FUNCTION) may hold
+    that are set: () when it is surely unset."""
+    return tuple(value for value in variables.get(key, ()) if value != UNSET)
+
+
+def _assign_setting(key: str, value: str, default: str, variables: dict[str, tuple[str, ...]],
+                    conditional: bool) -> None:
+    """Set a pseudo-variable whose absence means `default` (no attribute, no
+    alias): in a branch that may not run, the default stays possible."""
+    if conditional and key not in variables:
+        variables[key] = (default,)
+    _assign(f"{key}={value}", variables, conditional)
+
+
+def _with_case(value: str, attribute: str) -> str:
     return value.lower() if attribute == "l" else value.upper() if attribute == "u" else value
 
 
@@ -274,6 +300,11 @@ def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: boo
     for key in keys:
         values = (tuple(("" if earlier == UNSET else earlier) + value for earlier in variables.get(key, ("",)))
                   if append else (value,))
+        if value != UNSET and not key.startswith("\0"):
+            # `declare -u X; X=rm` stores RM: the case changes on assignment,
+            # once for each attribute X may have.
+            attributes = variables.get(CASE + key.split("[", 1)[0], ("",))
+            values = tuple(_with_case(v, a) for v in values for a in attributes)
         if keep_previous:
             values = (*values, *variables.get(key, ()))
         # Not capped: every value stays possible. Their number is bounded by the

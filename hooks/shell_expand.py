@@ -33,7 +33,6 @@ from shell_model import (
     _Context,
     _positionals,
     _target_name,
-    _with_case,
 )
 
 _ONE_CHAR = re.compile(r".")
@@ -326,10 +325,10 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
             return str(len(params)) if name == "#" else (params[int(name) - 1] if int(name) <= len(params) else "")
         name = _target_name(name, ctx)
         if choice and name in choice:
-            return None if choice[name] == UNSET else _with_case(name, choice[name], ctx)
+            return None if choice[name] == UNSET else choice[name]
         if name in ctx.variables:
             current = ctx.variables[name][0]
-            return None if current == UNSET else _with_case(name, current, ctx)
+            return None if current == UNSET else current
         subscripted = _SUBSCRIPTED.fullmatch(name)
         if subscripted:
             return _element_value(_target_name(subscripted.group(1), ctx), subscripted.group(2), ctx)

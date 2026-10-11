@@ -199,6 +199,15 @@ SHOULD_BLOCK = [
     "exec 3<<<$'echo\\nrm'; read -u 3 A; read -u 3 B; \"$B\" -rf victim",
     "exec 3<<<$'erm\\necho\\n'; read -u3 -n1 D; read -u3 X; \"$X\" -rf victim",  # -n K takes K characters
     "exec 3<<<$'e\\\\rm\\n'; read -u3 -N1 D; read -u3 X; \"$X\" -rf victim",
+    # Definitions in a branch that may not run, or in a subshell (PR review).
+    "X=r''m; declare -u X; \"$X\" -rf victim",  # -u converts on assignment only
+    "hash -p /bin/r''m x; false && hash -p /bin/echo x; x -rf victim",
+    "exec 3<<<r''m; false && exec 3<<<echo; read -u3 X; \"$X\" -rf victim",
+    "shopt -s expand_aliases; alias x=rm; false && alias x=echo; x -rf victim",
+    "shopt -s expand_aliases; alias x=rm; (alias x=echo); x -rf victim",
+    "f(){ rm \"$@\"; }; false && f(){ echo; }; f -rf victim",
+    "f(){ rm \"$@\"; }; (f(){ echo; }); f -rf victim",
+    "declare -n R=X; false && declare -n R=Y; X=rm; Y=echo; \"$R\" -rf victim",
     "exec <<< rm; read X; $X -rf victim",
     "exec 4<<<rm; read X <&4; $X -rf victim",
     "X[0]=echo; read 'X[0]' <<< rm; \"${X[0]}\" -rf victim",  # read into an element (PR review)

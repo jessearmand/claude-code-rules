@@ -11,6 +11,7 @@ import glob
 import os
 import re
 import shlex
+from collections.abc import Callable
 
 import shell_ifs
 from shell_expand import (
@@ -25,12 +26,18 @@ from shell_model import (
     _FIELD,
     _NAME,
     _POSITIONALS,
+    ALIAS,
+    CASE,
     DESCRIPTOR,
+    FUNCTION,
+    HASHED,
+    NAMEREF,
     SHELL_OPTION,
     UNSET,
     Redirect,
     SimpleCommand,
     _assign,
+    _assign_setting,
     _at,
     _Context,
     _positionals,
@@ -127,9 +134,14 @@ def _expand_alias(words: list[Word], ctx: _Context, via: tuple[str, ...], depth:
     if not words or words[0].quoted or words[0].dynamic:
         return words
     name = words[0].text
-    if name not in ctx.aliases or name in ctx.expanding:
+    replacements = ctx.variables.get(ALIAS + name, (UNSET,))
+    if replacements == (UNSET,) or name in ctx.expanding:
         return words
-    replacement = ctx.aliases[name]
+    if len(replacements) > 1:
+        # `alias x=rm; false && alias x=echo`: each definition may be the one in force.
+        _expand_each_alias(name, replacements, words, ctx, via, depth, indirect)
+        return None
+    replacement = replacements[0]
     lexed = lex(replacement)
     tokens = lexed.tokens
     ctx.expanding.add(name)
@@ -143,12 +155,31 @@ def _expand_alias(words: list[Word], ctx: _Context, via: tuple[str, ...], depth:
     return None
 
 
+def _expand_each_alias(name: str, replacements: tuple[str, ...], words: list[Word], ctx: _Context,
+                       via: tuple[str, ...], depth: int, indirect: bool) -> None:
+    """Parse the command once per definition the alias may have (the plain
+    command when it may have none), each as a run that may not happen."""
+    from shell_parse import _parse_into  # re-entry: parsed as a command list
+    arguments = [shlex.quote(w.text) for w in words[1:]]
+    conditional = ctx.conditional
+    ctx.expanding.add(name)
+    ctx.conditional = True
+    try:
+        for replacement in replacements:
+            head = shlex.quote(name) if replacement == UNSET else replacement
+            _parse_into(" ".join([head, *arguments]), ctx, (*via, f"alias {name}"), depth + 1, indirect,
+                        shares_shell=True)
+    finally:
+        ctx.expanding.discard(name)
+        ctx.conditional = conditional
+
+
 def _define_aliases(args: list[str], ctx: _Context) -> None:
     """`alias NAME=VALUE...` defines; `unalias NAME...` / `unalias -a` removes."""
     for arg in args:
         name, equals, value = arg.partition("=")
         if equals and name and not name.startswith("-"):
-            ctx.aliases[name] = value
+            _assign_setting(f"{ALIAS}{name}", value, UNSET, ctx.variables, ctx.conditional)
 
 
 def _declare_attributes(builtin: str, words: list[Word], ctx: _Context) -> list[Word]:
@@ -178,16 +209,16 @@ def _declare_attributes(builtin: str, words: list[Word], ctx: _Context) -> list[
             continue
         if "n" in flags:
             if equals and _NAME.fullmatch(value):
-                ctx.namerefs[name] = value
+                _assign_setting(f"{NAMEREF}{name}", value, UNSET, ctx.variables, ctx.conditional)
             else:
                 # The referenced name is not known (a function body before its call
                 # binds `$1`): what the reference reads is unknown.
-                ctx.namerefs.pop(name, None)
+                _assign(f"{NAMEREF}{name}={UNSET}", ctx.variables, ctx.conditional)
                 ctx.variables.pop(name, None)
             continue
         for letter in "lu":
             if letter in flags:
-                ctx.case_attributes[name] = letter
+                _assign_setting(f"{CASE}{name}", letter, "", ctx.variables, ctx.conditional)
         if "i" in flags:
             ctx.variables.pop(name, None)  # integer: whatever is assigned evaluates to a number
             continue
@@ -207,10 +238,9 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
     elif argv and argv[0] == "alias":
         _define_aliases(argv[1:], ctx)
     elif argv and argv[0] == "unalias":
-        if "-a" in argv[1:]:
-            ctx.aliases.clear()
-        for name in argv[1:]:
-            ctx.aliases.pop(name, None)
+        names = [k[len(ALIAS):] for k in ctx.variables if k.startswith(ALIAS)] if "-a" in argv[1:] else argv[1:]
+        for name in names:
+            _assign(f"{ALIAS}{name}={UNSET}", ctx.variables, ctx.conditional)
     elif len(argv) >= 2 and argv[0] in ("for", "select") and _NAME.fullmatch(argv[1]):
         # `for X in a b; do ... done`: X takes each word, or keeps its value if the
         # list is empty. Without `in`, the words are the positional parameters.
@@ -252,13 +282,16 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
         params = _set_positionals(argv[1:])
         if params is not None:
             _assign(f"{_POSITIONALS}={_FIELD.join(params)}", ctx.variables, ctx.conditional)
+    elif argv and argv[0] == "unset" and "-f" in argv[1:]:
+        for name in (a for a in argv[1:] if not a.startswith("-")):
+            _assign(f"{FUNCTION}{name}={UNSET}", ctx.variables, ctx.conditional)  # `unset -f f`
     elif argv and argv[0] == "unset":
         for name in argv[1:]:
             if _ELEMENT.fullmatch(name):
                 _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)  # `unset 'X[0]'`: that element
             elif _NAME.fullmatch(name):
-                # `unset X`: the variable, and every element if it is an array.
-                for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
+                # `unset X`: the variable, every element if it is an array, and its case attribute.
+                for key in [k for k in ctx.variables if k in (name, CASE + name) or k.startswith(name + "[")]:
                     _assign(f"{key}={UNSET}", ctx.variables, ctx.conditional)
                 _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)
 
@@ -308,7 +341,8 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
     if timeout is not None and not re.fullmatch(r"\d*\.?\d+|\d+\.", timeout):
         ctx.conditional = True  # a computed timeout may be 0: the variables may keep their values
     try:
-        _read_assign(args, options, names, delimiter, redirects, ctx, ifs_values)
+        _each_stream(_exec_descriptor(redirects, ctx, _descriptor_option(options)), ctx,
+                     lambda: _read_assign(args, options, names, delimiter, redirects, ctx, ifs_values))
     finally:
         ctx.conditional = saved
 
@@ -418,12 +452,15 @@ def _shopt_builtin(args: list[str], ctx: _Context) -> None:
 
 
 def _hash_builtin(args: list[str], ctx: _Context) -> None:
-    """`hash -p PATH NAME...` makes NAME run PATH; `-d NAME` forgets it, `-r` all."""
+    """`hash -p PATH NAME...` makes NAME run PATH; `-d NAME` forgets it, `-r` all.
+    Kept in the variable table, so a mapping in a branch that may not run
+    leaves the earlier one possible too."""
     if "-r" in args:
-        ctx.hashed.clear()
+        for key in [k for k in ctx.variables if k.startswith(HASHED)]:
+            _assign(f"{key}={UNSET}", ctx.variables, ctx.conditional)
     if "-d" in args:
         for name in args[args.index("-d") + 1:]:
-            ctx.hashed.pop(name, None)
+            _assign(f"{HASHED}{name}={UNSET}", ctx.variables, ctx.conditional)
     if "-p" in args and args.index("-p") + 1 < len(args):
         path = args[args.index("-p") + 1]
         if _GLOB_CHARS.search(path) and ctx.cwd is not None:
@@ -432,7 +469,7 @@ def _hash_builtin(args: list[str], ctx: _Context) -> None:
             path = matches[0] if matches else path
         for name in args[args.index("-p") + 2:]:
             if not name.startswith("-"):
-                ctx.hashed[name] = path
+                _assign_setting(f"{HASHED}{name}", path, UNSET, ctx.variables, ctx.conditional)
 
 
 _INPUT_OPERATORS = frozenset({"<", "<<<", "<&", "<>"}) | HEREDOC_OPERATORS
@@ -456,20 +493,54 @@ def _stdin_text(redirects: list[Redirect], ctx: _Context, fd: int | None = 0) ->
     `read X <<< echo <<< rm` reads rm."""
     if fd is None:
         return None, None
+    opened = _exec_descriptor(redirects, ctx, fd)
+    if opened is not None:
+        return _opened_text(opened, ctx)
+    inputs = [r for r in redirects if r.op in _INPUT_OPERATORS and (r.fd if r.fd is not None else 0) == fd]
+    if inputs:
+        return _redirect_text(inputs[-1], ctx), None
+    return ctx.piped_text if fd == 0 else None, None  # `printf r | read X`
+
+
+def _exec_descriptor(redirects: list[Redirect], ctx: _Context, fd: int | None) -> int | None:
+    """The descriptor `exec` opened that reading `fd` takes from, if it is one:
+    `read -u3`, `read <&3`; None for this command's own input or a pipe."""
+    if fd is None:
+        return None
     inputs = [r for r in redirects if r.op in _INPUT_OPERATORS and (r.fd if r.fd is not None else 0) == fd]
     if inputs:
         last = inputs[-1]
-        if last.op == "<&" and last.target.isdigit():
-            return _opened_text(int(last.target), ctx)
-        return _redirect_text(last, ctx), None
+        return int(last.target) if last.op == "<&" and last.target.isdigit() else None
     if fd == 0 and ctx.piped_text is not None:
-        return ctx.piped_text, None  # `printf r | read X`
-    return _opened_text(fd, ctx)
+        return None
+    return fd
+
+
+def _each_stream(fd: int | None, ctx: _Context, read: Callable[[], None]) -> None:
+    """Run `read` against each stream descriptor `fd` may hold
+    (`false && exec 3<<< x` leaves the earlier one possible), each as a read
+    that may not happen; afterwards the descriptor holds what each left."""
+    key = f"{DESCRIPTOR}{fd}"
+    streams = ctx.variables.get(key, ()) if fd is not None else ()
+    if len(streams) < 2:
+        read()
+        return
+    conditional, remainders = ctx.conditional, []
+    ctx.conditional = True
+    try:
+        for stream in streams:
+            ctx.variables[key] = (stream,)
+            read()
+            remainders.append(ctx.variables.get(key, (UNSET,))[0])
+    finally:
+        ctx.conditional = conditional
+    ctx.variables[key] = tuple(dict.fromkeys(remainders))
 
 
 def _opened_text(fd: int, ctx: _Context) -> tuple[str | None, int | None]:
     values = ctx.variables.get(f"{DESCRIPTOR}{fd}")
-    if not values or values[0] == UNSET:
+    if not values or len(values) > 1 or values[0] == UNSET:
+        # Closed, or several streams may be open (`false && exec 3<<< x`): unknown.
         return None, None
     return values[0], fd
 
@@ -536,6 +607,12 @@ def _mapfile_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) 
     name = args[index] if index < len(args) else "MAPFILE"
     if not _NAME.fullmatch(name):
         return
+    _each_stream(_exec_descriptor(redirects, ctx, _descriptor_option(options)), ctx,
+                 lambda: _mapfile_assign(name, options, redirects, ctx))
+
+
+def _mapfile_assign(name: str, options: dict[str, str], redirects: list[Redirect], ctx: _Context) -> None:
+    """The elements `mapfile` sets once its options are known."""
     numbers = {k: options[k] for k in "nOs" if k in options}
     text, persisted = _stdin_text(redirects, ctx, _descriptor_option(options))
     if text is not None and persisted is not None:
