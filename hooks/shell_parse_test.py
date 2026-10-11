@@ -132,6 +132,11 @@ def main() -> int:
     argv = parse("X=a; X=b true; echo $X; X=c export X; echo $X", "/").commands
     _check(argv[1].argv == ("echo", "a") and argv[-1].argv == ("echo", "c"),
            f"prefix assignments: temporary, kept by export: {[c.argv for c in argv]}", failures)
+    argv = [c.argv for c in parse("set -- a b c; shift 5; echo $#; shift 2; echo $# $1", "/").commands]
+    _check(argv[2] == ("echo", "3") and argv[-1] == ("echo", "1", "c"), f"shift: {argv}", failures)
+    argv = [c.argv for c in parse('read -N 3 A B <<< "a b c"; echo "$A" "[$B]"; read -n 3 A B <<< "a b c"; '
+                                  'echo $A $B', "/").commands]
+    _check(argv[1] == ("echo", "a b", "[]") and argv[-1] == ("echo", "a", "b"), f"read -N / -n: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

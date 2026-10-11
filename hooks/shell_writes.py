@@ -236,10 +236,63 @@ def written_paths(command: SimpleCommand) -> list[PathWrite]:
         found += _download(name, args)
     elif name in ("tar", "bsdtar", "gtar", "unzip", "7z", "7za"):
         found += _extract(name, args)
+    elif name == "git":
+        found += _git_checkout_dirs(args)
     elif name in ("ed", "ex", "patch"):
         found += [PathWrite(path, WRITE) for path in _operands(args, frozenset({"-i", "-o", "-r", "-d",
                                                                               "-p", "-B", "-z", "-D"}))[:1]]
     return found
+
+
+# git's global options that take a value as the next word.
+_GIT_GLOBAL_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
+                                    "--exec-path", "--super-prefix", "--list-cmds"})
+# Per subcommand: options taking a value, and whether the directory is the
+# second operand (clone, submodule add: after the repository) or the first.
+_GIT_DIRECTORY_COMMANDS = {
+    ("clone",): (frozenset({"-o", "--origin", "-b", "--branch", "-u", "--upload-pack", "--reference",
+                            "--reference-if-able", "--separate-git-dir", "--depth", "--shallow-since",
+                            "--shallow-exclude", "-c", "--config", "-j", "--jobs", "--template", "--filter",
+                            "--bundle-uri", "--server-option", "--ref-format"}), True),
+    ("submodule", "add"): (frozenset({"-b", "--branch", "--name", "--reference", "--depth"}), True),
+    ("worktree", "add"): (frozenset({"-b", "-B", "--reason"}), False),
+}
+
+
+def _git_checkout_dirs(args: tuple[str, ...]) -> list[PathWrite]:
+    """`git clone URL [DIR]`, `git submodule add URL [PATH]`, `git worktree add PATH`:
+    the directory filled with a checkout. Without DIR, clone and submodule add
+    use the repository's name. `git -C D` makes a relative directory start at D."""
+    base, index = None, 0
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] == "-C" and index + 1 < len(args):
+            base = args[index + 1] if base is None else f"{base.rstrip('/')}/{args[index + 1]}"
+        index += 2 if args[index] in _GIT_GLOBAL_WITH_VALUE else 1
+    rest = args[index:]
+    for words, (with_arg, after_repository) in _GIT_DIRECTORY_COMMANDS.items():
+        if rest[:len(words)] != words:
+            continue
+        operands = _operands(rest[len(words):], with_arg)
+        if after_repository:
+            if not operands:
+                return []
+            directory = operands[1] if len(operands) > 1 else _repository_name(operands[0])
+        else:
+            if not operands:
+                return []
+            directory = operands[0]
+        if base is not None and not directory.startswith(("/", "~")):
+            directory = f"{base.rstrip('/')}/{directory}"
+        return [PathWrite(directory, INTO_DIR, "$" in directory)]
+    return []
+
+
+def _repository_name(repository: str) -> str:
+    """The directory git names a clone after: `https://h/a/evil.git` -> `evil`."""
+    name = re.split(r"[/:]", repository.rstrip("/"))[-1]
+    if name == ".git":
+        name = re.split(r"[/:]", repository.rstrip("/")[:-len("/.git")])[-1]
+    return name.removesuffix(".git") or name
 
 
 def _extract(name: str, args: tuple[str, ...]) -> list[PathWrite]:
