@@ -8,13 +8,13 @@ Part of shell_parse; import from there.
 
 from __future__ import annotations
 
-import ast
 import glob
 import itertools
 import os
 import re
 from collections.abc import Callable
 
+import shell_arith
 import shell_ifs
 import shell_params
 import shell_printf
@@ -97,39 +97,9 @@ def array_words(token: Word, ctx: _Context) -> list[Word] | None:
 
 
 def _arithmetic_index(expression: str, value: Callable[[str, bool], str | None]) -> int | None:
-    """An array subscript's value: integer arithmetic over known variables
-    (`i`, `$i`, `n-1`); None if any part is not known."""
-    def name_value(match: re.Match[str]) -> str:
-        found = value(match.group(1), False)
-        return found if found is not None and re.fullmatch(r"-?\d+", found.strip()) else "\0"
-    text = re.sub(r"\$?\{?([A-Za-z_][A-Za-z0-9_]*)\}?", name_value, expression)
-    if "\0" in text or not re.fullmatch(r"[\d\s+\-*/%()]+", text):
-        return None
-    try:
-        return _integer(ast.parse(text.strip(), mode="eval").body)
-    except (SyntaxError, ValueError, ZeroDivisionError, RecursionError):
-        return None
-
-
-def _integer(node: ast.AST) -> int:
-    """Evaluate integer arithmetic the way bash does (division truncates toward zero)."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, int):
-        return node.value
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        operand = _integer(node.operand)
-        return -operand if isinstance(node.op, ast.USub) else operand
-    if isinstance(node, ast.BinOp):
-        left, right = _integer(node.left), _integer(node.right)
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
-            quotient = abs(left) // abs(right) * (1 if (left >= 0) == (right >= 0) else -1)
-            return left - right * quotient if isinstance(node.op, ast.Mod) else quotient
-    raise ValueError("not integer arithmetic")
+    """An array subscript's value: bash integer arithmetic over known variables
+    (`i`, `$i`, `n-1`, `1&1`); None if any part is not known."""
+    return shell_arith.evaluate(expression, lambda name: value(name, False))
 
 
 _ARITHMETIC_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")

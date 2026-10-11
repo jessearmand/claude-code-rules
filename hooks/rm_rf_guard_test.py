@@ -193,7 +193,11 @@ SHOULD_BLOCK = [
     "f(){ false && exit; }; f; rm -rf victim",
     "sqlite3 :memory: '.read \"|rm -rf victim\"'",  # a `|CMD` file name runs CMD (PR review)
     "sqlite3 app.db '.once |rm -rf victim'",
-    "exec 3<<<'rm -rf victim'; bash <&3",  # a shell reading a descriptor exec opened  # an exit that may not run ends nothing (PR review)
+    "exec 3<<<'rm -rf victim'; bash <&3",  # a shell reading a descriptor exec opened
+    "X=(r m); \"${X[0]}${X[1&1]}\" -rf victim",  # any bash arithmetic in a subscript (PR review)
+    "printf -v X %q r''m; \"$X\" -rf victim",  # printf %q (PR review)
+    "X=rM; \"${X,,M}\" -rf victim",  # patterned case conversion (PR review)
+    "X=; f(){ X+=$2; }; mapfile -t -C f -c 1 A <<< $'r\\nm'; \"$X\" -rf victim",  # -C per line (PR review)  # an exit that may not run ends nothing (PR review)
     "X=echo; trap '\"$X\" -rf victim' USR1; X=r; X+=m; kill -USR1 $$; X=echo",  # signal traps (PR review)
     "X=r; X+=m; coproc X=echo; \"$X\" -rf victim",  # coproc runs on its own (PR review)
     "X=r; X+=m; coproc name { X=echo; }; \"$X\" -rf victim",

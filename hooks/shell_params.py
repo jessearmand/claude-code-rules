@@ -104,15 +104,13 @@ def _anchored(value: str, pattern: str, at_start: bool) -> str | None:
 
 
 def _case(upper: bool, every: bool):
+    """`${X^^P}` / `${X,,P}` change the case of each character matching the
+    pattern P (any character when P is empty); `${X^P}` / `${X,P}` only the first."""
     def change(value: str, pattern: str) -> str:
-        if pattern:
-            return value  # only the pattern-free forms are modelled
-        if not value:
-            return value
-        if every:
-            return value.upper() if upper else value.lower()
-        head = value[0].upper() if upper else value[0].lower()
-        return head + value[1:]
+        pattern = pattern or "?"
+        convert = str.upper if upper else str.lower
+        return "".join(convert(char) if (every or index == 0) and fnmatchcase(char, pattern) else char
+                       for index, char in enumerate(value))
     return change
 
 

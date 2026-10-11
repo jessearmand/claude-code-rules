@@ -274,7 +274,9 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
         if text or "%" not in argv[3]:
             _assign(f"{target}={text}", ctx.variables, ctx.conditional)
         else:
-            ctx.variables.pop(target, None)  # a format we do not model: the value is unknown
+            # A format we do not model: the value is unknown, and so is what runs with it.
+            ctx.variables.pop(target, None)
+            ctx.result.truncated = True
     elif argv and argv[0] == "getopts" and len(argv) >= 3:
         _getopts_builtin(argv[1], argv[2], argv[3:], ctx)
     elif argv == ["exec"]:
@@ -653,6 +655,7 @@ def _mapfile_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) 
     name = args[index] if index < len(args) else "MAPFILE"
     if not _NAME.fullmatch(name):
         return
+    ctx.mapfile_records = []
     _each_stream(_exec_descriptor(redirects, ctx, _descriptor_option(options)), ctx,
                  lambda: _mapfile_assign(name, options, redirects, ctx))
 
@@ -665,6 +668,7 @@ def _mapfile_assign(name: str, options: dict[str, str], redirects: list[Redirect
         _assign(f"{DESCRIPTOR}{persisted}=", ctx.variables, ctx.conditional)  # read to the end
     if text is None or not all(v.isdigit() for v in numbers.values()):
         # Input or counts not known: so are the elements.
+        ctx.mapfile_records = None
         for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
             ctx.variables.pop(key)
         return
@@ -682,6 +686,8 @@ def _mapfile_assign(name: str, options: dict[str, str], redirects: list[Redirect
             ctx.variables.pop(key)
     for position, line in enumerate(lines, start=origin):
         _assign(f"{name}[{position}]={line}", ctx.variables, ctx.conditional)
+    if ctx.mapfile_records is not None:
+        ctx.mapfile_records.append(list(enumerate(lines, start=origin)))
 
 
 def _read_line(text: str, delimiter: str, raw: bool, limit: int | None = None,

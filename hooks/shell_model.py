@@ -234,6 +234,9 @@ class _Context:
     # Per shell, innermost last: the trap handlers it installed.
     trap_frames: list[list[_Trap]] = field(default_factory=lambda: [[]])
     trapping: bool = False  # a signal handler is being checked (no re-entry)
+    # The (index, line) records the last `mapfile` read, one list per stream it
+    # may have read; None when its input is not known. Its -C callback runs on them.
+    mapfile_records: list[list[tuple[int, str]]] | None = None
 
     def next_pipeline(self) -> int:
         self.pipeline_counter[0] += 1

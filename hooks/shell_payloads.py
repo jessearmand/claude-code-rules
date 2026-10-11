@@ -97,10 +97,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             ctx.trap_frames[-1].append(_Trap(handler, (*via, "trap"), depth + 1, indirect, on_exit=any(exits),
                                              on_signal=not all(exits), checked=dict(ctx.variables)))
     elif name in ("mapfile", "readarray"):
-        callback = _mapfile_callback(args)
+        callback = _mapfile_option(args, "C")
         if callback:
-            # `mapfile -C CMD`: CMD runs with the index and the line appended.
-            nested(f'{callback} 0 "$MAPFILE_LINE"', f"{name} -C", shares_shell=True)
+            _mapfile_callbacks(callback, _mapfile_option(args, "c") or "5000", ctx, nested, f"{name} -C")
     elif name in ("source", ".") and args:
         # `source <(printf CMD)`: the shell runs what the substitution prints.
         _produced_script(args[0], command, ctx, nested, shares_shell=True, return_boundary=True)
@@ -320,8 +319,28 @@ def _trap_signals(args: list[str]) -> list[str]:
     return operands[1:]
 
 
-def _mapfile_callback(args: list[str]) -> str | None:
-    """The `-C callback` of `mapfile`/`readarray`, attached (`-Ccmd`) or not."""
+def _mapfile_callbacks(callback: str, quantum: str, ctx: _Context, nested: Callable[..., None], label: str) -> None:
+    """`mapfile -C CMD -c N`: after every Nth line read, CMD runs with the index
+    that line goes to and the line appended (`CMD 0 'text'`), in this shell.
+    Lines not known (or a computed N) leave the analysis incomplete."""
+    records = ctx.mapfile_records
+    if records is None or not quantum.isdigit() or int(quantum) == 0:
+        ctx.result.truncated = True
+        nested(f'{callback} 0 "$MAPFILE_LINE"', label, shares_shell=True)
+        return
+    conditional = ctx.conditional
+    ctx.conditional = conditional or len(records) > 1  # several streams: each may be the one read
+    try:
+        for stream in records:
+            for count, (index, line) in enumerate(stream, start=1):
+                if count % int(quantum) == 0:
+                    nested(f"{callback} {index} {shlex.quote(line)}", label, shares_shell=True)
+    finally:
+        ctx.conditional = conditional
+
+
+def _mapfile_option(args: list[str], wanted: str) -> str | None:
+    """The value of `mapfile`/`readarray` option `-C` or `-c`, attached (`-Ccmd`) or not."""
     index = 0
     while index < len(args) and args[index].startswith("-") and args[index] != "--":
         arg = args[index]
@@ -330,7 +349,7 @@ def _mapfile_callback(args: list[str]) -> str | None:
                 value = arg[offset:] or (args[index + 1] if index + 1 < len(args) else "")
                 if not arg[offset:]:
                     index += 1
-                if letter == "C":
+                if letter == wanted:
                     return value or None
                 break
         index += 1

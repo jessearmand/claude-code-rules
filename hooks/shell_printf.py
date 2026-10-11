@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import re
 
-_CONVERSION = re.compile(r"%[-+ #0]*\d*(?:\.\d+)?([sbdiuxXoc])")
+_CONVERSION = re.compile(r"%[-+ #0]*\d*(?:\.\d+)?([sbdiuxXocq])")
+# Characters bash's `%q` escapes with a backslash (`~` and `#` only first).
+_QUOTED = frozenset(" \t'\"\\|&;()<>!{}*[]?^$`,")
 _SIMPLE_ESCAPES = {"\\": "\\", "n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f",
                    "v": "\v", '"': '"', "'": "'", "e": "\x1b", "E": "\x1b"}
 
@@ -68,6 +70,11 @@ def _printf(args: list[str]) -> str | None:
                     out.append(value)
                     if stop:
                         return "".join(out)
+                elif match.group(1) == "q":
+                    quoted = _shell_quoted(value)
+                    if quoted is None:
+                        return None
+                    out.append(quoted)
                 else:
                     out.append(value)
                 index = match.end()
@@ -77,6 +84,17 @@ def _printf(args: list[str]) -> str | None:
         # The format is reused while arguments remain, as in bash.
         if not values or not consumed:
             return "".join(out)
+
+
+def _shell_quoted(value: str) -> str | None:
+    """`printf %q`: `value` quoted so the shell reads it back (`a b` is `a\\ b`).
+    None for text bash would write as `$'...'` (control characters), not modelled."""
+    if not value:
+        return "''"
+    if any(not char.isprintable() for char in value):
+        return None
+    return "".join("\\" + char if char in _QUOTED or (index == 0 and char in "~#") else char
+                   for index, char in enumerate(value))
 
 
 def _unescape(text: str, mode: str) -> tuple[str, bool]:
