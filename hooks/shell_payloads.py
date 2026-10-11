@@ -148,6 +148,11 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
     shell = shell_invocation(command.name, args)
     if shell.syntax_only:
         return  # `-n`: read and syntax-check only, never execute
+    if command.name == "bash":
+        # A non-interactive bash first runs the file $BASH_ENV names, `bash -c` included.
+        for path in command.env_values("BASH_ENV"):
+            if path and "$" not in path:
+                _run_file(path, command, ctx, nested)
     for text in shell.commands:
         nested(_bind_positionals(text, list(shell.command_args)), f"{command.name} -c")
     if shell.script:

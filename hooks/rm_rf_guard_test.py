@@ -177,6 +177,9 @@ SHOULD_BLOCK = [
     "X=echo; f(){ X=rm; command return; X=echo; }; f; \"$X\" -rf victim",
     "X=echo; source <(printf 'X=rm\\nreturn\\nX=echo\\n'); \"$X\" -rf victim",  # return ends a sourced script
     "X=echo; f(){ g(){ return; }; X=rm; }; f; \"$X\" -rf victim",  # a nested declaration's return is its own
+    "CMD=$'\\x72m'; X='a[$(\"$CMD\" -rf victim)]'; echo \"$((X))\"",  # arithmetic evaluates X (PR review)
+    "X='a[$(rm -rf victim)]'; (( X ))",
+    "X='a[$(rm -rf victim)]'; Y=X; let Y+1",
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
@@ -459,6 +462,10 @@ def main() -> int:
             _check(decision == "ask", f"make attached/= options (PR review): {command} -> {decision}", failures)
         decision = _decision(_run_hook("bash -n < clean.sh", project))
         _check(decision is None, f"bash -n < clean.sh only checks syntax -> {decision}", failures)
+        # A non-interactive bash runs $BASH_ENV first (PR review).
+        decision = _decision(_run_hook("printf %b '\\162\\155 -rf victim\\n' > env.sh; "
+                                       "BASH_ENV=\"$PWD/env.sh\" bash -c :", project))
+        _check(decision == "ask", f"BASH_ENV startup file -> {decision}", failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)

@@ -53,6 +53,8 @@ from shell_effects import (
     _record_written_file,
 )
 from shell_expand import (
+    _arithmetic_expressions,
+    _arithmetic_substitutions,
     _at_word_pieces,
     _brace_expand,
     _compound_word,
@@ -420,6 +422,14 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
                 continue
             # A subshell: _parse_into restores the caller's directory and variables.
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+    words = [t for t in tokens if isinstance(t, Word)]
+    expressions = [e for word in words for e in _arithmetic_expressions(word.text)]
+    if words and words[0].text == "let" and not words[0].quoted:
+        expressions += [word.text for word in words[1:]]  # `let EXPR...`
+    for expression in expressions:
+        for body in _arithmetic_substitutions(expression, ctx):
+            # `$((X))` with X='a[$(cmd)]': evaluating X runs cmd.
+            _parse_into(body, ctx, (*via, "$((variable))"), depth + 1, indirect)
 
 
 def _branch_skipped(guard: tuple[str, str], ctx: _Context) -> bool:

@@ -120,6 +120,9 @@ BASH_CASES = [
     ("chmod --reference=/var/tmp/mode ~/.claude/settings.json", "deny", "claude-settings"),
     ("printf x > \"$(echo $HOME/.claude/settings.json)\"", "deny", "claude-settings"),
     ("curl -sSL https://example.com/s -o out.json", None, None),
+    # The Codex hooks and rules directories themselves (PR review).
+    ("rm -r ~/.codex/hooks", "deny", "codex-config"),
+    ("chmod 000 ~/.codex/rules", "deny", "codex-config"),
     # git checkouts into a protected directory (PR review).
     ("git clone https://example.invalid/evil ~/.claude/plugins/evil", "ask", "agent-config-dir"),
     ("cd ~/.claude/plugins && git clone https://example.invalid/evil.git", "ask", "agent-config-dir"),

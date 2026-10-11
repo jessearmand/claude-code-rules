@@ -103,6 +103,8 @@ class _Lexer:
                 self._skip_comment()
             elif c in "<>" and self._peek(1) == "(":
                 self._process_substitution()
+            elif c == "(" and self._peek(1) == "(" and self._arithmetic_command():
+                pass
             elif c == "\n":
                 self.result.tokens.append(Operator("\n"))
                 self.i += 1
@@ -310,6 +312,8 @@ class _Lexer:
             self.i += 3
             # Arithmetic runs any command substitution inside it: `$(( $(cmd) + 1 ))`.
             body = self._balanced(")", "(")
+            if self.i < self.n and self.s[self.i] == ")":
+                self.i += 1  # the second `)` of `))`
             self._substitute(word, nested_substitutions(body))
             word.dynamic = True
             return self.s[start:self.i]
@@ -339,6 +343,22 @@ class _Lexer:
             return self.s[start:self.i]
         self.i += 1
         return "$"
+
+    def _arithmetic_command(self) -> bool:
+        """`(( expr ))` as one word, when it closes with `))` and holds no command
+        separators; otherwise it is two subshells, `((cd x; ls))`, and nothing is read."""
+        start, unterminated = self.i, self.result.unterminated
+        self.i += 2
+        body = self._balanced(")", "(")
+        closes = self.i < self.n and self.s[self.i] == ")"
+        if not closes or re.search(r"[;&|\n]", re.sub(r"\$\([^)]*\)|`[^`]*`", "", body)):
+            self.i, self.result.unterminated = start, unterminated
+            return False
+        self.i += 1
+        word = Word(f"(({body}))", dynamic=True)
+        self._substitute(word, nested_substitutions(body))
+        self.result.tokens.append(word)
+        return True
 
     def _backtick_body(self) -> str:
         self.i += 1

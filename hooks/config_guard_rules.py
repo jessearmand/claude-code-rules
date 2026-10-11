@@ -62,7 +62,7 @@ CONFIG_RULES: tuple[ConfigRule, ...] = (
     ConfigRule("mcp-config", CRITICAL, _rx(r"(?:^|/)\.mcp\.json$"),
                "project MCP servers run with the agent's privileges"),
     ConfigRule("codex-config", CRITICAL,
-               _rx(r"(?:^|/)\.codex/(?:config\.toml|[^/]*\.config\.toml|hooks\.json|hooks/|rules/)"),
+               _rx(r"(?:^|/)\.codex/(?:config\.toml|[^/]*\.config\.toml|hooks\.json|hooks(?:/|$)|rules(?:/|$))"),
                "Codex approval, sandbox and hook configuration"),
     ConfigRule("omp-config", CRITICAL,
                _rx(r"(?:^|/)\.omp/(?:agent/)?(?:config\.ya?ml|settings\.json|extensions(?:/|$)|plugins(?:/|$)|hooks(?:/|$))"),

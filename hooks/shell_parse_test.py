@@ -151,6 +151,9 @@ def main() -> int:
                     ("echo", "?", "$OPTARG"), ("echo", "?", "c")], f"getopts as bash runs it: {argv}", failures)
     argv = [c.argv for c in parse("hash -p /bin/rm x; hash -r; x; f(){ :; }; hash -p /bin/rm f; f", "/").commands]
     _check(argv[2] == ("x",) and argv[-2] == ("f",), f"hash -r forgets, a function comes first: {argv}", failures)
+    argv = [c.argv for c in parse("echo $((1+2)) ok; (( n++ )); ((cd /tmp; ls))", "/").commands]
+    _check(argv == [("echo", "$((1+2))", "ok"), ("(( n++ ))",), ("cd", "/tmp"), ("ls",)],
+           f"$((...)) closes at `))`; ((expr)) is arithmetic, ((cmd; cmd)) subshells: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

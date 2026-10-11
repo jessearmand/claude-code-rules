@@ -17,7 +17,7 @@ from collections.abc import Callable
 import shell_ifs
 import shell_params
 import shell_printf
-from shell_lexer import Word
+from shell_lexer import Word, nested_substitutions
 from shell_model import (
     _ARRAY,
     _ELEMENT,
@@ -42,6 +42,42 @@ _BRACED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(:?[-=+?])(.*)", re.DOTALL)
 _MAX_BRACE_WORDS = 64
 
 _GLOB_CHARS = re.compile(r"[*?[]")
+
+
+def _arithmetic_expressions(text: str) -> list[str]:
+    """The arithmetic in a word: each `$((expr))`, or the whole of `((expr))`."""
+    found: list[str] = []
+    if text.startswith("((") and text.endswith("))"):
+        found.append(text[2:-2])
+    start = text.find("$((")
+    while start >= 0:
+        depth, index = 2, start + 3
+        while index < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[index], 0)
+            index += 1
+        found.append(text[start + 3:max(index - 2, start + 3)])
+        start = text.find("$((", index)
+    return found
+
+
+_ARITHMETIC_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _arithmetic_substitutions(expression: str, ctx: _Context, seen: frozenset[str] = frozenset()) -> list[str]:
+    """Command substitutions bash runs while evaluating `expression`: a variable
+    named in arithmetic is itself evaluated as arithmetic, so `X='a[$(cmd)]';
+    $((X))` runs cmd. Every known value of every variable named is followed."""
+    found: list[str] = []
+    for name in dict.fromkeys(_ARITHMETIC_NAME.findall(expression)):
+        if name in seen or name not in ctx.variables:
+            continue
+        for value in ctx.variables[name]:
+            if value == UNSET:
+                continue
+            found += nested_substitutions(value)
+            if len(seen) < 8:
+                found += _arithmetic_substitutions(value, ctx, seen | {name})
+    return list(dict.fromkeys(found))
 
 
 def _at_word_pieces(token: Word, ctx: _Context) -> list[Word] | None:
