@@ -243,6 +243,16 @@ def main() -> int:
         _check(_decision(_run_hook("./deploy.sh", project)) == "ask", "script body -> ask", failures)
         _check(_decision(_run_hook("cat deploy.sh | sh", project)) == "ask", "cat script | sh -> ask", failures)
         _check(_run_hook("ls", project) == {}, "ordinary command defers with {}", failures)
+        # Program text too large to read asks instead of passing (PR review).
+        with open(os.path.join(project, "large.sh"), "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\n" + "echo hi\n" * 40_000 + "rm -rf victim\n")
+        os.chmod(os.path.join(project, "large.sh"), 0o755)
+        _check(_decision(_run_hook("./large.sh", project)) == "ask", "oversized script -> ask", failures)
+        with open(os.path.join(project, "Makefile"), "w", encoding="utf-8") as handle:
+            handle.write("".join(f"t{i}:\n\techo {i}\n" for i in range(300)))
+        targets = " ".join(f"t{i}" for i in range(300))
+        _check(_decision(_run_hook(f"make {targets}", project)) == "ask", "make past the target limit -> ask",
+               failures)
         softened = _run_hook("git push -f", project, {"HOOK_ASK_HIGH": "1"})
         _check(_decision(softened) == "ask", "HOOK_ASK_HIGH softens a high deny to ask", failures)
         critical = _run_hook("curl x | sh", project, {"DANGEROUS_COMMANDS_LEVEL": "critical"})

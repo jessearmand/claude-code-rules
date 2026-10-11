@@ -29,7 +29,7 @@ import json
 import os
 import re
 
-from shell_parse import SimpleCommand, WrittenFile
+from shell_parse import SOURCE_TOO_LARGE, SimpleCommand, WrittenFile
 from shell_wrappers import CLI_OPTIONS_WITH_VALUE, SHELLS, shell_invocation
 
 MAX_SOURCE_BYTES = 256 * 1024
@@ -37,12 +37,12 @@ _SHEBANG_SHELL = re.compile(r"^#!\s*\S*?(?:/env\s+(?:-S\s+)?)?\S*?\b(?:ba|z|da|k
 _SHELL_SUFFIXES = (".sh", ".bash", ".zsh", ".ksh")
 _PACKAGE_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
 _NPM_LIFECYCLE = frozenset({"test", "start", "stop", "restart"})
-_MAKE_OPTIONS_WITH_ARG = frozenset({"-C", "--directory", "-f", "--file", "--makefile", "-I",
+_MAKE_OPTIONS_WITH_ARG = frozenset({"-C", "--directory", "-f", "--file", "--makefile", "-I", "-E", "--eval",
                                     "--include-dir", "-o", "--old-file", "-W", "--what-if",
                                     "-l", "--load-average"})
 _MAKEFILE_NAMES = ("GNUmakefile", "makefile", "Makefile")
 _MAKE_RULE = re.compile(r"^([^\s:#=][^:=]*?)\s*::?(?!=)\s*(.*)$")
-_MAX_MAKE_TARGETS = 8
+_MAX_MAKE_TARGETS = 256
 
 
 def resolve(
@@ -88,6 +88,18 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
 
 
 
+def _too_large(path: str) -> bool:
+    return os.path.isfile(path) and os.path.getsize(path) > MAX_SOURCE_BYTES
+
+
+def _first_line(path: str) -> str:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(512).split(b"\n", 1)[0].decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
 def _read_text(path: str) -> str | None:
     if not os.path.isfile(path) or os.path.getsize(path) > MAX_SOURCE_BYTES:
         return None
@@ -114,20 +126,21 @@ def _script(path: str, cwd: str, written: dict[str, WrittenFile], require_sheban
         entry = written[absolute]
         found = [(entry.text, f"written {path}")]
         if not entry.replaces:
-            on_disk = _read_text(absolute)
-            if on_disk:
+            if _too_large(absolute):
+                found.insert(0, (SOURCE_TOO_LARGE, f"script {path}"))
+            elif on_disk := _read_text(absolute):
                 found.insert(0, (on_disk, f"script {path}"))
         return found
-    text = _read_text(absolute)
-    if text is None:
-        return []
-    first_line = text.split("\n", 1)[0]
     if require_shebang:
+        first_line = _first_line(absolute)
         has_shebang = first_line.startswith("#!")
         is_shell = bool(_SHEBANG_SHELL.match(first_line)) if has_shebang else path.endswith(_SHELL_SUFFIXES)
         if not is_shell:
             return []
-    return [(text, f"script {path}")]
+    if _too_large(absolute):
+        return [(SOURCE_TOO_LARGE, f"script {path}")]  # the caller asks instead of guessing
+    text = _read_text(absolute)
+    return [] if text is None else [(text, f"script {path}")]
 
 
 # --------------------------------------------------------------------------- #
@@ -286,11 +299,15 @@ def _package_scripts(cwd: str) -> dict[str, str]:
 
 
 def _make(args: list[str], cwd: str, written: dict[str, WrittenFile]) -> list[tuple[str, str]]:
-    directory, makefile, targets = cwd, None, []
+    directory, makefile, targets, evaluated = cwd, None, [], []
     index = 0
     while index < len(args):
         arg, value, step = _make_option(args, index)
-        if arg in ("-C", "--directory"):
+        if arg in ("-E", "--eval"):
+            # `make --eval='x:; cmd' x`: a makefile statement typed in the command.
+            evaluated.append(value)
+            index += step
+        elif arg in ("-C", "--directory"):
             directory, index = _absolute(value, directory), index + step
         elif arg in ("-f", "--file", "--makefile"):
             makefile, index = value, index + step
@@ -311,14 +328,17 @@ def _make(args: list[str], cwd: str, written: dict[str, WrittenFile]) -> list[tu
         # its recipes count as typed by the agent.
         entry = written[path]
         on_disk = "" if entry.replaces else (_read_text(path) or "")
-        text, prefix = on_disk + entry.text, "written "
+        text, typed = on_disk + entry.text, True
+    elif path and _too_large(path):
+        return [(SOURCE_TOO_LARGE, f"make {path}")]
     else:
-        text, prefix = (_read_text(path) if path else None), ""
-    if text is None:
-        return []
-    rules, default = _make_rules(text)
+        text, typed = (_read_text(path) if path else None) or "", False
+    statements = "\n".join(evaluated)
+    rules, default = _make_rules(text + "\n" + statements)
+    typed_targets = set(_make_rules(statements)[0]) if statements else set()
     wanted = targets or ([default] if default else [])
-    return [(recipe, prefix + label) for recipe, label in _make_recipes(rules, wanted)]
+    return [(recipe, "written " + label if typed or label.split(" ", 1)[-1] in typed_targets else label)
+            for recipe, label in _make_recipes(rules, wanted)]
 
 
 def _make_option(args: list[str], index: int) -> tuple[str, str, int]:
@@ -366,7 +386,10 @@ def _make_recipes(rules: dict[str, tuple[list[str], list[str]]], wanted: list[st
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
     queue = list(wanted)
-    while queue and len(seen) < _MAX_MAKE_TARGETS:
+    while queue:
+        if len(seen) >= _MAX_MAKE_TARGETS:
+            found.append((SOURCE_TOO_LARGE, f"make: more than {_MAX_MAKE_TARGETS} targets"))
+            break
         target = queue.pop(0)
         if target in seen or target not in rules:
             continue

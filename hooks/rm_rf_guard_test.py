@@ -113,6 +113,7 @@ SHOULD_BLOCK = [
     "X=rm; X=echo & $X -rf victim",
     "X=CMD; CMD=rm; ${!X} -rf victim",  # indirect expansion (PR review)
     "printf -v X rm; $X -rf victim",
+    "function cleanup { rm -rf victim; }; cleanup",
     "X=rm; true || unset X; $X -rf victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
@@ -214,6 +215,9 @@ def main() -> int:
         command = "cat > Makefile <<'EOF'\nx:\n\trm -rf victim\nEOF\nmake x"
         invocations, _ = find_recursive_force_invocations(command, tmp, shell_sources.resolve)
         _check(bool(invocations) and not invocations[0].indirect, "same-line Makefile recipe", failures)
+        invocations, _ = find_recursive_force_invocations("make --eval='x:;rm -rf victim' x", tmp,
+                                                          shell_sources.resolve)
+        _check(bool(invocations) and not invocations[0].indirect, "make --eval recipe", failures)
 
     print("\nTarget analysis:")
     with tempfile.TemporaryDirectory() as tmp:

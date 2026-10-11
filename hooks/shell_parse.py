@@ -65,6 +65,8 @@ _BLOCK_OPENERS = frozenset({"if", "while", "until", "for", "select", "case", "{"
 _BLOCK_CLOSERS = frozenset({"fi", "done", "esac", "}"})
 _MAX_VARIANTS = 64
 _MAX_BRACE_WORDS = 64
+# Program text a source resolver found but could not inspect (too large).
+SOURCE_TOO_LARGE = "\0too-large"
 # A variable value meaning "may be unset" (`true || unset X`).
 UNSET = "\0unset"
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
@@ -143,6 +145,8 @@ class ParseResult:
     # Every string that was parsed as shell code beyond the top level, with
     # how it was reached. Regex-based guards rescan these.
     nested_sources: list[NestedSource] = field(default_factory=list)
+    # (command, label) for program text a command runs that was too large to read.
+    skipped_sources: list[tuple[SimpleCommand, str]] = field(default_factory=list)
     unparseable: bool = False
     truncated: bool = False
 
@@ -565,7 +569,10 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
         word = words[index]
         reserved = word.text in RESERVED_PREFIXES and not word.quoted
         time_flag = word.text == "-p" and index > 0 and words[index - 1].text == "time"
-        if reserved or time_flag:
+        if word.text == "function" and not word.quoted:
+            # `function name { body; }`: the body is parsed like any other command list.
+            index += 2
+        elif reserved or time_flag:
             index += 1
         elif _ASSIGNMENT.match(word.text):
             assignments.append(word.text)
@@ -952,6 +959,10 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
 
     if depth < MAX_DEPTH:
         for text, label in _sources_for(command, ctx):
+            if text == SOURCE_TOO_LARGE:
+                ctx.result.truncated = True
+                ctx.result.skipped_sources.append((command, label))
+                continue
             # A file written earlier in this same command line was typed by the agent.
             # `source`/`.` run the file in this shell: its cd and assignments persist.
             nested(text, label, from_file=not label.startswith("written "),
