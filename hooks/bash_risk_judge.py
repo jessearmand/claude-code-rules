@@ -89,11 +89,13 @@ _CANDIDATE = re.compile(
 # hides exactly the behaviour the model is being asked about.
 _SECRET_VALUE = re.compile(
     # The key bare (`TOKEN=`) or quoted on both sides (`"api_key":`, `'github_token':`).
-    r"(?i)((?:[\"'][\w-]*?(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)[\"']"
+    r"(?i)(?P<key>(?:[\"'][\w-]*?(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)[\"']"
     r"|(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie))"
-    r"(?:[\s:=]+(?:bearer|basic)\b)?[\s:=]+[\"']?)(?![$`<(]|(?:bearer|basic)\b)([^\s\"']+)"
-    r"|(\b(?:sk|ghp|gho|ghs|ghu|xox[abp]|AKIA|AIza|npm_|pypi-|glpat-)[A-Za-z0-9_\-]{16,})"
-    r"|(\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"
+    r"(?:[\s:=]+(?:bearer|basic)\b)?[\s:=]+)(?![\"']?(?:[$`<(]|(?:bearer|basic)\b))"
+    # A quoted value is redacted through its closing quote (spaces included).
+    r"(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|[\"']?[^\s\"']+)"
+    r"|\b(?:sk|ghp|gho|ghs|ghu|xox[abp]|AKIA|AIza|npm_|pypi-|glpat-)[A-Za-z0-9_\-]{16,}"
+    r"|\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
 )
 
 # `https://user:pass@host`: the password in a URL's userinfo.
@@ -193,9 +195,13 @@ def should_judge(command: str, parsed: ParseResult) -> bool:
 
 def redact(command: str) -> str:
     def _replace(match: re.Match[str]) -> str:
-        if match.group(1):
-            return f"{match.group(1)}<redacted>"
-        return "<redacted>"
+        if not match.group("key"):
+            return "<redacted>"
+        quote = '"' if match.group("double") is not None else "'" if match.group("single") is not None else ""
+        if not quote and match.group(0)[len(match.group("key")):][:1] in "\"'":
+            quote = match.group(0)[len(match.group("key"))]  # an unclosed quote stays in place
+            return f"{match.group('key')}{quote}<redacted>"
+        return f"{match.group('key')}{quote}<redacted>{quote}"
 
     text = _PRIVATE_KEY.sub("<redacted private key>", command)
     text = _URL_USERINFO.sub(r"\1<redacted>@", text)

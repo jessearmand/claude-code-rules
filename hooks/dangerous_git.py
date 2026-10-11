@@ -14,6 +14,7 @@ The safe spellings stay allowed: `push --force-with-lease`, `branch -d`,
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from danger_rule import (
@@ -397,6 +398,12 @@ _PROGRAM_KEYS = frozenset({"core.sshcommand", "core.fsmonitor", "core.pager", "c
                            "core.askpass", "credential.helper", "diff.external", "sequence.editor"})
 
 
+# Per-driver keys whose value is a command git runs through the shell:
+# `filter.X.clean`/`smudge`/`process`, `diff.X.textconv`/`command`, `merge.X.driver`.
+_PROGRAM_KEY_PATTERN = re.compile(r"filter\.[^=]+\.(?:clean|smudge|process)|diff\.[^=]+\.(?:textconv|command)"
+                                  r"|merge\.[^=]+\.driver|gpg(?:\.[^=]+)?\.program|core\.gitproxy")
+
+
 def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
     git = git_invocation(command)
     for key, value in _config_assignments(command):
@@ -409,7 +416,9 @@ def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
                 and value.lower() not in ("true", "false", "yes", "no", "on", "off", "1", "0", ""):
             return "git config core.fsmonitor <program>"
     for item in git.config if git else ():
-        key = item.partition("=")[0]
+        key = item.partition("=")[0].lower()
+        if _PROGRAM_KEY_PATTERN.fullmatch(key):
+            return f"git -c {key}=..."
         # sshCommand only runs on network operations; the rest run on most commands.
         if key == "core.sshcommand" and git.subcommand not in _NETWORK_SUBCOMMANDS:
             continue

@@ -56,6 +56,7 @@ REDACTIONS = [
     # Quoted JSON/dict keys (PR review).
     (f'{{"api_key":"{_PLACEHOLDER}"}}', '{"api_key":"<redacted>"}'),
     (f"{{'token': '{_PLACEHOLDER}'}}", "{'token': '<redacted>'}"),
+    (f'{{"token": "{_PLACEHOLDER} with spaces"}}', '{"token": "<redacted>"}'),  # the whole quoted value
     ("ssh user@host", "ssh user@host"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),

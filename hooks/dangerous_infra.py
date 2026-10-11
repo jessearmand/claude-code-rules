@@ -243,7 +243,9 @@ def _compose_down_volumes(name: str, args: tuple[str, ...]) -> str | None:
 _SQL_PART = r'(?:"[^"]*"|`[^`]*`|\[[^\]]*\]|[^\s;."`\[]+)'
 _SQL_NAME = rf"{_SQL_PART}(?:\.{_SQL_PART})*"
 _SQL_DESTRUCTIVE = re.compile(
-    rf"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|USER|ROLE)|TRUNCATE\b|DELETE\s+FROM\s+{_SQL_NAME}\s*(?:;|$)"
+    # A DELETE is whole-table when no WHERE follows before the statement ends
+    # (`DELETE FROM t;`, `DELETE FROM t RETURNING id;`).
+    rf"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|USER|ROLE)|TRUNCATE\b|DELETE\s+FROM\s+{_SQL_NAME}(?![^;]*\bWHERE\b)"
     rf"|ALTER\s+TABLE\s+{_SQL_NAME}\s+DROP\b)",
     re.IGNORECASE,
 )
@@ -279,6 +281,10 @@ def _input_file(path: str, command: SimpleCommand, ctx: RuleContext) -> str | No
 
 
 _MAX_SQL_FILE = 256 * 1024
+# sqlite3 options that take a value (so it is not read as the database or SQL).
+_SQLITE_WITH_VALUE = frozenset({"-init", "--init", "-cmd", "--cmd", "-separator", "--separator",
+                                "-newline", "--newline", "-nullvalue", "--nullvalue", "-vfs", "--vfs",
+                                "-maxsize", "--maxsize", "-mmap", "--mmap", "-pagecache", "-lookaside"})
 
 
 def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
@@ -292,7 +298,11 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
     texts = [a.split("=", 1)[1] for a in command.args if any(a.startswith(f + "=") for f in flags if f.startswith("--"))]
     texts += [command.args[i + 1] for i, a in enumerate(command.args[:-1]) if a in flags]
     if command.name == "sqlite3":
-        texts += [a for a in operands(command.args)[1:]]
+        # `-init FILE` runs a script and `-cmd SQL` a statement before the rest.
+        texts += [command.args[i + 1] for i, a in enumerate(command.args[:-1]) if a in ("-cmd", "--cmd")]
+        texts += [t for t in (_input_file(command.args[i + 1], command, ctx)
+                              for i, a in enumerate(command.args[:-1]) if a in ("-init", "--init")) if t]
+        texts += [a for a in operands(command.args, _SQLITE_WITH_VALUE)[1:]]
     texts += [r.body or r.target for r in command.redirects if r.op in ("<<", "<<-", "<<<")]
     # `sqlite3 db < q.sql`: the file, as written earlier on the line or as on disk.
     for redirect in command.redirects:
@@ -321,14 +331,37 @@ def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
     return texts
 
 
-# SQL comments: `-- to end of line` and `/* ... */`.
-_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+def _without_comments(sql: str) -> str:
+    """`sql` with `-- ...` and `/* ... */` comments blanked, outside quoted
+    strings and identifiers: in `SELECT '--'; DROP TABLE t` the `--` is data."""
+    out: list[str] = []
+    index, quote = 0, ""
+    while index < len(sql):
+        char = sql[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"`":
+            quote = char
+        elif sql.startswith("--", index):
+            end = sql.find("\n", index)
+            index = len(sql) if end < 0 else end
+            out.append(" ")
+            continue
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            index = len(sql) if end < 0 else end + 2
+            out.append(" ")
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def _destructive_sql(command: SimpleCommand, ctx: RuleContext) -> str | None:
     for text in _sql_texts(command, ctx):
         # `DELETE FROM users -- all rows` still deletes every row: match without comments.
-        uncommented = _SQL_COMMENT.sub(" ", text)
+        uncommented = _without_comments(text)
         match = _SQL_DESTRUCTIVE.search(uncommented) or _NOSQL.search(uncommented)
         if match:
             return f"{command.name}: {match.group(0).strip()}"
