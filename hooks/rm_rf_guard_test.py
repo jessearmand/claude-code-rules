@@ -89,6 +89,12 @@ SHOULD_BLOCK = [
     "sudo X=rm sh -c '$X -rf ~/victim'",
     "bash /dev/stdin <<< 'rm -rf ~/victim'",
     "sh /dev/fd/0 <<EOF\nrm -rf ~/victim\nEOF",
+    # Process substitution as the script; brace expansion (PR review).
+    "source <(printf 'rm -rf ~/victim')",
+    ". <(echo rm -rf ~/victim)",
+    "bash <(printf 'rm -rf ~/victim')",
+    "bash < <(echo 'rm -rf ~/victim')",
+    "{rm,-rf,$HOME/victim}",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",
@@ -107,6 +113,8 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "mkdir -p src/{lib,bin} && echo '{rm,-rf,x}'",  # quoted braces stay one word
+    "source <(kubectl completion bash)",
     "X=echo; env X=rm true; $X -rf build",  # env's assignment is for `true` only
     "X=rm; X=echo; $X -rf build",  # the later assignment always runs
     "rm build.log",

@@ -47,6 +47,9 @@ class Word:
     # <(...), and $(...) inside ${...}, $((...)) or an unquoted heredoc), in
     # order. They run when the command holding the word runs, not before.
     substitutions: list[str] = field(default_factory=list)
+    # Offsets in `text` of the unquoted `{`, `,` and `}`: only those take part in
+    # brace expansion (`{rm,-rf,x}` is three words; `'{a,b}'` is one).
+    braces: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,8 @@ class _Lexer:
             elif c in "$`":
                 parts.append(self._expansion(word))
             else:
+                if c in "{,}":
+                    word.braces += (sum(map(len, parts)),)
                 parts.append(c)
                 self.i += 1
         word.text = "".join(parts)

@@ -16,6 +16,8 @@ ARGV_CASES = [
     ("ls -la", [("ls", "-la")]),
     ("a && b || c; d & e", [("a",), ("b",), ("c",), ("d",), ("e",)]),
     ("echo hi\nrm x", [("echo", "hi"), ("rm", "x")]),
+    ("echo a{b,c}d {x,{y,z}}! '{p,q}' \"{r\",s} {} {t}", [("echo", "abd", "acd", "x!", "y!", "z!", "{p,q}",
+                                                       "{r,s}", "{}", "{t}")]),
     ("echo a#b # trailing comment", [("echo", "a#b")]),
     ("echo 'a b' \"c d\" e\\ f", [("echo", "a b", "c d", "e f")]),
     ("sudo -u root -- rm x", [("rm", "x")]),

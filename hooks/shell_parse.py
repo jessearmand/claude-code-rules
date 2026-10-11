@@ -62,6 +62,7 @@ _AND_OR = frozenset({"&&", "||"})
 _BLOCK_OPENERS = frozenset({"if", "while", "until", "for", "select", "case", "{"})
 _BLOCK_CLOSERS = frozenset({"fi", "done", "esac", "}"})
 _MAX_VARIANTS = 8
+_MAX_BRACE_WORDS = 64
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
@@ -329,7 +330,8 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
                 index += 2
                 continue
         elif isinstance(token, Word):
-            words.extend(_split_unquoted(token, _expand_word(token, ctx, choice)))
+            for piece in _brace_expand(token):
+                words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
         index += 1
 
     words, environment = _strip_prelude(words, ctx)
@@ -353,6 +355,49 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
         for body in getattr(token, "substitutions", ()):
             # A subshell: _parse_into restores the caller's directory and variables.
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+
+
+def _brace_expand(word: Word) -> list[Word]:
+    """Brace expansion, which bash does first: `{rm,-rf,~/x}` is three words,
+    `a{b,c}d` is `abd acd`. Only unquoted braces and commas count."""
+    if not word.braces:
+        return [word]
+    texts = _expand_brace_text(word.text, frozenset(word.braces))
+    if len(texts) == 1:
+        return [word]
+    return [Word(text, dynamic=word.dynamic and bool(_UNRESOLVED.search(text)), quoted=word.quoted,
+                 substitutions=word.substitutions if index == 0 else [])
+            for index, text in enumerate(texts[:_MAX_BRACE_WORDS])]
+
+
+def _expand_brace_text(text: str, active: frozenset[int]) -> list[str]:
+    for start in sorted(p for p in active if text[p] == "{"):
+        depth, commas, end = 0, [], None
+        for index in sorted(p for p in active if p >= start):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+            elif depth == 1:
+                commas.append(index)
+        if end is None or not commas:
+            continue  # `{}`, `{x}` and unbalanced braces stay literal
+        prefix, suffix = text[:start], text[end + 1:]
+        expanded: list[str] = []
+        bounds = [start, *commas, end]
+        for left, right in itertools.pairwise(bounds):
+            piece = text[left + 1:right]
+            moved = ({p for p in active if p < start}
+                     | {p - left - 1 + len(prefix) for p in active if left < p < right}
+                     | {p - end - 1 + len(prefix) + len(piece) for p in active if p > end})
+            expanded += _expand_brace_text(prefix + piece + suffix, frozenset(moved))
+            if len(expanded) >= _MAX_BRACE_WORDS:
+                break
+        return expanded
+    return [text]
 
 
 def _split_unquoted(original: Word, expanded: Word) -> list[Word]:
@@ -795,6 +840,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     elif name == "eval":
         if args:
             nested(" ".join(args), "eval", shares_shell=True)
+    elif name in ("source", ".") and args:
+        # `source <(printf CMD)`: the shell runs what the substitution prints.
+        _produced_script(args[0], command, ctx, nested, shares_shell=True)
     elif name in STRING_RUNNERS:
         spec = STRING_RUNNERS[name]
         if spec.command_options:
@@ -837,6 +885,8 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         return  # `-n`: read and syntax-check only, never execute
     for text in shell.commands:
         nested(_bind_positionals(text, list(shell.command_args)), f"{command.name} -c")
+    if shell.script:
+        _produced_script(shell.script, command, ctx, nested)  # `bash <(echo CMD)`
     if not shell.reads_stdin:
         return  # a command string or a script file (shell_sources resolves the file)
     for redirect in command.redirects:
@@ -844,6 +894,8 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
             nested(redirect.body, f"{command.name} <<heredoc")
         elif redirect.op == "<<<":
             nested(redirect.target, f"{command.name} <<<")
+        elif redirect.op == "<" and _produced_script(redirect.target, command, ctx, nested):
+            pass  # `bash < <(printf CMD)`
         elif redirect.op == "<" and not redirect.dynamic:
             # `bash < script.sh` runs the file just like `bash script.sh`.
             _run_file(redirect.target, command, ctx, nested)
@@ -857,6 +909,26 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
     elif feeder.name == "cat" and len(feeder.args) == 1:
         # `cat script.sh | bash` runs the file just like `bash script.sh`.
         _run_file(feeder.args[0], command, ctx, nested)
+
+
+def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],
+                     shares_shell: bool = False) -> bool:
+    """A script given as `<(producer)`: parse what the producer prints when that
+    is known statically (`echo`/`printf` text, `cat FILE`). False if `operand`
+    is not a process substitution."""
+    if not (operand.startswith("<(") and operand.endswith(")")):
+        return False
+    producer = parse(operand[2:-1], shell.cwd or "/")
+    for command in producer.commands:
+        if command.via or command.dynamic_head:
+            continue
+        if command.name in ("echo", "printf"):
+            text = _echoed_text(command)
+            if text:
+                nested(text, f"{shell.name} <({command.name})", shares_shell=shares_shell)
+        elif command.name == "cat" and len(command.args) == 1:
+            _run_file(command.args[0], shell, ctx, nested)
+    return True
 
 
 def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None]) -> None:
