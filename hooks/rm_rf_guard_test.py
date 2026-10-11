@@ -134,6 +134,12 @@ SHOULD_BLOCK = [
     "read X <<<'r\\m'; \"$X\" -rf victim",  # read strips backslashes without -r (PR review)
     "X=echo; f(){ local X; \"${X:-r}m\" -rf victim; }; f",  # bare local is unset
     "X=$(printf %b '\\162\\155'); \"$X\" -rf victim",  # printf escapes
+    ": ${X:=r}; \"${X}m\" -rf victim",  # ${X:=word} assigns (PR review)
+    "echo ${X:=r}; \"$X\"m -rf victim",
+    "IFS=x; read A B <<< rxm; \"$A$B\" -rf victim",  # read splits by IFS (PR review)
+    "IFS=, read A B <<< r,m; \"$A$B\" -rf victim",
+    "IFS=,; X=rm,-rf,victim; $X",  # word splitting by IFS
+    "set -- r m; IFS=; \"$*\" -rf victim",  # "$*" joins with IFS's first character
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line

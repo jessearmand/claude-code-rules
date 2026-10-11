@@ -31,7 +31,7 @@ from danger_rule import (
 from shell_interpreters import interpreter_kind
 from shell_parse import SimpleCommand
 from shell_wrappers import SHELLS, STDIN_PATHS, shell_invocation
-from shell_writes import written_paths
+from shell_writes import WRITE, written_paths
 
 # --------------------------------------------------------------------------- #
 # Disks and devices
@@ -42,20 +42,31 @@ _BLOCK_DEVICE = re.compile(r"^/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|disk|rdisk|md|dm-
 
 
 def _device_write(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    for redirect in command.redirects:
-        if redirect.op in (">", ">>", ">|", "&>") and _BLOCK_DEVICE.match(redirect.target):
-            return f"redirect into {redirect.target}"
-    if command.name == "dd":
-        for arg in command.args:
-            if not arg.startswith("of="):
-                continue
-            # `cd /dev && dd of=sda`: a relative output resolves in the command's directory.
-            for directory in command.possible_cwds:
-                target = os.path.normpath(os.path.join(directory or "/", os.path.expanduser(arg[3:])))
-                if target.startswith("/dev/") and not _HARMLESS_DEVICES.match(target) \
-                        and (directory is not None or arg[3:].startswith("/")):
-                    return f"dd of={target}"
+    redirected = {r.target for r in command.redirects}
+    for write in written_paths(command):
+        if write.action != WRITE or write.dynamic:
+            continue
+        for target in _device_paths(write.path, command):
+            # `dd of=` takes any device but the harmless ones; other writers
+            # (`tee /dev/sda`, `cp image /dev/sda`, `> /dev/disk2`) a block device.
+            raw_device = command.name == "dd" and not _HARMLESS_DEVICES.match(target)
+            if _BLOCK_DEVICE.match(target) or (raw_device and write.path not in redirected):
+                if write.path in redirected:
+                    return f"redirect into {target}"
+                return f"dd of={target}" if command.name == "dd" else f"{command.name} writes {target}"
     return None
+
+
+def _device_paths(path: str, command: SimpleCommand) -> list[str]:
+    """The /dev paths `path` may name: `cd /dev && dd of=sda` writes /dev/sda."""
+    found: list[str] = []
+    for directory in command.possible_cwds:
+        if directory is None and not path.startswith(("/", "~")):
+            continue
+        target = os.path.normpath(os.path.join(directory or "/", os.path.expanduser(path)))
+        if target.startswith("/dev/") and target not in found:
+            found.append(target)
+    return found
 
 
 _FORMATTERS = re.compile(r"^(?:mkfs(?:\.\w+)?|mke2fs|mkswap|newfs(?:_\w+)?|wipefs|blkdiscard|sfdisk|cfdisk)$")

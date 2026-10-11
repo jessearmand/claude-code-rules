@@ -198,6 +198,12 @@ CASES = [
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 prod.db < q.sql", "deny", "sql-destructive"),
     ("$(printf git) reset --hard", "deny", "git-reset-hard"),
     ("cd /dev && sudo dd if=/dev/zero of=sda", "deny", "device-write"),  # relative dd output (PR review)
+    ("sudo tee /dev/sda < image", "deny", "device-write"),  # any writer, not only dd (PR review)
+    ("cp image.iso /dev/sdb", "deny", "device-write"),
+    ("curl -o /dev/nvme0n1 https://example.com/img", "deny", "device-write"),
+    ("cd /dev && cat image > sda", "deny", "device-write"),
+    ("tee /dev/null < x", None, None),
+    ("echo hi | tee /dev/stderr", None, None),
     ("chmod -R --reference=/var/tmp/mode /usr", "deny", "chmod-dangerous"),
     ("chmod --reference=a.txt b.txt", None, None),
     ("chown -R --reference=/var/tmp/ref /usr", "deny", "chown-broad"),

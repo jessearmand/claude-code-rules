@@ -112,6 +112,13 @@ def main() -> int:
     argv = parse('set -- a b c; echo x"$@"y', "/").commands[-1].argv
     _check(argv == ("echo", "xa", "b", "cy"), f'"$@" inside a word: {argv}', failures)
 
+    argv = [c.argv for c in parse(': ${X:=r} ${Y=a}; echo $X $Y; Z=k; : ${Z:=q}; echo $Z', "/").commands]
+    _check(argv[1] == ("echo", "r", "a") and argv[-1] == ("echo", "k"), f"${{X:=word}} assigns: {argv}", failures)
+    argv = [c.argv for c in parse('IFS=,; X=a,b; echo $X "$X"; IFS=: read A B <<< "c:d"; echo $A $B',
+                                  "/").commands]
+    _check(argv[0] == ("echo", "a", "b", "a,b") and argv[-1] == ("echo", "c", "d"),
+           f"IFS splits expansions and read: {argv}", failures)
+
     print("\nWorking directory:")
     cwd_cases = [
         ("cd /a; cd b; ls", "/a/b"),

@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from math import prod
 
+import shell_ifs
 import shell_params
 import shell_printf
 from shell_interpreters import awk_commands, inline_programs, shell_strings
@@ -434,19 +435,20 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
             params = _positionals(ctx) if token.text in ("$@", "${@}", "$*", "${*}") else None
             pieces = _at_word_pieces(token, ctx) if params is None else None
             if params is not None:
-                # `"$@"`: one word per positional parameter; quoted `"$*"` joins them.
+                # `"$@"`: one word per positional parameter; quoted `"$*"` joins them
+                # with the first character of IFS (`IFS=; "$*"` runs them together).
                 joined = token.quoted and "*" in token.text
-                words.extend([Word(" ".join(params))] if joined else [Word(p) for p in params])
+                words.extend([Word(_star_separator(ctx).join(params))] if joined else [Word(p) for p in params])
             elif pieces is not None:
                 for piece in pieces:
-                    words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
+                    words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice), ctx))
             else:
                 for piece in _brace_expand(token, ctx):
-                    words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
+                    words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice), ctx))
         index += 1
 
     words, environment = _strip_prelude(words, ctx)
-    _builtin_mutation([word.text for word in words], redirects, ctx)
+    _builtin_mutation([word.text for word in words], redirects, ctx, environment)
     words = _glob_words(words, ctx)
     if not words:
         if redirects:
@@ -590,16 +592,36 @@ def _expand_brace_text(text: str, active: frozenset[int]) -> list[str]:
     return [text]
 
 
-def _split_unquoted(original: Word, expanded: Word) -> list[Word]:
-    """Word splitting: an unquoted expansion holding spaces becomes several words
-    (`X='rm -rf ~'; $X` runs rm with two arguments). Quoted `"$X"` stays one."""
+def _split_unquoted(original: Word, expanded: Word, ctx: _Context) -> list[Word]:
+    """Word splitting: an unquoted expansion holding IFS characters becomes several
+    words (`X='rm -rf ~'; $X` runs rm with two arguments; so does `IFS=,; X=rm,-rf,~`).
+    Quoted `"$X"` stays one."""
     if not original.splits or not original.dynamic or expanded.text == original.text:
         return [expanded]
-    parts = expanded.text.split()
+    splits = [tuple(shell_ifs.split(expanded.text, ifs)) for ifs in _ifs_values(ctx)]
+    if len(set(splits)) > 1:
+        ctx.result.truncated = True  # IFS may hold several values that split this differently
+    parts = splits[0]
     if len(parts) <= 1:
-        return [expanded]
+        # `IFS=,; X=rm,; $X` runs `rm`: the delimiters go even when one word remains.
+        return [expanded] if not parts or parts[0] == expanded.text else [
+            Word(parts[0], dynamic=bool(_UNRESOLVED.search(parts[0])), substitutions=expanded.substitutions)]
     return [Word(part, dynamic=bool(_UNRESOLVED.search(part)), substitutions=expanded.substitutions if i == 0 else [])
             for i, part in enumerate(parts)]
+
+
+def _star_separator(ctx: _Context) -> str:
+    """What `"$*"` puts between parameters: IFS's first character."""
+    return _ifs_values(ctx)[0][:1]
+
+
+def _ifs_values(ctx: _Context, environment: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Every value IFS may hold: `IFS=, read ...` sets it for one command; unset means the default."""
+    for text in reversed(environment):
+        if text.startswith("IFS="):
+            return (text[4:],)
+    values = ctx.variables.get("IFS", (UNSET,))
+    return tuple(dict.fromkeys(shell_ifs.DEFAULT if value == UNSET else value for value in values))
 
 
 def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None) -> Word:
@@ -619,7 +641,8 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
             if params is None or name == "0":
                 return None
             if name in ("@", "*"):
-                return " ".join(params)  # inside a longer word: `"$@"m` with $1=r is rm
+                # Inside a longer word: `"$@"m` with $1=r is rm.
+                return (_star_separator(ctx) if name == "*" else " ").join(params)
             return str(len(params)) if name == "#" else (params[int(name) - 1] if int(name) <= len(params) else "")
         if choice and name in choice:
             return None if choice[name] == UNSET else choice[name]
@@ -639,17 +662,32 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
                 return ctx.cwd
         return None
 
-    text = _expand_text(word.text, value, at_start=True)
+    def assign(name: str, text: str, certain: bool) -> None:
+        # `${X:=word}` assigns word when X is unset (or empty). If X is not known
+        # it may already be set, so both stay possible: word, or unknown.
+        if not certain and name not in ctx.variables:
+            ctx.variables[name] = (UNSET,)
+        _assign(f"{name}={text}", ctx.variables, ctx.conditional or not certain)
+        if choice is not None and name in choice:
+            choice[name] = text
+
+    text = _expand_text(word.text, value, at_start=True, assign=assign)
     return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted, splits=word.splits,
                 heredoc_body=word.heredoc_body, substitutions=word.substitutions)
 
 
-def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: bool) -> str:
+# Records `${NAME:=word}`: (name, value, whether the assignment certainly happens).
+_Assigner = Callable[[str, str, bool], None]
+
+
+def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: bool,
+                 assign: _Assigner | None = None) -> str:
     """Replace `$NAME`/`${NAME}` whose value is known, and resolve `${NAME:-word}`,
     `${NAME:=word}` and `${NAME:+word}` to the value they select. When NAME is not
     known it may be unset, so the default or alternate `word` is the candidate:
     `> "${OUT:-$HOME/.claude/settings.json}"` writes settings.json. Anything else
-    (`${#X}`, `${X/a/b}`, unknown names) stays as written."""
+    (`${#X}`, `${X/a/b}`, unknown names) stays as written. `assign` records
+    what `${NAME:=word}` assigns, which later expansions then see."""
     out: list[str] = []
     index = 0
     while index < len(text):
@@ -665,7 +703,7 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
                 out.append(text[index:])
                 break
             out.append(_expand_braced(text[index + 2:end], text[index:end + 1], value,
-                                      at_start and index == 0))
+                                      at_start and index == 0, assign))
             index = end + 1
             continue
         name = _NAME.match(text, index + 1) if text[index] == "$" else None
@@ -723,7 +761,7 @@ def _closing_brace(text: str, start: int) -> int | None:
 
 
 def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | None],
-                   at_start: bool) -> str:
+                   at_start: bool, assign: _Assigner | None = None) -> str:
     if _NAME.fullmatch(body) or body.isdigit() or body in ("@", "*"):
         found = value(body, at_start)
         return original if found is None else found
@@ -749,17 +787,19 @@ def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | 
         current = value(name.group(0), False) if name else None
         if current is None:
             return original
-        result = shell_params.apply(current, _expand_text(body[name.end():], value, False))
+        result = shell_params.apply(current, _expand_text(body[name.end():], value, False, assign))
         return original if result is None else result
     name, op, word = match.groups()
     current = value(name, False)
     if op.endswith("?"):
         return original if current is None else current
-    alternative = _expand_text(word, value, at_start)
+    alternative = _expand_text(word, value, at_start, assign)
     set_and_used = current is not None and (current != "" or not op.startswith(":"))
     if op.endswith("+"):
         # Unknown NAME may be set: the alternate word is the value to check.
         return alternative if current is None or set_and_used else ""
+    if op.endswith("=") and not set_and_used and assign is not None:
+        assign(name, alternative, current is not None)
     return current if set_and_used else alternative
 
 
@@ -806,11 +846,13 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
     return rest, tuple(assignments)
 
 
-def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context) -> None:
+def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
+                      environment: tuple[str, ...] = ()) -> None:
     """Builtins that set or clear a variable: `printf -v X FMT ARGS`, `unset X`,
-    `set -- ARGS`, `read X <<< TEXT`."""
+    `set -- ARGS`, `read X <<< TEXT`. `environment` is the command's own
+    prefix assignments (`IFS=, read A B`)."""
     if argv and argv[0] == "read":
-        _read_builtin(argv[1:], redirects, ctx)
+        _read_builtin(argv[1:], redirects, ctx, _ifs_values(ctx, environment))
     elif len(argv) >= 2 and argv[0] in ("for", "select") and _NAME.fullmatch(argv[1]):
         # `for X in a b; do ... done`: X takes each word, or keeps its value if the
         # list is empty. Without `in`, the words are the positional parameters.
@@ -842,9 +884,10 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context)
 _READ_OPTIONS_WITH_VALUE = frozenset({"-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"})
 
 
-def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> None:
-    """`read A B <<< "x y z"` sets A=x, B="y z". Input that is not literal text
-    (a pipe, a file, the terminal) makes the variables unknown."""
+def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs_values: tuple[str, ...]) -> None:
+    """`read A B <<< "x y z"` sets A=x, B="y z", splitting by each value IFS may
+    hold. Input that is not literal text (a pipe, the terminal) makes the
+    variables unknown."""
     names: list[str] = []
     delimiter = "\n"
     index = 0
@@ -876,20 +919,24 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> 
         for name in names:
             ctx.variables.pop(name, None)
         return
-    if array:
-        # `read -a X <<< "a b"`: X[0]=a, X[1]=b (and $X is X[0]).
-        name = names[0]
-        for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
-            ctx.variables.pop(key)
-        for position, item in enumerate(text.split(delimiter, 1)[0].split()):
-            _assign(f"{name}[{position}]={item}", ctx.variables, ctx.conditional)
-        return
     line = text.split(delimiter, 1)[0]
     if "-r" not in args:
         line = re.sub(r"\\(.)", r"\1", line)  # without -r, a backslash escapes the next character
-    fields = line.split(maxsplit=len(names) - 1) if len(names) > 1 else [line.strip()]
-    for position, name in enumerate(names):
-        _assign(f"{name}={fields[position] if position < len(fields) else ''}", ctx.variables, ctx.conditional)
+    for reading, ifs in enumerate(ifs_values):
+        # Another possible IFS gives another possible value; earlier readings stay possible.
+        keep = ctx.conditional or reading > 0
+        if array:
+            # `read -a X <<< "a b"`: X[0]=a, X[1]=b (and $X is X[0]).
+            name = names[0]
+            if reading == 0:
+                for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
+                    ctx.variables.pop(key)
+            for position, item in enumerate(shell_ifs.split(line, ifs)):
+                _assign(f"{name}[{position}]={item}", ctx.variables, keep)
+            continue
+        fields = shell_ifs.split(line, ifs, len(names))
+        for position, name in enumerate(names):
+            _assign(f"{name}={fields[position] if position < len(fields) else ''}", ctx.variables, keep)
 
 
 def _set_positionals(args: list[str]) -> list[str] | None:
