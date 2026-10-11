@@ -327,21 +327,17 @@ def _read_assign(args: list[str], options: dict[str, str], names: list[str], del
         for name in names:
             ctx.variables.pop(name, None)
         return
+    # `-n K`: at most K characters of the line; `-N K`: exactly K, delimiter or not.
+    limit = int(options[count_option]) if count_option else None
+    line, consumed = _read_line(text, delimiter, raw="r" in options, limit=limit, whole=count_option == "N")
     if persisted is not None:
-        # Reading from a descriptor `exec` opened takes the line off it.
-        size = int(options["N"]) if count_option == "N" else text.find(delimiter) + 1 or len(text)
-        _assign(f"{DESCRIPTOR}{persisted}={text[size:]}", ctx.variables, ctx.conditional)
+        # Reading from a descriptor `exec` opened takes what was read off it.
+        _assign(f"{DESCRIPTOR}{persisted}={text[consumed:]}", ctx.variables, ctx.conditional)
     if count_option == "N":
-        # `-N K`: exactly K characters, delimiter or not, and no field splitting.
-        line = text[:int(options["N"])]
-        if "r" not in options:
-            line = re.sub(r"\\(.)", r"\1", line)
+        # No field splitting: the first name takes it all.
         for position, name in enumerate(names):
             _assign(f"{name}={line if position == 0 else ''}", ctx.variables, ctx.conditional)
         return
-    line = _read_line(text, delimiter, raw="r" in options)
-    if count_option == "n":
-        line = line[:int(options["n"])]  # `-n K`: at most K characters of the line
     for reading, ifs in enumerate(ifs_values):
         # Another possible IFS gives another possible value; earlier readings stay possible.
         keep = ctx.conditional or reading > 0
@@ -565,26 +561,28 @@ def _mapfile_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) 
         _assign(f"{name}[{position}]={line}", ctx.variables, ctx.conditional)
 
 
-def _read_line(text: str, delimiter: str, raw: bool) -> str:
-    """The line `read` takes from `text`: up to the first delimiter. Without -r
-    a backslash escapes the next character, an escaped delimiter does not end
-    the line, and backslash-newline joins the next line (`r\\<newline>m` is rm)."""
-    if raw:
-        return text.split(delimiter, 1)[0]
+def _read_line(text: str, delimiter: str, raw: bool, limit: int | None = None,
+               whole: bool = False) -> tuple[str, int]:
+    """The line `read` takes from `text` and how many characters of input it
+    consumes: up to and including the first delimiter. Without -r a backslash
+    escapes the next character, an escaped delimiter does not end the line,
+    and backslash-newline joins the next line (`r\\<newline>m` is rm).
+    `limit` stops after that many characters of the line (`-n K`, an escape
+    counts once); `whole` also reads past delimiters (`-N K`)."""
     out: list[str] = []
     index = 0
-    while index < len(text):
+    while index < len(text) and (limit is None or len(out) < limit):
         char = text[index]
-        if char == "\\" and index + 1 < len(text):
+        if not raw and char == "\\" and index + 1 < len(text):
             if text[index + 1] != "\n":
                 out.append(text[index + 1])
             index += 2
             continue
-        if char == delimiter:
+        index += 1
+        if char == delimiter and not whole:
             break
         out.append(char)
-        index += 1
-    return "".join(out)
+    return "".join(out), index
 
 
 def _set_positionals(args: list[str]) -> list[str] | None:

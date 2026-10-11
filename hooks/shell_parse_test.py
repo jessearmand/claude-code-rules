@@ -164,6 +164,9 @@ def main() -> int:
     argv = [c.argv for c in parse("read X 3<<< no <<< yes; echo $X; exec 3<<<a; exec 3<&-; read -u 3 Y; echo $Y",
                                   "/").commands if c.name == "echo"]
     _check(argv == [("echo", "yes"), ("echo", "$Y")], f"descriptors: 3<<< is not stdin; 3<&- closes: {argv}", failures)
+    argv = [c.argv for c in parse("exec 3<<<$'a\\\\bcd\\nefg'; read -u3 -n2 X; read -u3 Y; read -u3 -N2 Z; echo $X $Y $Z",
+                                  "/").commands if c.name == "echo"]
+    _check(argv == [("echo", "ab", "cd", "ef")], f"read -n/-N take K characters, an escape counts once: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

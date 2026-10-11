@@ -197,6 +197,8 @@ SHOULD_BLOCK = [
     "X=(rm -rf victim); \"${X[@]}\"",  # every element as its own word
     "exec 3<<<$'\\x72m'; read -u 3 X; \"$X\" -rf victim",  # descriptors exec opened (PR review)
     "exec 3<<<$'echo\\nrm'; read -u 3 A; read -u 3 B; \"$B\" -rf victim",
+    "exec 3<<<$'erm\\necho\\n'; read -u3 -n1 D; read -u3 X; \"$X\" -rf victim",  # -n K takes K characters
+    "exec 3<<<$'e\\\\rm\\n'; read -u3 -N1 D; read -u3 X; \"$X\" -rf victim",
     "exec <<< rm; read X; $X -rf victim",
     "exec 4<<<rm; read X <&4; $X -rf victim",
     "X[0]=echo; read 'X[0]' <<< rm; \"${X[0]}\" -rf victim",  # read into an element (PR review)
