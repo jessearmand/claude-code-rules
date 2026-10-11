@@ -94,6 +94,7 @@ from shell_model import (
     _positionals,
     _settings,
     _target_name,
+    _Trap,
     _variable_keys,
     program_name,
 )
@@ -286,11 +287,32 @@ def _run_exit_traps(ctx: _Context) -> None:
     """Check the shell's trap handlers again with the state it exits in:
     `X=echo; trap '"$X" -rf v' EXIT; X=rm` runs rm. They run in a scope of
     their own, so nothing after them sees their assignments."""
-    handlers, ctx.trap_frames[-1] = ctx.trap_frames[-1], []
-    for handler, via, depth, indirect in handlers:
-        saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
-        _parse_into(handler, ctx, via, depth, indirect, shares_shell=True)
-        ctx.cwd, ctx.cwd_options, ctx.variables = saved
+    traps, ctx.trap_frames[-1] = ctx.trap_frames[-1], []
+    for trap in traps:
+        if trap.on_exit:
+            _check_trap(trap, "on exit", ctx)
+
+
+def _run_signal_traps(ctx: _Context) -> None:
+    """Check this shell's signal handlers again when the variables changed since
+    they were last checked: `X=echo; trap '$X reset --hard' TERM; X=git; kill
+    -TERM $$` runs git, and a signal may arrive after any command."""
+    if ctx.trapping:
+        return
+    for trap in ctx.trap_frames[-1]:
+        if trap.on_signal and trap.checked != ctx.variables:
+            trap.checked = dict(ctx.variables)
+            _check_trap(trap, "on signal", ctx)
+
+
+def _check_trap(trap: _Trap, label: str, ctx: _Context) -> None:
+    """Parse a trap handler in a scope of its own, as a run that may not happen."""
+    saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables), ctx.conditional, ctx.trapping)
+    ctx.conditional = ctx.trapping = True
+    try:
+        _parse_into(trap.handler, ctx, (*trap.via, f"trap ({label})"), trap.depth, trap.indirect, shares_shell=True)
+    finally:
+        ctx.cwd, ctx.cwd_options, ctx.variables, ctx.conditional, ctx.trapping = saved
 
 
 class _FunctionHeader:
@@ -354,6 +376,13 @@ def _track_blocks(tokens: list, blocks: int) -> int:
 
 def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
              pipeline: int, stage: int) -> None:
+    """Run one simple command, then the signal handlers that may run after it."""
+    _segment_variants(tokens, ctx, via, depth, indirect, pipeline, stage)
+    _run_signal_traps(ctx)
+
+
+def _segment_variants(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
+                      pipeline: int, stage: int) -> None:
     """Run one simple command: once per combination of values its variables may hold
     (`P=a || P=b; cat > "$P"` may write a or b)."""
     _run_substitutions(tokens, ctx, via, depth, indirect)
@@ -663,10 +692,15 @@ def _replay_body(body: list[_BodyStep], command: SimpleCommand, ctx: _Context, d
                      ctx.next_pipeline(), 0)
             if saved:
                 ctx.cwd, ctx.cwd_options, ctx.variables = saved
-            if ctx.returned and not step.isolated:
-                if not step.conditional:
-                    break  # `return`: nothing after it in the body runs
+            if (ctx.returned or ctx.exited) and not step.isolated:
+                if not step.conditional and not may_have_returned:
+                    break  # `return` / `exit`: nothing after it in the body runs
+                # One that may not have run (`false && exit`) leaves the rest possible,
+                # in the body and, for `exit`, in the caller.
+                ctx.exited = False
                 may_have_returned = True
+            elif step.isolated:
+                ctx.exited = False  # `exit` in a pipeline stage ends only that subshell
     finally:
         # `local` variables give the caller its own values back.
         for name in ctx.local_scopes.pop():

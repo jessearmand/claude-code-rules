@@ -23,6 +23,8 @@ CASES = [
     ("git reset --hard HEAD~3", "deny", "git-reset-hard"),
     ("git reset --merge", "deny", "git-reset-hard"),
     ("git -C ../other reset --hard", "deny", "git-reset-hard"),
+    # A signal handler runs when the signal arrives, with the state then (PR review).
+    ("X=echo; trap '$X reset --hard' TERM; X=git; kill -TERM $$; X=echo", "deny", "git-reset-hard"),
     ("git reset --soft HEAD~1", None, None),
     ("git checkout -- src/app.py", "deny", "git-checkout-discard"),
     ("git checkout .", "deny", "git-checkout-discard"),

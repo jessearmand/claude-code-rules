@@ -190,6 +190,8 @@ SHOULD_BLOCK = [
     "X=r''m; read -t0 X <<<echo; \"$X\" -rf victim",  # read -t 0 assigns nothing (PR review)
     "X=rm; read -t \"$T\" X <<<echo; $X -rf victim",
     "X=echo; trap '\"$X\" -rf victim' EXIT; X=r; X+=m; exit; X=echo",  # exit ends the shell (PR review)
+    "f(){ false && exit; }; f; rm -rf victim",  # an exit that may not run ends nothing (PR review)
+    "X=echo; trap '\"$X\" -rf victim' USR1; X=r; X+=m; kill -USR1 $$; X=echo",  # signal traps (PR review)
     "X=r; X+=m; coproc X=echo; \"$X\" -rf victim",  # coproc runs on its own (PR review)
     "X=r; X+=m; coproc name { X=echo; }; \"$X\" -rf victim",
     "X=(r m); ${X[-2]}${X[-1]} -rf victim",  # negative and arithmetic subscripts (PR review)

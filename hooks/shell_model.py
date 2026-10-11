@@ -174,6 +174,20 @@ SourceResolver = Callable[[SimpleCommand, str, "dict[str, WrittenFile]"], "list[
 _MAX_CWD_OPTIONS = 8
 
 
+@dataclass
+class _Trap:
+    """A handler `trap` installed in a shell."""
+
+    handler: str
+    via: tuple[str, ...]
+    depth: int
+    indirect: bool
+    on_exit: bool  # EXIT (or 0): runs when the shell ends
+    on_signal: bool  # any other condition: may run after any later command
+    # The variable table it was last checked with; checked again when that changes.
+    checked: dict[str, tuple[str, ...]] | None = None
+
+
 @dataclass(frozen=True)
 class _BodyStep:
     """One command of a function body, as declared."""
@@ -217,9 +231,9 @@ class _Context:
     returned: bool = False
     # An `exit` ran: the shell it ends stops there (its EXIT traps then run).
     exited: bool = False
-    # Per shell, innermost last: trap handlers to check again when it exits,
-    # as (handler, via, depth, indirect).
-    trap_frames: list[list[tuple[str, tuple[str, ...], int, bool]]] = field(default_factory=lambda: [[]])
+    # Per shell, innermost last: the trap handlers it installed.
+    trap_frames: list[list[_Trap]] = field(default_factory=lambda: [[]])
+    trapping: bool = False  # a signal handler is being checked (no re-entry)
 
     def next_pipeline(self) -> int:
         self.pipeline_counter[0] += 1

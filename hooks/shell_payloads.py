@@ -29,6 +29,7 @@ from shell_model import (
     SOURCE_TOO_LARGE,
     SimpleCommand,
     _Context,
+    _Trap,
 )
 from shell_state import _MAPFILE_WITH_VALUE
 from shell_streams import (
@@ -87,9 +88,12 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
         if handler:
             # `trap 'CMD' EXIT`: the shell runs CMD later, on the signal. It is checked
             # now, but what it assigns must not change the commands that run before;
-            # and again when the shell exits, with the variables it has then.
+            # then again when the shell exits (EXIT), or after each later command
+            # that changes the variables (a signal may arrive at any point).
             nested(handler, "trap")
-            ctx.trap_frames[-1].append((handler, (*via, "trap (on exit)"), depth + 1, indirect))
+            exits = [s.upper().removeprefix("SIG") in ("EXIT", "0") for s in _trap_signals(args)]
+            ctx.trap_frames[-1].append(_Trap(handler, (*via, "trap"), depth + 1, indirect, on_exit=any(exits),
+                                             on_signal=not all(exits), checked=dict(ctx.variables)))
     elif name in ("mapfile", "readarray"):
         callback = _mapfile_callback(args)
         if callback:
@@ -247,6 +251,12 @@ def _trap_handler(args: list[str]) -> str | None:
     if len(operands) < 2 or operands[0] in ("-", ""):
         return None
     return operands[0]
+
+
+def _trap_signals(args: list[str]) -> list[str]:
+    """The conditions `trap CODE SIGNAL...` installs CODE for."""
+    operands = args[1:] if args[:1] == ["--"] else args
+    return operands[1:]
 
 
 def _mapfile_callback(args: list[str]) -> str | None:
