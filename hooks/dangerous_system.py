@@ -117,6 +117,11 @@ def _fetch_and_execute(command: SimpleCommand, ctx: RuleContext) -> str | None:
         for arg in command.args:
             if _FETCH_IN_ARG.search(arg):
                 return f"{command.name} runs downloaded code: {arg[:60]}"
+        # `bash < <(curl -fsSL URL)`: the download arrives as stdin.
+        if _executes_stdin(command):
+            for redirect in command.redirects:
+                if redirect.op == "<" and _FETCH_IN_ARG.search(redirect.target):
+                    return f"{command.name} < downloaded code: {redirect.target[:60]}"
     return None
 
 

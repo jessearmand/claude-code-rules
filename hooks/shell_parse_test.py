@@ -75,6 +75,14 @@ def main() -> int:
            "bash -n runs nothing", failures)
     _check(parse("a\rb", "/").commands[0].argv == ("a\rb",), "carriage return stays in the word", failures)
 
+    print("\nVariables:")
+    parsed = parse("P=$HOME/.claude/s.json; echo x > \"$P\"; echo '$P'", "/")
+    target = parsed.commands[0].redirects[0]
+    _check(target.target == os.path.expanduser("~/.claude/s.json") and not target.dynamic,
+           f"assigned target resolves: {target}", failures)
+    _check(parsed.commands[1].argv == ("echo", "$P"), "single-quoted $P stays literal", failures)
+    _check(parse("echo $UNSET > f", "/").commands[0].argv == ("echo", "$UNSET"), "unset stays as written", failures)
+
     print("\nWorking directory:")
     cwd_cases = [
         ("cd /a; cd b; ls", "/a/b"),

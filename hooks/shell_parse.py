@@ -47,7 +47,8 @@ from shell_wrappers import (
 MAX_DEPTH = 6
 _MAX_UNWRAP = 16
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
-_VARIABLE_REF = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$")
+_PARAMETER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_UNRESOLVED = re.compile(r"\$|`")
 _SEPARATORS = frozenset({"&&", "||", ";", ";;", ";&", ";;&", "&", "\n", "(", ")"})
 _PIPES = frozenset({"|", "|&"})
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
@@ -232,25 +233,47 @@ def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indi
         if isinstance(token, Operator) and token.op in REDIRECT_OPERATORS:
             target = tokens[index + 1] if index + 1 < len(tokens) else None
             if isinstance(target, Word):
-                redirects.append(Redirect(token.op, target.text, target.dynamic,
-                                          target.heredoc_body if token.op in HEREDOC_OPERATORS else None))
+                if token.op in HEREDOC_OPERATORS:
+                    redirects.append(Redirect(token.op, target.text, False, target.heredoc_body))
+                else:
+                    expanded = _expand_word(target, ctx)
+                    redirects.append(Redirect(token.op, expanded.text, expanded.dynamic))
                 index += 2
                 continue
         elif isinstance(token, Word):
-            words.append(token)
+            words.append(_expand_word(token, ctx))
         index += 1
 
     words = _strip_prelude(words, ctx)
     if not words:
         return
-    head = words[0]
     argv = [w.text for w in words]
-    dynamic_head = head.dynamic
-    resolved = _resolve_variable(head, ctx)
-    if resolved is not None:
-        argv[0], dynamic_head = resolved, False
+    _emit(argv, tuple(redirects), ctx, via, depth, indirect, pipeline, stage, words[0].dynamic, ())
 
-    _emit(argv, tuple(redirects), ctx, via, depth, indirect, pipeline, stage, dynamic_head, ())
+
+def _expand_word(word: Word, ctx: _Context) -> Word:
+    """Substitute parameters whose value is known at this point in the line.
+
+    `P=$HOME/.claude/settings.json; echo x > "$P"` writes a known path; so
+    does `X=rm; $X -rf ~`. A word that still holds an expansion afterwards
+    (an unset variable, `${X:-d}`, `$(...)`) stays dynamic.
+    """
+    if not word.dynamic:
+        return word
+
+    def value(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2)
+        if name in ctx.variables:
+            return ctx.variables[name]
+        if name == "HOME":
+            return os.path.expanduser("~")
+        if name == "PWD" and ctx.cwd is not None:
+            return ctx.cwd
+        return match.group(0)
+
+    text = _PARAMETER.sub(value, word.text)
+    return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted,
+                heredoc_body=word.heredoc_body)
 
 
 def _strip_prelude(words: list[Word], ctx: _Context) -> list[Word]:
@@ -263,9 +286,7 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> list[Word]:
         if reserved or time_flag:
             index += 1
         elif _ASSIGNMENT.match(word.text):
-            name, _, value = word.text.partition("=")
-            if not word.dynamic:
-                ctx.variables[name.rstrip("+")] = value
+            _assign(word.text, ctx)
             index += 1
         else:
             break
@@ -273,17 +294,18 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> list[Word]:
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
         for word in rest[1:]:
-            if _ASSIGNMENT.match(word.text) and not word.dynamic:
-                name, _, value = word.text.partition("=")
-                ctx.variables[name.rstrip("+")] = value
+            if _ASSIGNMENT.match(word.text):
+                _assign(word.text, ctx)
     return rest
 
 
-def _resolve_variable(word: Word, ctx: _Context) -> str | None:
-    match = _VARIABLE_REF.match(word.text)
-    if not match:
-        return None
-    return ctx.variables.get(match.group(1) or match.group(2))
+def _assign(text: str, ctx: _Context) -> None:
+    """Remember `NAME=value` (already expanded); `NAME+=value` appends."""
+    name, _, value = text.partition("=")
+    if name.endswith("+"):
+        name = name[:-1]
+        value = ctx.variables.get(name, "") + value
+    ctx.variables[name.split("[", 1)[0]] = value
 
 
 # --------------------------------------------------------------------------- #
@@ -538,9 +560,11 @@ def _long_command(args: list[str]) -> str | None:
 
 def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
                    nested: Callable[..., None]) -> None:
-    """`bash -c STR`, `bash <<EOF`, `bash <<< STR`, `echo STR | bash`."""
+    """`bash -c STR`, and a script read from stdin: `bash <<EOF`, `bash <<< STR`,
+    `bash < file`, `echo STR | bash`, `cat file | bash`, `bash -s args < file`."""
     index = 0
     runs_string = False
+    reads_stdin = False  # `-s`: the script comes from stdin; positionals are its $1...
     while index < len(args):
         arg = args[index]
         if arg == "--":
@@ -555,6 +579,8 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
             runs_string = True
             index += 1
             continue
+        if arg.startswith("-") and not arg.startswith("--") and "s" in arg[1:]:
+            reads_stdin = True
         if arg.startswith(("-", "+")) and arg not in ("-", "+"):
             index += 1
             continue
@@ -564,13 +590,16 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         if positionals:
             nested(_bind_positionals(positionals[0], positionals[1:]), f"{command.name} -c")
         return
-    if positionals and positionals[0] != "-":
+    if positionals and positionals[0] != "-" and not reads_stdin:
         return  # a script file; shell_sources resolves it when enabled
     for redirect in command.redirects:
         if redirect.op in HEREDOC_OPERATORS and redirect.body is not None:
             nested(redirect.body, f"{command.name} <<heredoc")
         elif redirect.op == "<<<":
             nested(redirect.target, f"{command.name} <<<")
+        elif redirect.op == "<" and not redirect.dynamic:
+            # `bash < script.sh` runs the file just like `bash script.sh`.
+            _run_file(redirect.target, command, ctx, nested)
     feeder = ctx.result.previous_stage(command)
     if feeder is None or feeder.dynamic_head:
         return
@@ -578,12 +607,18 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         text = _echoed_text(feeder)
         if text:
             nested(text, f"{feeder.name} | {command.name}")
-    elif feeder.name == "cat" and len(feeder.args) == 1 and ctx.sources is not None:
+    elif feeder.name == "cat" and len(feeder.args) == 1:
         # `cat script.sh | bash` runs the file just like `bash script.sh`.
-        as_script = SimpleCommand((command.argv[0], feeder.args[0]), indirect=command.indirect,
-                                  cwd=feeder.cwd)
-        for text, label in ctx.sources(as_script, command.cwd, ctx.written_files) if command.cwd else ():
-            nested(text, label, not label.startswith("written "))
+        _run_file(feeder.args[0], command, ctx, nested)
+
+
+def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None]) -> None:
+    """Parse a file a shell reads as its program, via the source resolver."""
+    if ctx.sources is None or shell.cwd is None:
+        return
+    as_script = SimpleCommand((shell.argv[0], path), indirect=shell.indirect, cwd=shell.cwd)
+    for text, label in ctx.sources(as_script, shell.cwd, ctx.written_files):
+        nested(text, label, not label.startswith("written "))
 
 
 _POSITIONAL = re.compile(r'"\$\{?(\d)\}?"|\$\{(\d+)\}|\$(\d)|"\$[@*]"|\$[@*]')

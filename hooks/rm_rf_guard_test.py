@@ -72,6 +72,7 @@ SHOULD_BLOCK = [
     "cat <<EOF\n$(rm -rf build)\nEOF",
     # Computed command names.
     "X=rm; $X -rf ~",
+    "T=$HOME; rm -rf \"$T\"",
     "$(which rm) -rf build",
     "f(){ rm -rf ~; }; f",
     "$'\\x72m' -rf build",
@@ -236,6 +237,11 @@ def main() -> int:
         for command in ("./clean.sh", "bash clean.sh", "source clean.sh", "npm run build", "make", "make clean"):
             decision = _decision(_run_hook(command, project))
             _check(decision == "ask", f"{command} -> {decision}", failures)
+        for command in ("bash < clean.sh", "sh -s -- --verbose < clean.sh", "cat clean.sh | bash"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == "ask", f"script on stdin (PR review): {command} -> {decision}", failures)
+        decision = _decision(_run_hook("bash -n < clean.sh", project))
+        _check(decision is None, f"bash -n < clean.sh only checks syntax -> {decision}", failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)
