@@ -94,6 +94,8 @@ def main() -> int:
            f"assigned target resolves: {target}", failures)
     _check(parsed.commands[1].argv == ("echo", "$P"), "single-quoted $P stays literal", failures)
     _check(parse("echo $UNSET > f", "/").commands[0].argv == ("echo", "$UNSET"), "unset stays as written", failures)
+    argv = parse("X=r; Y='a b'; echo $X'm' \"$X\"m '$X'm $Y'' \"$Y\"", "/").commands[-1].argv
+    _check(argv == ("echo", "rm", "rm", "$Xm", "a", "b", "a b"), f"quote boundaries and splitting: {argv}", failures)
 
     print("\nWorking directory:")
     cwd_cases = [

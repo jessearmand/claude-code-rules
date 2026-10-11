@@ -365,7 +365,7 @@ def _brace_expand(word: Word) -> list[Word]:
     texts = _expand_brace_text(word.text, frozenset(word.braces))
     if len(texts) == 1:
         return [word]
-    return [Word(text, dynamic=word.dynamic and bool(_UNRESOLVED.search(text)), quoted=word.quoted,
+    return [Word(text, dynamic=word.dynamic and bool(_UNRESOLVED.search(text)), quoted=word.quoted, splits=word.splits,
                  substitutions=word.substitutions if index == 0 else [])
             for index, text in enumerate(texts[:_MAX_BRACE_WORDS])]
 
@@ -403,7 +403,7 @@ def _expand_brace_text(text: str, active: frozenset[int]) -> list[str]:
 def _split_unquoted(original: Word, expanded: Word) -> list[Word]:
     """Word splitting: an unquoted expansion holding spaces becomes several words
     (`X='rm -rf ~'; $X` runs rm with two arguments). Quoted `"$X"` stays one."""
-    if original.quoted or not original.dynamic or expanded.text == original.text:
+    if not original.splits or not original.dynamic or expanded.text == original.text:
         return [expanded]
     parts = expanded.text.split()
     if len(parts) <= 1:
@@ -440,7 +440,7 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
         return None
 
     text = _expand_text(word.text, value, at_start=True)
-    return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted,
+    return Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=word.quoted, splits=word.splits,
                 heredoc_body=word.heredoc_body, substitutions=word.substitutions)
 
 

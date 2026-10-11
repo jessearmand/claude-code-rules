@@ -95,6 +95,10 @@ SHOULD_BLOCK = [
     "bash <(printf 'rm -rf ~/victim')",
     "bash < <(echo 'rm -rf ~/victim')",
     "{rm,-rf,$HOME/victim}",
+    # Quote boundaries inside a word (PR review).
+    "X=r; $X'm' -rf victim",
+    "X=r; \"$X\"m -rf victim",
+    "X='rm -rf victim'; $X''",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",

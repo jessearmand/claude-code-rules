@@ -170,6 +170,8 @@ def main() -> int:
         try:
             _check(_bash(f"echo x > {config_dir}/anything.json", project)[0] == "deny",
                    "CLAUDE_CONFIG_DIR is protected", failures)
+            _check(_bash('printf x > "$CLAUDE_CONFIG_DIR/settings.json"', project)[0] == "deny",
+                   "an inherited $CLAUDE_CONFIG_DIR resolves (PR review)", failures)
         finally:
             del os.environ["CLAUDE_CONFIG_DIR"]
 

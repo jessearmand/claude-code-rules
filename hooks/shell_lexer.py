@@ -19,6 +19,7 @@ flagged `dynamic` so a caller knows its runtime value is unknown.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Longest first, so `&&` wins over `&` and `<<-` over `<<`.
@@ -35,6 +36,9 @@ _ANSI_C_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "
                    "f": "\f", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
 
 
+_BARE_NAME_TAIL = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)$")
+
+
 @dataclass
 class Word:
     """A shell word after quote removal. `dynamic` means its runtime value is unknown."""
@@ -47,6 +51,8 @@ class Word:
     # <(...), and $(...) inside ${...}, $((...)) or an unquoted heredoc), in
     # order. They run when the command holding the word runs, not before.
     substitutions: list[str] = field(default_factory=list)
+    # An unquoted expansion (`$X`, not `"$X"`): its value is split into words.
+    splits: bool = False
     # Offsets in `text` of the unquoted `{`, `,` and `}`: only those take part in
     # brace expansion (`{rm,-rf,x}` is three words; `'{a,b}'` is one).
     braces: tuple[int, ...] = ()
@@ -130,7 +136,18 @@ class _Lexer:
 
     def _read_word(self) -> Word:
         parts: list[str] = []
+        # Whether each part can end in a bare `$NAME` (an expansion, or text in
+        # double quotes), so a following part must not extend the name.
+        expands: list[bool] = []
         word = Word("")
+
+        def add(text: str, expansion: bool = False) -> None:
+            if parts and expands[-1] and text[:1] and (text[0].isalnum() or text[0] == "_"):
+                # `$X'm'` is $X then m: write it `${X}m` so the name stays X.
+                parts[-1] = _BARE_NAME_TAIL.sub(r"${\1}", parts[-1])
+            parts.append(text)
+            expands.append(expansion)
+
         while self.i < self.n:
             c = self.s[self.i]
             if c in _METACHARACTERS:
@@ -140,24 +157,25 @@ class _Lexer:
                 if nxt == "\n":
                     self.i += 2
                     continue
-                parts.append(nxt)
+                add(nxt)
                 word.quoted = True
                 self.i += 2
             elif c == "'":
                 word.quoted = True
-                parts.append(self._single_quoted())
+                add(self._single_quoted())
             elif c == "$" and self._peek(1) == "'":
                 word.quoted = True
-                parts.append(self._ansi_c_quoted())
+                add(self._ansi_c_quoted())
             elif c == '"':
                 word.quoted = True
-                parts.append(self._double_quoted(word))
+                add(self._double_quoted(word), expansion=True)
             elif c in "$`":
-                parts.append(self._expansion(word))
+                word.splits = True
+                add(self._expansion(word), expansion=True)
             else:
                 if c in "{,}":
                     word.braces += (sum(map(len, parts)),)
-                parts.append(c)
+                add(c)
                 self.i += 1
         word.text = "".join(parts)
         return word

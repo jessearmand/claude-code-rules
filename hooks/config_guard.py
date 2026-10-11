@@ -237,17 +237,31 @@ def _check_into_dir(path: str, cwd: str) -> ConfigRule | None:
     return None
 
 
+_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _inherited(path: str) -> str:
+    """`$NAME` the command line does not set comes from the environment the agent
+    runs in, which this hook shares: `> "$CLAUDE_CONFIG_DIR/settings.json"`.
+    Resolved here, for the path check only, so values never reach a message."""
+    def value(match: re.Match[str]) -> str:
+        found = os.environ.get(match.group(1) or match.group(2))
+        return match.group(0) if found is None else found
+    return _VARIABLE.sub(value, path) if "$" in path else path
+
+
 def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: SimpleCommand) -> Finding | None:
     """Check one write as if its command runs in `directory` (None: unknown)."""
     uncertain = None
+    path = _inherited(write.path)
     if directory is None:
-        rule = _check_from_unknown_dir(write.path, cwd, write.action)
+        rule = _check_from_unknown_dir(path, cwd, write.action)
         uncertain = "relative to a directory set by a computed `cd`"
     elif write.action == INTO_DIR:
-        rule = _check_into_dir(write.path, directory)
+        rule = _check_into_dir(path, directory)
         uncertain = "copied into a protected directory under names that cannot be known"
     else:
-        rule = check_path(write.path, directory, write.action)
+        rule = check_path(path, directory, write.action)
     return Finding(rule, write.path, write.action, simple.indirect, uncertain) if rule else None
 
 
