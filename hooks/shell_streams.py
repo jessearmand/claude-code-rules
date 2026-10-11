@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import os
 
-import shell_printf
+from shell_expand import command_output
 from shell_model import (
+    SHELL_OPTION,
     ParseResult,
     _Context,
 )
@@ -36,10 +37,17 @@ def _input_file_text(path: str, ctx: _Context) -> str | None:
 
 def _produced_text(operand: str, ctx: _Context) -> str | None:
     """What `<(producer)` prints, when every command in it prints known text."""
-    from shell_parse import parse  # re-entry: parsed as a command list
     if not (operand.startswith("<(") and operand.endswith(")")):
         return None
-    return _producer_output(parse(operand[2:-1], ctx.cwd or "/"), ctx)
+    return _producer_output(parse_producer(operand, ctx.cwd, ctx), ctx)
+
+
+def parse_producer(operand: str, cwd: str | None, ctx: _Context) -> ParseResult:
+    """The commands of `<(producer)`. They run in this shell's process
+    substitution, so its `shopt -s xpg_echo` applies to their echo."""
+    from shell_parse import parse  # re-entry: parsed as a command list
+    xpg = "on" in ctx.variables.get(SHELL_OPTION + "xpg_echo", ())
+    return parse(("shopt -s xpg_echo\n" if xpg else "") + operand[2:-1], cwd or "/")
 
 
 def _producer_output(producer: ParseResult, ctx: _Context) -> str | None:
@@ -50,11 +58,13 @@ def _producer_output(producer: ParseResult, ctx: _Context) -> str | None:
         return None
     parts: list[str] = []
     for command in producer.commands:
+        if command.name == "shopt":
+            continue  # the shell options the producer starts with
         if command.via or command.dynamic_head or command.redirects or any(
                 "$" in a or "`" in a for a in command.args):
             return None
         if command.name in ("echo", "printf"):
-            part = shell_printf.printed_text(command.name, command.args)
+            part = command_output(command)
         elif command.name == "cat" and command.args and not any(a.startswith("-") for a in command.args):
             texts = [_input_file_text(path, ctx) for path in command.args]
             part = None if any(t is None for t in texts) else "".join(texts)

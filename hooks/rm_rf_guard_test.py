@@ -181,6 +181,11 @@ SHOULD_BLOCK = [
     "X='a[$(rm -rf victim)]'; (( X ))",
     "X='\\x72\\x6d'; \"${X@E}\" -rf victim",  # ${X@E} expands escapes (PR review)
     "X=RM; ${X@L} -rf victim",
+    "shopt -s xpg_echo; bash < <(echo '\\0162\\0155 -rf victim')",  # xpg_echo (PR review)
+    "shopt -s xpg_echo; X=$(echo '\\0162\\0155'); $X -rf victim",
+    "sh -c \"echo '\\0162\\0155 -rf victim' | sh\"",  # sh's echo expands escapes
+    "sqlite3 db <<< '.system rm -rf victim'",  # sqlite3 .shell/.system (PR review)
+    "shopt -s lastpipe; printf r | read X; \"${X}m\" -rf victim",  # lastpipe (PR review)
     "X='a[$(rm -rf victim)]'; Y=X; let Y+1",
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return

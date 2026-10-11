@@ -62,6 +62,7 @@ from shell_expand import (
     _glob_words,
     _split_unquoted,
     _star_separator,
+    command_output,
     echoed_text,
 )
 from shell_lexer import HEREDOC_OPERATORS, REDIRECT_OPERATORS, Operator, Word, lex
@@ -72,6 +73,7 @@ from shell_model import (
     _POSITIONALS,
     _REFERENCE,
     MAX_DEPTH,
+    SHELL_OPTION,
     SOURCE_TOO_LARGE,
     UNSET,
     NestedSource,
@@ -184,6 +186,10 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                     # do not let its assignments or cd change the declaring shell.
                     functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name, []))
                 isolated = token.op in _PIPES or stage > 0 or token.op == "&"
+                if isolated and stage > 0 and token.op not in _PIPES and token.op != "&" \
+                        and "on" in ctx.variables.get(SHELL_OPTION + "lastpipe", ()):
+                    # `shopt -s lastpipe`: the last stage runs in this shell (`... | read X`).
+                    isolated = False
                 may_not_run = previous in _AND_OR or blocks > 0
                 if functions:
                     level = functions[-1][0]
@@ -389,7 +395,11 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
     words = _expand_alias(words, ctx, via, depth, indirect)
     if words is None:
         return
-    _builtin_mutation([word.text for word in words], redirects, ctx, environment)
+    ctx.piped_text = _piped_text(ctx, pipeline, stage)
+    try:
+        _builtin_mutation([word.text for word in words], redirects, ctx, environment)
+    finally:
+        ctx.piped_text = None
     words = _glob_words(words, ctx)
     if not words:
         if redirects:
@@ -400,6 +410,14 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
     argv = [w.text for w in words]
     _emit(argv, tuple(redirects), ctx, via, depth, indirect, pipeline, stage, words[0].dynamic, (),
           environment)
+
+
+def _piped_text(ctx: _Context, pipeline: int, stage: int) -> str | None:
+    """What the stage before this one prints, when it echoes known text."""
+    feeder = _feeder(ctx, pipeline, stage)
+    if feeder is None or feeder.dynamic_head or feeder.via or feeder.redirects:
+        return None
+    return command_output(feeder) if feeder.name in ("echo", "printf") else None
 
 
 def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int,

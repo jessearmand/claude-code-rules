@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 
-import shell_printf
+from shell_expand import command_output
 from shell_lexer import HEREDOC_OPERATORS
 from shell_model import (
     SimpleCommand,
@@ -56,7 +56,7 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
     body = next((r.body + ("" if r.body.endswith("\n") else "\n") for r in command.redirects
                  if r.op in HEREDOC_OPERATORS and r.body is not None), None)
     if body is None and command.name in ("echo", "printf") and not command.dynamic_head:
-        body = shell_printf.printed_text(command.name, command.args)
+        body = command_output(command)
     directories = [d for d in command.possible_cwds if d is not None]
     if body is None or not directories:
         return

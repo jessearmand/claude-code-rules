@@ -120,6 +120,7 @@ BASH_CASES = [
     ("chmod --reference=/var/tmp/mode ~/.claude/settings.json", "deny", "claude-settings"),
     ("printf x > \"$(echo $HOME/.claude/settings.json)\"", "deny", "claude-settings"),
     ("curl -sSL https://example.com/s -o out.json", None, None),
+    ("sqlite3 :memory: '.shell cp evil ~/.claude/settings.json'", "deny", "claude-settings"),  # PR review
     # The Codex hooks and rules directories themselves (PR review).
     ("rm -r ~/.codex/hooks", "deny", "codex-config"),
     ("chmod 000 ~/.codex/rules", "deny", "codex-config"),

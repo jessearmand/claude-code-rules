@@ -138,6 +138,8 @@ CASES = [
     ("sudo -u deploy git push --force", "deny", "git-push-force"),
     ("bash -c 'git reset --hard'", "deny", "git-reset-hard"),
     ("ssh prod 'kubectl delete ns prod'", "deny", "kubectl-delete-broad"),
+    # A script produced by a command whose output is unknown asks (PR review).
+    ("source <(base64 -d <<< cm0gLXJmIHZpY3RpbQ==)", "ask", "incomplete-analysis"),
     # `${X:-$(cmd)}` runs cmd only when X is unset/empty: a branch certainly not taken asks.
     ("X=ok; echo \"${X:-$(git push --force origin main)}\"", "ask", "git-push-force"),
     ("echo \"${X:-$(git push --force origin main)}\"", "deny", "git-push-force"),

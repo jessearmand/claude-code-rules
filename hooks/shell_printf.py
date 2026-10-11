@@ -16,17 +16,19 @@ _SIMPLE_ESCAPES = {"\\": "\\", "n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": 
                    "v": "\v", '"': '"', "'": "'", "e": "\x1b", "E": "\x1b"}
 
 
-def printed_text(name: str, args: tuple[str, ...] | list[str]) -> str | None:
-    """What `name args...` writes to stdout, newlines included; None if unknown."""
+def printed_text(name: str, args: tuple[str, ...] | list[str], xpg_echo: bool = False) -> str | None:
+    """What `name args...` writes to stdout, newlines included; None if unknown.
+    `xpg_echo` (bash's `shopt -s xpg_echo`, and sh/dash): echo expands escapes
+    unless told `-E`."""
     if name == "echo":
-        return _echo(list(args))
+        return _echo(list(args), xpg_echo)
     if name == "printf":
         return _printf(list(args))
     return None
 
 
-def _echo(args: list[str]) -> str:
-    newline, escapes = True, False
+def _echo(args: list[str], xpg_echo: bool = False) -> str:
+    newline, escapes = True, xpg_echo
     while args and re.fullmatch(r"-[neE]+", args[0]):
         newline = newline and "n" not in args[0]
         escapes = ("e" in args[0]) if ("e" in args[0] or "E" in args[0]) else escapes

@@ -33,6 +33,7 @@ from shell_model import (
 from shell_state import _MAPFILE_WITH_VALUE
 from shell_streams import (
     _producer_output,
+    parse_producer,
 )
 from shell_unwrap import (
     _find_exec_commands,
@@ -64,6 +65,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
 
     if name in SHELLS:
         _shell_payload(command, args, ctx, nested)
+    elif name in ("sqlite3", "sqlite"):
+        for text in _sqlite_shell_commands(command):
+            nested(text, f"{name} .shell")
     elif inline_programs(name, command.args, command.redirects):
         for program in inline_programs(name, command.args, command.redirects):
             direct = direct_shell_strings(program, interpreter_kind(name))
@@ -153,8 +157,9 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         for path in command.env_values("BASH_ENV"):
             if path and "$" not in path:
                 _run_file(path, command, ctx, nested)
+    prelude = _option_prelude(command.name, args)
     for text in shell.commands:
-        nested(_bind_positionals(text, list(shell.command_args)), f"{command.name} -c")
+        nested(prelude + _bind_positionals(text, list(shell.command_args)), f"{command.name} -c")
     if shell.script:
         _produced_script(shell.script, command, ctx, nested)  # `bash <(echo CMD)`
     if not shell.reads_stdin:
@@ -181,25 +186,46 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         _run_file(feeder.args[0], command, ctx, nested)
 
 
+def _option_prelude(name: str, args: list[str]) -> str:
+    """Options a new shell starts with, as commands to parse first: dash's and
+    sh's echo always expands escapes, as does bash's with `-O xpg_echo`."""
+    xpg = name in ("sh", "dash", "ash") or any(
+        a == "xpg_echo" and i > 0 and args[i - 1] == "-O" or a == "-Oxpg_echo" for i, a in enumerate(args))
+    return "shopt -s xpg_echo\n" if xpg else ""
+
+
+_SQLITE_SHELL = re.compile(r"^\s*\.(?:shell|system)\s+(.+)$", re.MULTILINE)
+
+
+def _sqlite_shell_commands(command: SimpleCommand) -> list[str]:
+    """`.shell CMD` / `.system CMD` lines sqlite3 runs in a system shell, from its
+    SQL arguments, `-cmd` options, a heredoc or here-string."""
+    texts = [a for a in command.args if not a.startswith("-") or a.startswith("-cmd")]
+    texts += [r.body or "" for r in command.redirects if r.body] + [r.target for r in command.redirects if r.op == "<<<"]
+    return [m.group(1) for text in texts for m in _SQLITE_SHELL.finditer(text)]
+
+
 def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],
                      shares_shell: bool = False, return_boundary: bool = False) -> bool:
     """A script given as `<(producer)`: parse what the producer prints when that
     is known statically (`echo`/`printf` text, `cat FILE`), as one stream. False
     if `operand` is not a process substitution."""
-    from shell_parse import parse  # re-entry: parsed as a command list
     if not (operand.startswith("<(") and operand.endswith(")")):
         return False
-    producer = parse(operand[2:-1], shell.cwd or "/")
+    producer = parse_producer(operand, shell.cwd, ctx)
     output = _producer_output(producer, ctx)
-    label = f"{shell.name} <({'; '.join(c.name for c in producer.commands)})"
+    commands = [c for c in producer.commands if c.name != "shopt"]
+    label = f"{shell.name} <({'; '.join(c.name for c in commands)})"
     if output is not None:
         if output:
             nested(output, label, shares_shell=shares_shell, return_boundary=return_boundary)
         return True
-    if len(producer.commands) > 1:
-        # Where one command's output ends and the next one's begins is not known.
+    single_file = len(commands) == 1 and commands[0].name == "cat" and len(commands[0].args) == 1
+    if not single_file:
+        # A script whose text cannot be known (`<(base64 -d <<< ...)`, or where one
+        # command's output ends and the next begins): the analysis is incomplete.
         ctx.result.truncated = True
-    for command in producer.commands:
+    for command in commands:
         if command.via or command.dynamic_head:
             continue
         if command.name in ("echo", "printf"):

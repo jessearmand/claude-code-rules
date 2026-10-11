@@ -33,6 +33,9 @@ _FIELD = "\x1f"
 # Starts the value of a compound array assignment; the elements follow, _FIELD-separated.
 _ARRAY = "\x1e"
 
+# Shell options (`shopt -s xpg_echo`) live in the variable table under these
+# names, value "on", so commands carry them and subshells scope them.
+SHELL_OPTION = "\0shopt:"
 # A variable value meaning "may be unset" (`true || unset X`).
 UNSET = "\0unset"
 
@@ -88,6 +91,10 @@ class SimpleCommand:
 
     def origin(self) -> str:
         return " → ".join(self.via)
+
+    def option_on(self, name: str) -> bool:
+        """Whether shell option `name` (`shopt -s name`) may be on for this command."""
+        return "on" in self.env_values(SHELL_OPTION + name)
 
     def env_values(self, name: str) -> tuple[str, ...]:
         """Every value `name` may hold in this command's environment; () if unknown."""
@@ -191,6 +198,9 @@ class _Context:
     copies: dict[str, str] = field(default_factory=dict)
     # `hash -p /bin/rm x`: bare name -> the program it runs.
     hashed: dict[str, str] = field(default_factory=dict)
+    # What the previous pipeline stage prints, while a builtin in the next stage
+    # reads it (`printf r | read X`); None when not known.
+    piped_text: str | None = None
     # A `return` ran in the step being parsed; the enclosing function call or
     # sourced script decides what it ends.
     returned: bool = False

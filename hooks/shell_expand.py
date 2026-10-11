@@ -24,6 +24,7 @@ from shell_model import (
     _FIELD,
     _NAME,
     _UNRESOLVED,
+    SHELL_OPTION,
     UNSET,
     ParseResult,
     SimpleCommand,
@@ -303,7 +304,7 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
     out: list[str] = []
     index = 0
     while index < len(text):
-        literal = _literal_substitution(text, index)
+        literal = _literal_substitution(text, index, value(SHELL_OPTION + "xpg_echo", False) == "on")
         if literal is not None:
             # `$(printf git)` / `` `echo git` ``: the output of a literal echo is known.
             output, index = literal
@@ -331,7 +332,7 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
     return "".join(out)
 
 
-def _literal_substitution(text: str, index: int) -> tuple[str, int] | None:
+def _literal_substitution(text: str, index: int, xpg_echo: bool = False) -> tuple[str, int] | None:
     """(output, end) for a command substitution at `index` whose body only echoes
     literal text; trailing newlines are dropped, as bash does. None otherwise."""
     from shell_parse import parse  # re-entry: parsed as a command list
@@ -358,7 +359,7 @@ def _literal_substitution(text: str, index: int) -> tuple[str, int] | None:
             c.name not in ("echo", "printf") or c.dynamic_head or c.via or c.redirects
             or any("$" in a or "`" in a for a in c.argv) for c in producer.commands):
         return None
-    printed = [shell_printf.printed_text(c.name, c.args) for c in producer.commands]
+    printed = [shell_printf.printed_text(c.name, c.args, xpg_echo) for c in producer.commands]
     if any(p is None for p in printed):
         return None
     return "".join(printed).rstrip("\n"), end
@@ -458,5 +459,10 @@ def echoed_text(command: SimpleCommand) -> str:
 
 def _echoed_text(command: SimpleCommand) -> str:
     """What an echo/printf prints, trailing newlines dropped ("" if not modelled)."""
-    printed = shell_printf.printed_text(command.name, command.args)
+    printed = command_output(command)
     return printed.rstrip("\n") if printed is not None else ""
+
+
+def command_output(command: SimpleCommand) -> str | None:
+    """The exact bytes an echo/printf writes, honouring `shopt -s xpg_echo`."""
+    return shell_printf.printed_text(command.name, command.args, command.option_on("xpg_echo"))

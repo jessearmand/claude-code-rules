@@ -25,6 +25,7 @@ from shell_model import (
     _FIELD,
     _NAME,
     _POSITIONALS,
+    SHELL_OPTION,
     UNSET,
     Redirect,
     SimpleCommand,
@@ -232,6 +233,8 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
             ctx.variables.pop(target, None)  # a format we do not model: the value is unknown
     elif argv and argv[0] == "getopts" and len(argv) >= 3:
         _getopts_builtin(argv[1], argv[2], argv[3:], ctx)
+    elif argv and argv[0] == "shopt":
+        _shopt_builtin(argv[1:], ctx)
     elif argv and argv[0] == "hash":
         _hash_builtin(argv[1:], ctx)
     elif argv and argv[0] == "shift":
@@ -378,6 +381,17 @@ def _getopts_builtin(optstring: str, name: str, args: list[str], ctx: _Context) 
     _assign(f"{_GETOPTS_POSITION}={next_optind}:{next_offset}", ctx.variables, keep)
 
 
+def _shopt_builtin(args: list[str], ctx: _Context) -> None:
+    """`shopt -s NAME...` / `-u`: options that change what later commands do
+    (`xpg_echo`, `lastpipe`), kept in the variable table."""
+    flags = [a for a in args if a.startswith("-")]
+    setting = "on" if "-s" in flags else "off" if "-u" in flags else None
+    if setting is None or "-o" in flags:
+        return
+    for name in (a for a in args if not a.startswith("-")):
+        _assign(f"{SHELL_OPTION}{name}={setting}", ctx.variables, ctx.conditional)
+
+
 def _hash_builtin(args: list[str], ctx: _Context) -> None:
     """`hash -p PATH NAME...` makes NAME run PATH; `-d NAME` forgets it, `-r` all."""
     if "-r" in args:
@@ -406,6 +420,8 @@ def _stdin_text(redirects: list[Redirect], ctx: _Context) -> str | None:
     if text is None:
         text = next((t for r in redirects if r.op == "<" and not r.dynamic
                      and (t := _input_text(r.target, ctx)) is not None), None)
+    if text is None and not any(r.op in ("<", "<<<") or r.op in HEREDOC_OPERATORS for r in redirects):
+        text = ctx.piped_text  # `printf r | read X`
     return text
 
 
