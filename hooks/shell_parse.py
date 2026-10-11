@@ -226,6 +226,14 @@ class _Context:
     # Files this command line writes from literal text before running them:
     # `cat > x.sh <<'EOF' ... EOF; bash x.sh`. Absolute path -> content.
     written_files: dict[str, WrittenFile] = field(default_factory=dict)
+    # `alias x=/bin/rm`: name -> replacement text, expanded at the head of later commands.
+    aliases: dict[str, str] = field(default_factory=dict)
+    expanding: set[str] = field(default_factory=set)  # aliases being expanded (no recursion)
+    # `declare -n Y=X`: Y names X. `declare -l/-u X`: X's value is lower/upper-cased.
+    namerefs: dict[str, str] = field(default_factory=dict)
+    case_attributes: dict[str, str] = field(default_factory=dict)
+    # `cp /bin/rm x`: x is now that program (absolute paths); links are in result.links.
+    copies: dict[str, str] = field(default_factory=dict)
 
     def next_pipeline(self) -> int:
         self.pipeline_counter[0] += 1
@@ -448,6 +456,9 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
         index += 1
 
     words, environment = _strip_prelude(words, ctx)
+    words = _expand_alias(words, ctx, via, depth, indirect)
+    if words is None:
+        return
     _builtin_mutation([word.text for word in words], redirects, ctx, environment)
     words = _glob_words(words, ctx)
     if not words:
@@ -644,11 +655,12 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
                 # Inside a longer word: `"$@"m` with $1=r is rm.
                 return (_star_separator(ctx) if name == "*" else " ").join(params)
             return str(len(params)) if name == "#" else (params[int(name) - 1] if int(name) <= len(params) else "")
+        name = _target_name(name, ctx)
         if choice and name in choice:
-            return None if choice[name] == UNSET else choice[name]
+            return None if choice[name] == UNSET else _with_case(name, choice[name], ctx)
         if name in ctx.variables:
             current = ctx.variables[name][0]
-            return None if current == UNSET else current
+            return None if current == UNSET else _with_case(name, current, ctx)
         if "[" in name:
             return None
         if name == "HOME":
@@ -829,11 +841,11 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
     rest = words[index:]
     if not rest:
         for text in assignments:
-            _assign(text, ctx.variables, ctx.conditional)
+            _assign(_through_nameref(text, ctx), ctx.variables, ctx.conditional)
         return rest, ()
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
-        for word in rest[1:]:
+        for word in _declare_attributes(rest[0].text, rest[1:], ctx):
             if ctx.local_scopes and rest[0].text in ("local", "declare", "typeset"):
                 # Inside a function these shadow the caller's variable until it returns.
                 name = word.text.split("=", 1)[0].split("[", 1)[0].rstrip("+")
@@ -842,8 +854,108 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
                     if "=" not in word.text:
                         ctx.variables[name] = (UNSET,)  # `local X`: a new, unset X
             if _ASSIGNMENT.match(word.text):
-                _assign(word.text, ctx.variables, ctx.conditional)
+                _assign(_through_nameref(word.text, ctx), ctx.variables, ctx.conditional)
     return rest, tuple(assignments)
+
+
+def _through_nameref(text: str, ctx: _Context) -> str:
+    """`NAME=value` with NAME replaced by the variable it refers to (`declare -n`)."""
+    name, equals, value = text.partition("=")
+    base = name.split("[", 1)[0].rstrip("+")
+    target = _target_name(base, ctx)
+    return text if target == base else target + name[len(base):] + equals + value
+
+
+def _expand_alias(words: list[Word], ctx: _Context, via: tuple[str, ...], depth: int,
+                  indirect: bool) -> list[Word] | None:
+    """`alias x=/bin/rm; x -rf v` runs `/bin/rm -rf v`. Bash expands aliases only
+    with `expand_aliases` (sh, zsh and interactive shells always do), so a known
+    alias is applied whatever the mode. An alias that is a plain word list
+    replaces the command word; one holding operators or expansions is parsed as
+    command text with the arguments appended (None: nothing left to emit)."""
+    if not words or words[0].quoted or words[0].dynamic:
+        return words
+    name = words[0].text
+    if name not in ctx.aliases or name in ctx.expanding:
+        return words
+    replacement = ctx.aliases[name]
+    lexed = lex(replacement)
+    tokens = lexed.tokens
+    ctx.expanding.add(name)
+    try:
+        if tokens and not lexed.unterminated and not lexed.substitutions and all(isinstance(t, Word) and not t.dynamic for t in tokens):
+            return _expand_alias([*tokens, *words[1:]], ctx, via, depth, indirect)
+        _parse_into(" ".join([replacement, *(shlex.quote(w.text) for w in words[1:])]), ctx,
+                    (*via, f"alias {name}"), depth + 1, indirect, shares_shell=True)
+    finally:
+        ctx.expanding.discard(name)
+    return None
+
+
+def _define_aliases(args: list[str], ctx: _Context) -> None:
+    """`alias NAME=VALUE...` defines; `unalias NAME...` / `unalias -a` removes."""
+    for arg in args:
+        name, equals, value = arg.partition("=")
+        if equals and name and not name.startswith("-"):
+            ctx.aliases[name] = value
+
+
+def _declare_attributes(builtin: str, words: list[Word], ctx: _Context) -> list[Word]:
+    """Apply `declare`/`typeset`/`local` attribute flags; the words left to assign.
+
+    `-n` makes a name refer to another variable, `-l`/`-u` change the case of
+    every value, `-i` makes it a number (never a command name). Other flags
+    (arrays, export, readonly, scope) do not change what a value expands to.
+    A computed flag word is not known, so the analysis is incomplete.
+    """
+    flags = ""
+    rest = list(words)
+    while rest and rest[0].text[:1] in "-+" and len(rest[0].text) > 1 and "=" not in rest[0].text:
+        if rest[0].dynamic:
+            ctx.result.truncated = True
+        if rest[0].text.startswith("-"):
+            flags += rest[0].text[1:]
+        rest = rest[1:]
+    if builtin == "export" or not flags:
+        return rest
+    remaining: list[Word] = []
+    for word in rest:
+        name, equals, value = word.text.partition("=")
+        name = name.split("[", 1)[0].rstrip("+")
+        if not _NAME.fullmatch(name):
+            remaining.append(word)
+            continue
+        if "n" in flags:
+            if equals and _NAME.fullmatch(value):
+                ctx.namerefs[name] = value
+            else:
+                # The referenced name is not known (a function body before its call
+                # binds `$1`): what the reference reads is unknown.
+                ctx.namerefs.pop(name, None)
+                ctx.variables.pop(name, None)
+            continue
+        for letter in "lu":
+            if letter in flags:
+                ctx.case_attributes[name] = letter
+        if "i" in flags:
+            ctx.variables.pop(name, None)  # integer: whatever is assigned evaluates to a number
+            continue
+        remaining.append(word)
+    return remaining
+
+
+def _target_name(name: str, ctx: _Context) -> str:
+    """The variable `name` stands for: through `declare -n` references."""
+    for _ in range(8):
+        if name not in ctx.namerefs:
+            break
+        name = ctx.namerefs[name]
+    return name
+
+
+def _with_case(name: str, value: str, ctx: _Context) -> str:
+    attribute = ctx.case_attributes.get(name)
+    return value.lower() if attribute == "l" else value.upper() if attribute == "u" else value
 
 
 def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
@@ -853,6 +965,13 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
     prefix assignments (`IFS=, read A B`)."""
     if argv and argv[0] == "read":
         _read_builtin(argv[1:], redirects, ctx, _ifs_values(ctx, environment))
+    elif argv and argv[0] == "alias":
+        _define_aliases(argv[1:], ctx)
+    elif argv and argv[0] == "unalias":
+        if "-a" in argv[1:]:
+            ctx.aliases.clear()
+        for name in argv[1:]:
+            ctx.aliases.pop(name, None)
     elif len(argv) >= 2 and argv[0] in ("for", "select") and _NAME.fullmatch(argv[1]):
         # `for X in a b; do ... done`: X takes each word, or keeps its value if the
         # list is empty. Without `in`, the words are the positional parameters.
@@ -867,10 +986,11 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
             ctx.variables[argv[1]] = tuple(dict.fromkeys((*items, *earlier)))
     elif len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and _NAME.fullmatch(argv[2]):
         text = _echoed_text(SimpleCommand(("printf", *argv[3:])))
+        target = _target_name(argv[2], ctx)
         if text or "%" not in argv[3]:
-            _assign(f"{argv[2]}={text}", ctx.variables, ctx.conditional)
+            _assign(f"{target}={text}", ctx.variables, ctx.conditional)
         else:
-            ctx.variables.pop(argv[2], None)  # a format we do not model: the value is unknown
+            ctx.variables.pop(target, None)  # a format we do not model: the value is unknown
     elif argv and argv[0] == "set":
         params = _set_positionals(argv[1:])
         if params is not None:
@@ -904,7 +1024,7 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
             names += args[index:]
             break
         index += 1
-    names = [n for n in names if _NAME.fullmatch(n)] or ["REPLY"]
+    names = [_target_name(n, ctx) for n in names if _NAME.fullmatch(n)] or ["REPLY"]
     text = next((r.target + "\n" if r.op == "<<<" else r.body for r in redirects
                  if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
                 None)
@@ -1034,6 +1154,7 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
             argv = argv[1:]
         if not argv:
             return
+        argv = [_executable(argv[0], ctx), *argv[1:]]
         name = program_name(argv[0])
         step = _unwrap_once(name, argv, ctx, via, depth, indirect)
         if step is None:
@@ -1165,10 +1286,35 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
             ctx.written_files[path] = WrittenFile(body, replaces=not appends)
 
 
+def _executable(word: str, ctx: _Context) -> str:
+    """The program a path runs once this line's links and copies are followed:
+    `ln -s /bin/rm x; ./x` and `cp /bin/rm x; ./x` run /bin/rm. A bare name is
+    looked up in PATH, which is not modelled, and stays as written."""
+    if "/" not in word or ctx.cwd is None:
+        return word
+    path = os.path.normpath(os.path.join(ctx.cwd, os.path.expanduser(word)))
+    seen = {path}
+    while (following := ctx.result.links.get(path) or ctx.copies.get(path)) and following not in seen:
+        path = following
+        seen.add(path)
+    return word if len(seen) == 1 else path
+
+
+# Options taking a value, per command that makes a path stand for another.
+_PATH_MAKER_VALUES = {
+    "ln": frozenset({"-S", "--suffix"}),
+    "cp": frozenset({"-S", "--suffix"}),
+    "mv": frozenset({"-S", "--suffix"}),
+    "install": frozenset({"-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"}),
+}
+
+
 def _record_link(command: SimpleCommand, ctx: _Context) -> None:
     """Remember the links `ln` creates, so later writes through them resolve to the
-    target: `ln -s ~/.claude/settings.json x; printf y > x` writes settings.json."""
-    if command.name != "ln" or command.dynamic_head:
+    target: `ln -s ~/.claude/settings.json x; printf y > x` writes settings.json.
+    Copies and moves (`cp`, `mv`, `install`) are remembered too, for what a later
+    command runs: `cp /bin/rm x; ./x -rf v` runs rm."""
+    if command.name not in _PATH_MAKER_VALUES or command.dynamic_head:
         return
     args = list(command.args)
     operands: list[str] = []
@@ -1183,7 +1329,7 @@ def _record_link(command: SimpleCommand, ctx: _Context) -> None:
             ended = True
         elif arg.startswith("--target-directory"):
             directory, index = (arg.split("=", 1)[1], index) if "=" in arg else (_at(args, index + 1), index + 1)
-        elif arg in ("-S", "--suffix"):
+        elif arg in _PATH_MAKER_VALUES[command.name]:
             index += 1
         elif short and "t" in arg:
             # `-t DIR`, `-sfDIR`-style clusters: the rest of the cluster, or the next word.
@@ -1204,6 +1350,9 @@ def _record_link(command: SimpleCommand, ctx: _Context) -> None:
                 destination = os.path.join(destination, os.path.basename(source.rstrip("/")))
             link = os.path.normpath(destination)
             target = os.path.expanduser(source)
+            if command.name != "ln":
+                ctx.copies[link] = os.path.normpath(os.path.join(cwd, target))
+                continue
             if not os.path.isabs(target):
                 target = os.path.join(os.path.dirname(link) if symbolic else cwd, target)
             ctx.result.links[link] = os.path.normpath(target)
@@ -1506,24 +1655,53 @@ def _input_file_text(path: str, ctx: _Context) -> str | None:
 
 
 def _produced_text(operand: str, ctx: _Context) -> str | None:
-    """What `<(producer)` prints, when the producer only echoes literal text."""
+    """What `<(producer)` prints, when every command in it prints known text."""
     if not (operand.startswith("<(") and operand.endswith(")")):
         return None
-    producer = parse(operand[2:-1], ctx.cwd or "/")
-    if not producer.commands or any(c.name not in ("echo", "printf") or c.dynamic_head or c.via
-                                    for c in producer.commands):
+    return _producer_output(parse(operand[2:-1], ctx.cwd or "/"), ctx)
+
+
+def _producer_output(producer: ParseResult, ctx: _Context) -> str | None:
+    """The exact bytes a producer list writes, one command's output straight
+    after the other's (`printf r; printf m` gives `rm`): echo/printf of literal
+    text and `cat` of files whose text is known. None if any part is unknown."""
+    if not producer.commands or producer.unparseable or producer.truncated:
         return None
-    return "\n".join(_echoed_text(c) for c in producer.commands) + "\n"
+    parts: list[str] = []
+    for command in producer.commands:
+        if command.via or command.dynamic_head or command.redirects or any(
+                "$" in a or "`" in a for a in command.args):
+            return None
+        if command.name in ("echo", "printf"):
+            part = shell_printf.printed_text(command.name, command.args)
+        elif command.name == "cat" and command.args and not any(a.startswith("-") for a in command.args):
+            texts = [_input_file_text(path, ctx) for path in command.args]
+            part = None if any(t is None for t in texts) else "".join(texts)
+        else:
+            return None
+        if part is None:
+            return None
+        parts.append(part)
+    return "".join(parts)
 
 
 def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],
                      shares_shell: bool = False) -> bool:
     """A script given as `<(producer)`: parse what the producer prints when that
-    is known statically (`echo`/`printf` text, `cat FILE`). False if `operand`
-    is not a process substitution."""
+    is known statically (`echo`/`printf` text, `cat FILE`), as one stream. False
+    if `operand` is not a process substitution."""
     if not (operand.startswith("<(") and operand.endswith(")")):
         return False
     producer = parse(operand[2:-1], shell.cwd or "/")
+    output = _producer_output(producer, ctx)
+    label = f"{shell.name} <({'; '.join(c.name for c in producer.commands)})"
+    if output is not None:
+        if output:
+            nested(output, label, shares_shell=shares_shell)
+        return True
+    if len(producer.commands) > 1:
+        # Where one command's output ends and the next one's begins is not known.
+        ctx.result.truncated = True
     for command in producer.commands:
         if command.via or command.dynamic_head:
             continue

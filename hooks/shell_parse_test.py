@@ -118,6 +118,15 @@ def main() -> int:
                                   "/").commands]
     _check(argv[0] == ("echo", "a", "b", "a,b") and argv[-1] == ("echo", "c", "d"),
            f"IFS splits expansions and read: {argv}", failures)
+    argv = [c.argv for c in parse("alias a=b b='a x'; a; alias ll='ls -l'; ll; unalias ll; ll", "/").commands]
+    _check(argv[1::2] == [("a", "x"), ("ls", "-l"), ("ll",)], f"aliases expand once, unalias removes: {argv}", failures)
+    argv = [c.argv for c in parse("declare -u X; X=rm; declare -i N=5; echo $X $N", "/").commands]
+    _check(argv[-1] == ("echo", "RM", "$N"), f"declare -u and -i: {argv}", failures)
+    parsed = parse("f(){ local -n r=$1; r=rm; }; f X; echo $X", "/")
+    _check(parsed.commands[-1].argv == ("echo", "rm") and not parsed.truncated,
+           f"local -n in a function: {[c.argv for c in parsed.commands]}", failures)
+    argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
+    _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 
     print("\nWorking directory:")
     cwd_cases = [

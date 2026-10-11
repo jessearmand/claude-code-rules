@@ -140,6 +140,17 @@ SHOULD_BLOCK = [
     "IFS=, read A B <<< r,m; \"$A$B\" -rf victim",
     "IFS=,; X=rm,-rf,victim; $X",  # word splitting by IFS
     "set -- r m; IFS=; \"$*\" -rf victim",  # "$*" joins with IFS's first character
+    "bash < <(printf r; printf 'm -rf victim')",  # producers write one stream (PR review)
+    "source <(printf 'cd /; r'; printf 'm -rf victim')",
+    "bash -O expand_aliases -c $'alias x=\"/bin/r[m]\"\\nx -rf victim'",  # aliases (PR review)
+    "alias x='rm -rf'; x victim",
+    "alias x='cd / && rm'; x -rf victim",
+    "ln -s /bin/rm x; ./x -rf victim",  # a link or copy run as a program (PR review)
+    "cp /bin/rm x; ./x -rf victim",
+    "install -m 755 /bin/rm y; ./y -rf victim",
+    "X=r; X+=m; declare -n Y=X; \"$Y\" -rf victim",  # declare attributes (PR review)
+    "declare -l X=RM; $X -rf victim",
+    "f(){ local -n r=$1; r=rm; }; f X; $X -rf victim",
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line
