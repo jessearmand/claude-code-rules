@@ -82,10 +82,29 @@ def _names_device(command: SimpleCommand) -> bool:
                for a in operands(command.args))
 
 
+# parted commands that only report; any other command (or none: interactive) may write.
+_PARTED_READ_ONLY = frozenset({"print", "p", "help", "h", "version", "v", "unit", "align-check", "quit", "q"})
+_PARTED_UNITS = frozenset({"s", "B", "kB", "MB", "MiB", "GB", "GiB", "TB", "TiB", "%", "cyl", "chs", "compact"})
+
+
+def _parted(command: SimpleCommand) -> str | None:
+    """`parted -l` and `parted DEV print` only read; `parted DEV mklabel gpt print`
+    writes a new label before printing it, and bare `parted DEV` is interactive."""
+    if short_flag(command.args, "l") or long_flag(command.args, "--list"):
+        return None
+    words = operands(command.args, frozenset({"-a", "--align"}))[1:]  # after the device
+    commands = [w for w in words if not w.isdigit() and w not in _PARTED_UNITS and w not in ("minimal", "optimal")]
+    if commands and all(w in _PARTED_READ_ONLY for w in commands):
+        return None
+    return "parted"
+
+
 def _disk_format(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if _FORMATTERS.match(command.name) and _names_device(command):
         return command.name
-    if command.name in ("fdisk", "parted", "gdisk", "sgdisk") and not (short_flag(command.args, "l") or has(command.args, "print")):
+    if command.name == "parted":
+        return _parted(command)
+    if command.name in ("fdisk", "gdisk", "sgdisk") and not short_flag(command.args, "l"):
         return command.name
     if command.name == "diskutil" and command.args and command.args[0] in _DISKUTIL_DESTRUCTIVE:
         # `diskutil apfs list` is harmless; `diskutil apfs deleteContainer` is not.

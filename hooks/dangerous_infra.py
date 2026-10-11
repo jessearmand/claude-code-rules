@@ -239,9 +239,12 @@ def _compose_down_volumes(name: str, args: tuple[str, ...]) -> str | None:
 # Databases
 # --------------------------------------------------------------------------- #
 
+# A table name: plain, or quoted with "", `` or [] (which may hold spaces), schema-qualified.
+_SQL_PART = r'(?:"[^"]*"|`[^`]*`|\[[^\]]*\]|[^\s;."`\[]+)'
+_SQL_NAME = rf"{_SQL_PART}(?:\.{_SQL_PART})*"
 _SQL_DESTRUCTIVE = re.compile(
-    r"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|USER|ROLE)|TRUNCATE\b|DELETE\s+FROM\s+\S+\s*(?:;|$)"
-    r"|ALTER\s+TABLE\s+\S+\s+DROP\b)",
+    rf"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|USER|ROLE)|TRUNCATE\b|DELETE\s+FROM\s+{_SQL_NAME}\s*(?:;|$)"
+    rf"|ALTER\s+TABLE\s+{_SQL_NAME}\s+DROP\b)",
     re.IGNORECASE,
 )
 _SQL_CLIENTS = {

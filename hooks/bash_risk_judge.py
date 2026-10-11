@@ -88,7 +88,9 @@ _CANDIDATE = re.compile(
 # `(` is a reference or substitution: it holds no secret itself, and removing it
 # hides exactly the behaviour the model is being asked about.
 _SECRET_VALUE = re.compile(
-    r"(?i)((?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)"
+    # The key bare (`TOKEN=`) or quoted on both sides (`"api_key":`, `'github_token':`).
+    r"(?i)((?:[\"'][\w-]*?(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)[\"']"
+    r"|(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie))"
     r"(?:[\s:=]+(?:bearer|basic)\b)?[\s:=]+[\"']?)(?![$`<(]|(?:bearer|basic)\b)([^\s\"']+)"
     r"|(\b(?:sk|ghp|gho|ghs|ghu|xox[abp]|AKIA|AIza|npm_|pypi-|glpat-)[A-Za-z0-9_\-]{16,})"
     r"|(\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"

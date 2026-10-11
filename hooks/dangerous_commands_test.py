@@ -79,6 +79,9 @@ CASES = [
     ("dd if=in.img of=out.img", None, None),
     ("cat image > /dev/disk2", "deny", "device-write"),
     ("mkfs.ext4 /dev/sdb1", "deny", "disk-format"),
+    ("parted /dev/sda mklabel gpt print", "deny", "disk-format"),  # print does not undo mklabel (PR review)
+    ("parted /dev/sda unit MB print", None, None),
+    ("parted -l", None, None),
     ("cd /dev && mkfs.ext4 sdb1", "deny", "disk-format"),  # relative to /dev (PR review)
     ("cd /dev/disk && mkfs.ext4 ../sdb1", "deny", "disk-format"),
     ("diskutil eraseDisk APFS X disk4", "deny", "disk-format"),
@@ -227,6 +230,8 @@ CASES = [
     ("printf 'SELECT 1;' | sqlite3 prod.db", None, None),
     ("psql -c 'DELETE FROM users -- all rows'", "deny", "sql-destructive"),  # a comment ends nothing (PR review)
     ("psql -c 'DELETE FROM users WHERE id = 1 -- one'", None, None),
+    ("sqlite3 db 'DELETE FROM \"user table\";'", "deny", "sql-destructive"),  # quoted name (PR review)
+    ("sqlite3 db 'DELETE FROM \"user table\" WHERE id = 1;'", None, None),
     ("cat <<'SQL' | psql\nDROP TABLE users;\nSQL", "deny", "sql-destructive"),  # SQL piped through cat (PR review)
     ("cat <<'SQL' | psql\nSELECT 1;\nSQL", None, None),
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 prod.db < q.sql", "deny", "sql-destructive"),

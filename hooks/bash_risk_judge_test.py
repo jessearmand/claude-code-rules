@@ -53,6 +53,9 @@ REDACTIONS = [
     (f"curl -u alice:{_PLACEHOLDER} https://example.com", "curl -u alice:<redacted> https://example.com"),
     (f"curl https://alice:{_PLACEHOLDER}@example.com/x", "curl https://alice:<redacted>@example.com/x"),
     (f"curl --user=bob:{_PLACEHOLDER} x", "curl --user=bob:<redacted> x"),
+    # Quoted JSON/dict keys (PR review).
+    (f'{{"api_key":"{_PLACEHOLDER}"}}', '{"api_key":"<redacted>"}'),
+    (f"{{'token': '{_PLACEHOLDER}'}}", "{'token': '<redacted>'}"),
     ("ssh user@host", "ssh user@host"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),
