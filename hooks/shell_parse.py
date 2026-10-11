@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from math import prod
 
 import shell_params
+import shell_printf
 from shell_interpreters import awk_commands, inline_programs, shell_strings
 from shell_lexer import HEREDOC_OPERATORS, REDIRECT_OPERATORS, Operator, Word, lex
 from shell_wrappers import (
@@ -703,7 +704,10 @@ def _literal_substitution(text: str, index: int) -> tuple[str, int] | None:
             c.name not in ("echo", "printf") or c.dynamic_head or c.via or c.redirects
             or any("$" in a or "`" in a for a in c.argv) for c in producer.commands):
         return None
-    return "".join(_echoed_text(c) + ("\n" if c.name == "echo" else "") for c in producer.commands).rstrip("\n"), end
+    printed = [shell_printf.printed_text(c.name, c.args) for c in producer.commands]
+    if any(p is None for p in printed):
+        return None
+    return "".join(printed).rstrip("\n"), end
 
 
 def _closing_brace(text: str, start: int) -> int | None:
@@ -795,6 +799,8 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
                 name = word.text.split("=", 1)[0].split("[", 1)[0].rstrip("+")
                 if _NAME.fullmatch(name):
                     ctx.local_scopes[-1].add(name)
+                    if "=" not in word.text:
+                        ctx.variables[name] = (UNSET,)  # `local X`: a new, unset X
             if _ASSIGNMENT.match(word.text):
                 _assign(word.text, ctx.variables, ctx.conditional)
     return rest, tuple(assignments)
@@ -879,6 +885,8 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> 
             _assign(f"{name}[{position}]={item}", ctx.variables, ctx.conditional)
         return
     line = text.split(delimiter, 1)[0]
+    if "-r" not in args:
+        line = re.sub(r"\\(.)", r"\1", line)  # without -r, a backslash escapes the next character
     fields = line.split(maxsplit=len(names) - 1) if len(names) > 1 else [line.strip()]
     for position, name in enumerate(names):
         _assign(f"{name}={fields[position] if position < len(fields) else ''}", ctx.variables, ctx.conditional)
@@ -1086,9 +1094,12 @@ def _change_directory(current: str | None, target: str | None) -> str | None:
 
 def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
     """Remember literal text written to a file, so running it later is judged by its body."""
-    body = next((r.body for r in command.redirects if r.op in HEREDOC_OPERATORS and r.body is not None), None)
+    # The exact bytes written: a heredoc ends with a newline, `echo -n` and
+    # `printf r` do not, so `printf r > f; printf m >> f` builds `rm`.
+    body = next((r.body + ("" if r.body.endswith("\n") else "\n") for r in command.redirects
+                 if r.op in HEREDOC_OPERATORS and r.body is not None), None)
     if body is None and command.name in ("echo", "printf") and not command.dynamic_head:
-        body = _echoed_text(command)
+        body = shell_printf.printed_text(command.name, command.args)
     directories = [d for d in command.possible_cwds if d is not None]
     if body is None or not directories:
         return
@@ -1102,7 +1113,7 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
     for path, appends in dict.fromkeys(paths):
         earlier = ctx.written_files.get(path)
         if appends and earlier is not None:
-            ctx.written_files[path] = WrittenFile(_join_lines(earlier.text, body), earlier.replaces)
+            ctx.written_files[path] = WrittenFile(earlier.text + body, earlier.replaces)
         else:
             ctx.written_files[path] = WrittenFile(body, replaces=not appends)
 
@@ -1153,10 +1164,6 @@ def _record_link(command: SimpleCommand, ctx: _Context) -> None:
 
 def _at(args: list[str], index: int) -> str | None:
     return args[index] if index < len(args) else None
-
-
-def _join_lines(first: str, second: str) -> str:
-    return f"{first}{'' if not first or first.endswith(chr(10)) else chr(10)}{second}"
 
 
 def _unwrap_once(name: str, argv: list[str], ctx: _Context, via: tuple[str, ...], depth: int,
@@ -1570,16 +1577,9 @@ def echoed_text(command: SimpleCommand) -> str:
 
 
 def _echoed_text(command: SimpleCommand) -> str:
-    args = list(command.args)
-    if command.name == "echo":
-        while args and re.fullmatch(r"-[neE]+", args[0]):
-            args = args[1:]
-        return " ".join(args)
-    if args and "%" not in args[0]:
-        return args[0].replace("\\n", "\n")
-    if args and args[0] in ("%s\\n", "%b\\n"):
-        return "\n".join(args[1:])
-    return "".join(args[1:]) if args and args[0] in ("%s", "%b") else ""
+    """What an echo/printf prints, trailing newlines dropped ("" if not modelled)."""
+    printed = shell_printf.printed_text(command.name, command.args)
+    return printed.rstrip("\n") if printed is not None else ""
 
 
 def _find_exec_commands(args: list[str]) -> list[list[str]]:

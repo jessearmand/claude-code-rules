@@ -201,6 +201,9 @@ CASES = [
     ("chmod -R --reference=/var/tmp/mode /usr", "deny", "chmod-dangerous"),
     ("chmod --reference=a.txt b.txt", None, None),
     ("chown -R --reference=/var/tmp/ref /usr", "deny", "chown-broad"),
+    ("git config --local core.fsmonitor /path/to/evil", "deny", "git-unsafe-override"),  # PR review
+    ("git config core.fsmonitor true", None, None),
+    ("git config core.editor vim", None, None),
     # Anything the parser had to stop analysing asks (PR review).
     ("env " * 17 + "true", "ask", "incomplete-analysis"),
     ("printf '" + "echo ok\\n" * 70 + "' | xargs -I{} sh -c '{}'", "ask", "incomplete-analysis"),

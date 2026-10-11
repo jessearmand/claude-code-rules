@@ -131,6 +131,9 @@ SHOULD_BLOCK = [
     "read -a X <<< r; \"${X[0]}m\" -rf victim",  # arrays from read -a; $@ inside a word (PR review)
     "set -- r; \"$@\"m -rf victim",
     "set -- m x; r\"$@\" -rf victim",  # "$@" keeps one word per parameter (PR review)
+    "read X <<<'r\\m'; \"$X\" -rf victim",  # read strips backslashes without -r (PR review)
+    "X=echo; f(){ local X; \"${X:-r}m\" -rf victim; }; f",  # bare local is unset
+    "X=$(printf %b '\\162\\155'); \"$X\" -rf victim",  # printf escapes
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line
@@ -155,6 +158,7 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "read -r X <<<'r\\m'; \"$X\" -rf victim",
     "npm exec -- eslint .",
     "pnpm --dir . exec sh -c 'echo hi'",
     "f(){ \"$1\" -rf victim; }; f echo",
@@ -268,6 +272,10 @@ def main() -> int:
         _check(bool(invocations), "source binds its arguments", failures)
         invocations, _ = find_recursive_force_invocations("source positional.sh echo", tmp, shell_sources.resolve)
         _check(not invocations, "source with harmless arguments", failures)
+        # Appends join byte for byte: no newline is added between printf outputs (PR review).
+        command = "printf r > run.sh; printf m >> run.sh; printf ' -rf victim' >> run.sh; bash run.sh"
+        invocations, _ = find_recursive_force_invocations(command, tmp, shell_sources.resolve)
+        _check(bool(invocations), "script built from exact printf bytes", failures)
 
     print("\nTarget analysis:")
     with tempfile.TemporaryDirectory() as tmp:

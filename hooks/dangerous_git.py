@@ -343,10 +343,16 @@ _PROGRAM_KEYS = frozenset({"core.sshcommand", "core.fsmonitor", "core.pager", "c
 
 
 def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
+    git = git_invocation(command)
     for key, value in _config_assignments(command):
         if key == "http.sslverify" and value.lower() in ("false", "0", "no", "off"):
             return "git http.sslVerify=false"
-    git = git_invocation(command)
+        # `git config core.fsmonitor PROG` stores a program every later git status
+        # runs silently. (Editor, pager, credential helper, sshCommand are routine
+        # settings the user sees run; true/false selects the built-in fsmonitor.)
+        if git and git.subcommand == "config" and key == "core.fsmonitor" \
+                and value.lower() not in ("true", "false", "yes", "no", "on", "off", "1", "0", ""):
+            return "git config core.fsmonitor <program>"
     for item in git.config if git else ():
         key = item.partition("=")[0]
         # sshCommand only runs on network operations; the rest run on most commands.
