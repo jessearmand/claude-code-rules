@@ -78,6 +78,8 @@ SHOULD_BLOCK = [
     "X=rm; echo $(X=echo); $X -rf ~/victim",
     "X=rm; (X=echo); $X -rf ~/victim",
     "X=echo; eval X=rm; $X -rf ~/victim",
+    "X=rm; X=echo true; $X -rf ~/victim",  # a prefix assignment is temporary (PR review)
+    "X='rm -rf ~' sh -c '$X'",  # ...but is in the environment of what the command runs
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
     "poetry -C . run rm -rf build",

@@ -244,14 +244,15 @@ def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indi
                 index += 2
                 continue
         elif isinstance(token, Word):
-            words.append(_expand_word(token, ctx))
+            words.extend(_split_unquoted(token, _expand_word(token, ctx)))
         index += 1
 
-    words = _strip_prelude(words, ctx)
+    words, environment = _strip_prelude(words, ctx)
     if not words:
         return
     argv = [w.text for w in words]
-    _emit(argv, tuple(redirects), ctx, via, depth, indirect, pipeline, stage, words[0].dynamic, ())
+    _emit(argv, tuple(redirects), ctx, via, depth, indirect, pipeline, stage, words[0].dynamic, (),
+          environment)
 
 
 def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int,
@@ -267,6 +268,18 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
         for body in getattr(token, "substitutions", ()):
             # A subshell: _parse_into restores the caller's directory and variables.
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+
+
+def _split_unquoted(original: Word, expanded: Word) -> list[Word]:
+    """Word splitting: an unquoted expansion holding spaces becomes several words
+    (`X='rm -rf ~'; $X` runs rm with two arguments). Quoted `"$X"` stays one."""
+    if original.quoted or not original.dynamic or expanded.text == original.text:
+        return [expanded]
+    parts = expanded.text.split()
+    if len(parts) <= 1:
+        return [expanded]
+    return [Word(part, dynamic=bool(_UNRESOLVED.search(part)), substitutions=expanded.substitutions if i == 0 else [])
+            for i, part in enumerate(parts)]
 
 
 def _expand_word(word: Word, ctx: _Context) -> Word:
@@ -285,8 +298,13 @@ def _expand_word(word: Word, ctx: _Context) -> Word:
             return ctx.variables[name]
         if name == "HOME":
             return os.path.expanduser("~")
-        if name == "PWD" and ctx.cwd is not None:
-            return ctx.cwd
+        if name == "PWD":
+            # `$PWD/x` is `./x`: relative paths are checked in every directory the
+            # command might run in, which a single expanded value would lose.
+            if match.start() == 0:
+                return "."
+            if ctx.cwd is not None and len(set(ctx.cwd_options)) <= 1:
+                return ctx.cwd
         return match.group(0)
 
     text = _PARAMETER.sub(value, word.text)
@@ -294,9 +312,15 @@ def _expand_word(word: Word, ctx: _Context) -> Word:
                 heredoc_body=word.heredoc_body, substitutions=word.substitutions)
 
 
-def _strip_prelude(words: list[Word], ctx: _Context) -> list[Word]:
-    """Drop reserved words and leading assignments; remember literal assignments."""
+def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[str, ...]]:
+    """Drop reserved words and leading assignments.
+
+    `X=rm` on its own sets X for the rest of the line. `X=echo true` only puts
+    X in `true`'s environment: it is returned, applied to what `true` runs,
+    and not remembered afterwards.
+    """
     index = 0
+    assignments: list[str] = []
     while index < len(words):
         word = words[index]
         reserved = word.text in RESERVED_PREFIXES and not word.quoted
@@ -304,17 +328,21 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> list[Word]:
         if reserved or time_flag:
             index += 1
         elif _ASSIGNMENT.match(word.text):
-            _assign(word.text, ctx)
+            assignments.append(word.text)
             index += 1
         else:
             break
     rest = words[index:]
+    if not rest:
+        for text in assignments:
+            _assign(text, ctx)
+        return rest, ()
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
         for word in rest[1:]:
             if _ASSIGNMENT.match(word.text):
                 _assign(word.text, ctx)
-    return rest
+    return rest, tuple(assignments)
 
 
 def _assign(text: str, ctx: _Context) -> None:
@@ -333,8 +361,12 @@ def _assign(text: str, ctx: _Context) -> None:
 
 def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: tuple[str, ...],
           depth: int, indirect: bool, pipeline: int, stage: int, dynamic_head: bool,
-          wrappers: tuple[str, ...]) -> None:
-    """Unwrap `argv`, record the resulting command, and parse anything it runs."""
+          wrappers: tuple[str, ...], environment: tuple[str, ...] = ()) -> None:
+    """Unwrap `argv`, record the resulting command, and parse anything it runs.
+
+    `environment` holds the command's prefix assignments (`X=1 cmd`): visible
+    to what cmd runs (`X=1 sh -c 'echo $X'`), gone once cmd returns.
+    """
     outer: tuple[str | None, tuple[str | None, ...]] | None = None
     for _ in range(_MAX_UNWRAP):
         while argv and _ASSIGNMENT.match(argv[0]):
@@ -361,7 +393,12 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
                             pipeline, stage, ctx.cwd, ctx.cwd_options)
     ctx.result.commands.append(command)
     _record_written_file(command, ctx)
+    caller_variables = dict(ctx.variables)
+    for text in environment:
+        _assign(text, ctx)
     _parse_payloads(command, ctx, depth)
+    if environment:
+        ctx.variables = caller_variables
     if outer is not None:
         ctx.cwd, ctx.cwd_options = outer  # the wrapper's directory applied to the child only
     else:
@@ -449,7 +486,10 @@ def _unwrap_once(name: str, argv: list[str], ctx: _Context, via: tuple[str, ...]
         return None
     if name in SUBCOMMAND_RUNNERS:
         found = _skip_subcommand_runner(args, name)
-        return (found[1], f"{name} {found[0]}", None) if found else None
+        if not found:
+            return None
+        chdir = option_value(args[:len(args) - len(found[1])], SUBCOMMAND_RUNNERS[name].chdir_options)
+        return found[1], f"{name} {found[0]}", chdir
     return None
 
 

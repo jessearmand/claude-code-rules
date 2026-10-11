@@ -73,6 +73,12 @@ BASH_CASES = [
     ("env --chdir=$HOME/.claude sh -c 'echo x > settings.json'", "deny", "claude-settings"),
     ("sudo -D ~/.codex tee config.toml", "deny", "codex-config"),
     ("env -C ~/.claude true; echo x > settings.json", None, None),
+    # $PWD means "here" in every possible directory; runner directory options (PR review).
+    ("cd ~/.claude || cd /workspace; printf x > \"$PWD/settings.json\"", "deny", "claude-settings"),
+    ("printf x > \"$PWD/notes.txt\"", None, None),
+    ("uv --directory ~/.claude run --no-project sh -c 'printf x > settings.json'", "deny", "claude-settings"),
+    ("pnpm --dir ~/.claude exec sh -c 'echo x > settings.json'", "deny", "claude-settings"),
+    ("uv --directory ~/.claude run true; echo x > settings.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),

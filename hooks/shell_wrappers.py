@@ -201,11 +201,14 @@ class SubcommandRunner:
     subcommands: frozenset[str]
     with_arg: frozenset[str] = frozenset()
     positionals: int = 0
+    # Options that change directory before running the command (`uv --directory`).
+    chdir_options: frozenset[str] = frozenset()
 
 
 SUBCOMMAND_RUNNERS: dict[str, SubcommandRunner] = {
     "mise": SubcommandRunner(_opts("exec", "x"), _opts("-C", "--cd", "-E", "--env", "-j",
-                                                      "--jobs", "-c", "--command")),
+                                                      "--jobs", "-c", "--command"),
+        chdir_options=_opts("-C", "--cd")),
     "fnox": SubcommandRunner(_opts("exec"), _opts("-c", "--config", "-p", "--profile",
                                                   "--if-missing")),
     "direnv": SubcommandRunner(_opts("exec"), positionals=1),
@@ -215,9 +218,12 @@ SUBCOMMAND_RUNNERS: dict[str, SubcommandRunner] = {
                                                "--index", "--default-index", "--index-url",
                                                "--extra-index-url", "-f", "--find-links",
                                                "--config-file", "--cache-dir", "--only-group",
-                                               "--no-group")),
-    "poetry": SubcommandRunner(_opts("run"), _opts("-C", "--directory", "-P", "--project")),
-    "pnpm": SubcommandRunner(_opts("exec", "dlx"), _opts("-C", "--dir", "--filter", "-F")),
+                                               "--no-group"),
+        chdir_options=_opts("--directory")),
+    "poetry": SubcommandRunner(_opts("run"), _opts("-C", "--directory", "-P", "--project"),
+        chdir_options=_opts("-C", "--directory")),
+    "pnpm": SubcommandRunner(_opts("exec", "dlx"), _opts("-C", "--dir", "--filter", "-F"),
+        chdir_options=_opts("-C", "--dir")),
     "bundle": SubcommandRunner(_opts("exec")),
     "pipenv": SubcommandRunner(_opts("run")),
     "conda": SubcommandRunner(_opts("run"), _opts("-n", "--name", "-p", "--prefix")),
