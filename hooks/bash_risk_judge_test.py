@@ -276,13 +276,13 @@ def main() -> None:
             if decision not in (None, "ask"):
                 failures.append(f"judge emitted {decision!r} for {command!r}; only ask/defer are permitted")
 
-    # Combined: a "safe" model verdict must not soften the deterministic deny.
+    # Combined: a "safe" model verdict must not soften the deterministic ask.
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}, "cwd": "/tmp/proj"})
     guard = os.path.join(os.path.dirname(_HOOK), "rm_rf_guard.py")
-    denied = subprocess.run([sys.executable, guard], input=payload, capture_output=True, text=True, check=False)
+    asked = subprocess.run([sys.executable, guard], input=payload, capture_output=True, text=True, check=False)
     judged = _run("rm -rf build", f"cat >/dev/null; printf '%s' '{SAFE_JSON}'")
-    if _decision(json.loads(denied.stdout)) != "deny" or judged != {}:
-        failures.append(f"rm -rf must stay denied while the judge defers, got {denied.stdout!r} / {judged}")
+    if _decision(json.loads(asked.stdout)) != "ask" or judged != {}:
+        failures.append(f"rm -rf must stay asked while the judge defers, got {asked.stdout!r} / {judged}")
 
     # Fallbacks: every one of these must defer with `{}`.
     fallbacks = {

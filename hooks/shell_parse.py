@@ -765,6 +765,9 @@ def _literal_substitution(text: str, index: int) -> tuple[str, int] | None:
     else:
         return None
     producer = parse(body, "/")
+    temporary = _mktemp_path(producer)
+    if temporary is not None:
+        return temporary, end
     if not producer.commands or producer.unparseable or any(
             c.name not in ("echo", "printf") or c.dynamic_head or c.via or c.redirects
             or any("$" in a or "`" in a for a in c.argv) for c in producer.commands):
@@ -773,6 +776,38 @@ def _literal_substitution(text: str, index: int) -> tuple[str, int] | None:
     if any(p is None for p in printed):
         return None
     return "".join(printed).rstrip("\n"), end
+
+
+def _mktemp_path(producer: ParseResult) -> str | None:
+    """`$(mktemp)`, `$(mktemp -d -p DIR)`, `$(mktemp -t name.XXXX)`: a new path in
+    a known directory. Its name is random, so the template stands for it."""
+    if len(producer.commands) != 1 or producer.commands[0].name != "mktemp" or producer.commands[0].via:
+        return None
+    args = list(producer.commands[0].args)
+    directory, template, under_tmpdir, index = None, None, False, 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-p", "--tmpdir") and index + 1 < len(args):
+            directory, index = args[index + 1], index + 1
+        elif arg.startswith("--tmpdir="):
+            directory = arg.split("=", 1)[1]
+        elif arg == "-t":
+            under_tmpdir = True
+        elif arg.startswith("--suffix=") or arg in ("-d", "--directory", "-u", "--dry-run", "-q", "--quiet"):
+            pass
+        elif arg.startswith("-"):
+            return None
+        else:
+            template = arg
+        index += 1
+    if any("$" in part for part in (directory or "", template or "")):
+        return None
+    temporary_root = os.environ.get("TMPDIR") or "/tmp"
+    if template is None:
+        return os.path.join(directory or temporary_root, "tmp.XXXXXXXXXX")
+    if directory is None and not under_tmpdir:
+        return template  # `mktemp out.XXXX`: relative to the current directory
+    return os.path.join(directory or temporary_root, template)
 
 
 def _closing_brace(text: str, start: int) -> int | None:

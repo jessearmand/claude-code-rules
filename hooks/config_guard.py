@@ -56,6 +56,7 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 import shell_sources  # noqa: E402
+import unknown_target
 from config_guard_rules import (  # noqa: E402
     CONFIG_RULES,
     PROJECT_PROTECTED_ROOTS,
@@ -96,6 +97,12 @@ CONFIG_DIR_RULE = ConfigRule(
     "high",
     re.compile(r"(?!)"),
     "copying into an agent configuration directory can add or replace its settings, hooks or plugins",
+)
+UNKNOWN_TARGET_RULE = ConfigRule(
+    "unknown-target",
+    "high",
+    re.compile(r"(?!)"),
+    "the path is computed at run time and could be an agent's configuration",
 )
 LIVE_SOURCE_RULE = ConfigRule(
     "guard-sources",
@@ -314,6 +321,11 @@ def check_command(command: str, cwd: str) -> Finding | None:
                 if not (finding.indirect or finding.uncertain):
                     return finding
                 softer = softer or finding
+            if softer is None and unknown_target.is_unknown(_inherited(write.path)):
+                # `cp x "$OUT"`: where it lands is not known, so what the command does decides.
+                why = unknown_target.reason(simple, write, parsed)
+                if why:
+                    softer = Finding(UNKNOWN_TARGET_RULE, write.path, write.action, simple.indirect, why)
     return softer
 
 

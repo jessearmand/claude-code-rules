@@ -2,20 +2,21 @@
 """
 Claude Code Hook: rm -rf Guard
 ==============================
-PreToolUse hook for the Bash tool. Denies any `rm` invocation that combines
-recursive (-r/-R/--recursive) with force (-f/--force), and tells Claude to
-escalate via the AskUserQuestion tool instead of retrying or working around it.
+PreToolUse hook for the Bash tool. Asks the user before any `rm` invocation
+that combines recursive (-r/-R/--recursive) with force (-f/--force). In a
+permission mode where no one can be asked, the ask becomes a deny (see
+hook_protocol.for_permission_mode), and Claude is told not to work around it.
 
-The denial reason includes a per-target analysis so Claude can propose the
-least destructive command that still does the job:
+The reason includes a per-target analysis so the user (or Claude, when it is
+denied) can see the least destructive command that still does the job:
 
     plain `rm <file>`   for regular files
     `rm -r <dir>`       for directories
     `rm -rf <dir>`      only after the user explicitly confirms
 
 Decision protocol: https://code.claude.com/docs/en/hooks#pretooluse-decision-control
-Exit 0 with a `permissionDecision: "deny"` payload blocks the call and shows
-`permissionDecisionReason` to Claude. Exit 0 with no payload defers to the
+Exit 0 with a `permissionDecision: "ask"` payload shows `permissionDecisionReason`
+to the user, who confirms or declines. Exit 0 with no payload defers to the
 normal permission flow.
 
 Wire-up (~/.claude/settings.json):
@@ -315,22 +316,23 @@ def _format_target_section(analyses: list[TargetAnalysis]) -> list[str]:
     return lines
 
 
-def build_denial_reason(invocations: list[RmInvocation], cwd: str, unparseable: bool) -> str:
-    """Compose the feedback Claude sees in place of running the command."""
+def build_ask_reason(invocations: list[RmInvocation], cwd: str, unparseable: bool) -> str:
+    """What the user sees when asked to confirm, and Claude sees if it is declined
+    or denied because no one can be asked."""
     sections: list[str] = [
-        "BLOCKED by the rm-rf-guard hook: `rm` with both recursive and force is never "
-        "allowed to run, and this hook has no override.",
+        "rm-rf-guard: this command runs `rm` with both recursive and force, which deletes "
+        "without stopping on anything. It runs only if the user confirms.",
         "",
     ]
 
     if unparseable:
         sections += [
             "The command could not be parsed completely, but it appears to contain a recursive "
-            "forced `rm`. Rewrite it so the removal is a plain, quoted command.",
+            "forced `rm`.",
             "",
         ]
     else:
-        sections.append("Blocked invocation(s):")
+        sections.append("Invocation(s):")
         sections += [f"  {invocation.rendered()}" for invocation in invocations]
         sections.append("")
 
@@ -345,32 +347,16 @@ def build_denial_reason(invocations: list[RmInvocation], cwd: str, unparseable: 
             sections.append("")
 
     sections += [
-        "Do this instead, in order:",
+        "Less destructive alternatives:",
+        "  `rm <file>`      removes a single file — no flags needed",
+        "  `rm -r <dir>`    removes a directory tree, but stops on write-protected entries "
+        "instead of silently forcing them",
         "",
-        "1. Reach for the least destructive command that actually does the job:",
-        "     `rm <file>`      removes a single file — no flags needed",
-        "     `rm -r <dir>`    removes a directory tree, but still stops on "
-        "write-protected entries instead of silently forcing them",
-        "   Use the 'safer:' commands above where they are listed. If a target does not "
-        "exist, drop it rather than adding `-f` to hide the error.",
-        "",
-        "2. If `rm -r` genuinely will not work (write-protected files, or the path may be "
-        "absent and the removal must not fail), do NOT retry and do NOT route around this "
-        "hook — no `sudo`, no `find -delete`, no `git clean -xdf`, no Python `shutil.rmtree`, "
-        "no `trash`/`mv` to a temp dir. Instead call the AskUserQuestion tool and let the "
-        "user decide, e.g.:",
-        "",
-        '     question: "`rm -rf` is blocked. How should I remove <target>?"',
-        '     header:   "Removal"',
-        "     options:",
-        '       - "Try `rm -r <target>`" — non-forced recursive delete; stops and reports '
-        "write-protected entries",
-        '       - "You run `rm -rf <target>`" — paste `! rm -rf <target>` in the prompt so '
-        "the destructive step is yours, not mine",
-        '       - "Leave it in place" — skip the removal and continue with the rest of the task',
-        "",
-        "3. Report the block to the user in your reply. Never silently skip a removal the "
-        "task depended on.",
+        "If this is declined or denied: do NOT retry it and do NOT route around this hook — "
+        "no `sudo`, no `find -delete`, no `git clean -xdf`, no Python `shutil.rmtree`, no "
+        "`trash`/`mv` to a temp dir. Use a 'safer:' command above if one fits, otherwise ask "
+        "the user how to proceed (for example, they can run `! rm -rf <target>` themselves), "
+        "and report it in your reply. Never silently skip a removal the task depended on.",
     ]
 
     return "\n".join(sections)
@@ -397,7 +383,7 @@ def build_indirect_reason(invocations: list[RmInvocation], cwd: str) -> str:
 
 
 def run(data: dict) -> Decision | None:
-    """Deny recursive forced removals typed in the command; ask about ones it runs from files."""
+    """Ask before recursive forced removals, typed in the command or run from files."""
     if data.get("tool_name") != "Bash":
         return None
 
@@ -423,9 +409,9 @@ def run(data: dict) -> Decision | None:
     direct = [invocation for invocation in invocations if not invocation.indirect]
     if direct or unparseable:
         return Decision(
-            "deny",
-            build_denial_reason(direct, cwd, unparseable),
-            "rm-rf-guard blocked an `rm -rf`. Claude will ask you how to proceed.",
+            "ask",
+            build_ask_reason(direct, cwd, unparseable),
+            "rm-rf-guard: confirm the `rm -rf` before it runs.",
             HOOK_NAME,
         )
     return Decision(

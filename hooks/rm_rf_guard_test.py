@@ -218,7 +218,7 @@ SHOULD_ALLOW = [
 ]
 
 
-def _run_hook(command: str, cwd: str = _REPO_ROOT) -> dict | None:
+def _run_hook(command: str, cwd: str = _REPO_ROOT, mode: str | None = None) -> dict | None:
     """Invoke the hook end-to-end; return its parsed JSON payload, or None if it deferred."""
     payload = json.dumps(
         {
@@ -226,6 +226,7 @@ def _run_hook(command: str, cwd: str = _REPO_ROOT) -> dict | None:
             "tool_name": "Bash",
             "tool_input": {"command": command},
             "cwd": cwd,
+            **({"permission_mode": mode} if mode else {}),
         }
     )
     result = subprocess.run(
@@ -238,6 +239,14 @@ def _run_hook(command: str, cwd: str = _REPO_ROOT) -> dict | None:
 
 def _decision(payload: dict | None) -> str | None:
     return payload["hookSpecificOutput"]["permissionDecision"] if payload else None
+
+
+# The start of the reason for an `rm -rf` typed in the command (not run from a file).
+_TYPED = "this command runs `rm` with both recursive and force"
+
+
+def _reason(payload: dict | None) -> str:
+    return payload["hookSpecificOutput"]["permissionDecisionReason"] if payload else ""
 
 
 def _write(directory: str, name: str, text: str) -> None:
@@ -348,24 +357,26 @@ def main() -> int:
     asked = _run_hook(overflow)
     _check(asked is not None and asked["hookSpecificOutput"]["permissionDecision"] == "ask",
            "rm with uncheckable argument combinations -> ask", failures)
-    denied = _run_hook("rm -rf build")
+    asked = _run_hook("rm -rf build")
     _check(
-        denied is not None
-        and denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-        and denied["hookSpecificOutput"]["hookEventName"] == "PreToolUse",
-        "rm -rf build -> permissionDecision: deny",
+        asked is not None
+        and asked["hookSpecificOutput"]["permissionDecision"] == "ask"
+        and asked["hookSpecificOutput"]["hookEventName"] == "PreToolUse",
+        "rm -rf build -> permissionDecision: ask",
         failures,
     )
     _check(
-        denied is not None and "AskUserQuestion" in denied["hookSpecificOutput"]["permissionDecisionReason"],
-        "denial reason instructs AskUserQuestion",
+        asked is not None and "do NOT route around this hook" in asked["hookSpecificOutput"]["permissionDecisionReason"],
+        "the reason says not to work around a declined removal",
         failures,
     )
     _check(
-        denied is not None and "rm -r " in denied["hookSpecificOutput"]["permissionDecisionReason"],
-        "denial reason suggests rm / rm -r",
+        asked is not None and "rm -r " in asked["hookSpecificOutput"]["permissionDecisionReason"],
+        "the reason suggests rm / rm -r",
         failures,
     )
+    _check(_decision(_run_hook("rm -rf build", mode="bypassPermissions")) == "deny",
+           "rm -rf build when no one can be asked -> deny", failures)
     _check(_run_hook("rm -r build") is None, "rm -r build -> defer", failures)
     _check(_run_hook("ls -la") is None, "ls -la -> defer", failures)
 
@@ -433,12 +444,12 @@ def main() -> int:
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)
         appended = "printf 'rm -rf ~\\n' > x.sh; printf 'echo ok\\n' >> x.sh; bash x.sh"
-        decision = _decision(_run_hook(appended, project))
-        _check(decision == "deny", f"`>>` adds to the remembered script (PR review) -> {decision}", failures)
+        reason = _reason(_run_hook(appended, project))
+        _check(_TYPED in reason, f"`>>` adds to the remembered script (PR review) -> {reason[:60]!r}", failures)
         decision = _decision(_run_hook("printf 'echo ok\\n' >> clean.sh; ./clean.sh", project))
         _check(decision == "ask", f"`>>` keeps the file's existing body -> {decision}", failures)
-        decision = _decision(_run_hook("./clean.sh && rm -rf build", project))
-        _check(decision == "deny", f"typed rm -rf beside a script still denies -> {decision}", failures)
+        reason = _reason(_run_hook("./clean.sh && rm -rf build", project))
+        _check(_TYPED in reason, f"typed rm -rf beside a script is reported as typed -> {reason[:60]!r}", failures)
 
     print()
     if failures:

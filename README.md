@@ -28,8 +28,8 @@ The repository implements Claude Code's hook system for validating and enhancing
 - **file_protection.py** (PreToolUse): Prevents modification of sensitive files:
   - Blocks editing of `.env`, lock files (`package-lock.json`, `Package.resolved`, `bun.lock`, `Cargo.lock`), and `.git/` directory contents
 
-- **rm_rf_guard.py**, **dangerous_commands.py**, **secrets_guard.py**, **config_guard.py** (PreToolUse): the deterministic guards. They own every `deny`:
-  - `rm_rf_guard` denies any recursive forced `rm`. `dangerous_commands` covers destructive git (reset --hard, force push, clean -f, branch -D, ...), downloads piped into a shell, disk writes, `chmod -R 777`, crontab, package publishing, `find -delete`, cloud/Kubernetes/database deletes, and switching off security controls. `secrets_guard` blocks reading or exfiltrating credentials. `config_guard` stops the agent editing its own settings, hooks, MCP servers, other harnesses' config, and persistence locations (shell rc files, git hooks, launchd, cron).
+- **rm_rf_guard.py**, **dangerous_commands.py**, **secrets_guard.py**, **config_guard.py** (PreToolUse): the deterministic guards. They own every `deny` and every deterministic `ask`:
+  - `rm_rf_guard` asks before any recursive forced `rm`. `dangerous_commands` covers destructive git (reset --hard, force push, branch -D, ...), downloads piped into a shell, disk writes, `chmod -R 777`, crontab, package publishing, cloud/Kubernetes/database deletes, and switching off security controls; its local file removals (`git clean -f`, `git rm -f`, `find -delete`, `shred`, `crontab -r`) ask rather than deny. `secrets_guard` blocks reading or exfiltrating credentials. `config_guard` stops the agent editing its own settings, hooks, MCP servers, other harnesses' config, and persistence locations (shell rc files, git hooks, launchd, cron), and asks about writes to a computed path (`cp x "$OUT"`) when the command copies, deletes or writes config-like text there.
   - All four parse the command with a shared bash-subset parser (`shell_lexer.py`, `shell_parse.py`), so newlines, `sudo -u x`, `timeout 5`, `bash -c`, `eval`, `ssh host '...'`, `$(...)`, heredocs fed to a shell and interpreter one-liners such as `python -c "os.system(...)"` cannot hide a command. `shell_sources.py` also reads what a command runs from disk (shell scripts, `npm run` scripts, Makefile recipes); a match found only there asks instead of denying.
   - Under `bypassPermissions` or `dontAsk`, where nobody can answer, their `ask` becomes `deny` (`HOOK_UNATTENDED_KEEP_ASK=1` opts out).
   - Each has `*_DISABLE` and `*_ASK` switches, documented at the top of the script.
@@ -42,7 +42,7 @@ The repository implements Claude Code's hook system for validating and enhancing
 
 `bash_risk_judge.py` is the first hook that consults a model. The rules it follows:
 
-1. Deterministic hooks decide first and alone. `rm_rf_guard.py` and `secrets_guard.py` are unchanged and still emit `deny`; a `deny` from any hook wins over an `ask` from this one.
+1. Deterministic hooks decide first and alone. `rm_rf_guard.py` asks and `secrets_guard.py` denies; a `deny` from any hook wins over an `ask` from this one.
 2. The model can only raise the bar. The hook emits `ask` or `{}`; it never emits `allow` or `deny`.
 3. Fallback is the status quo. Any failure to get a well-formed answer inside the timeout produces `{}`.
 
