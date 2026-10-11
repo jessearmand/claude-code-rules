@@ -76,6 +76,8 @@ SOURCE_TOO_LARGE = "\0too-large"
 # name, joined by _FIELD, so subshells and branches treat them like variables.
 _POSITIONALS = "@"
 _FIELD = "\x1f"
+# Starts the value of a compound array assignment; the elements follow, _FIELD-separated.
+_ARRAY = "\x1e"
 _GLOB_CHARS = re.compile(r"[*?[]")
 # A variable value meaning "may be unset" (`true || unset X`).
 UNSET = "\0unset"
@@ -439,6 +441,8 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
                     redirects.append(Redirect(token.op, expanded.text, expanded.dynamic))
                 index += 2
                 continue
+        elif isinstance(token, Word) and token.elements is not None:
+            words.append(_compound_word(token, ctx, choice))
         elif isinstance(token, Word):
             params = _positionals(ctx) if token.text in ("$@", "${@}", "$*", "${*}") else None
             pieces = _at_word_pieces(token, ctx) if params is None else None
@@ -601,6 +605,17 @@ def _expand_brace_text(text: str, active: frozenset[int]) -> list[str]:
                 break  # the caller falls back to fragments
         return expanded
     return [text]
+
+
+def _compound_word(token: Word, ctx: _Context, choice: dict[str, str]) -> Word:
+    """`X=(r "a b" $Y)` as one assignment word: `X=` then the expanded elements,
+    marked as an array, which `_assign` stores as X[0], X[1]..."""
+    items: list[str] = []
+    for element in token.elements or []:
+        for piece in _brace_expand(element, ctx):
+            items += [w.text for w in _split_unquoted(piece, _expand_word(piece, ctx, choice), ctx)]
+    text = token.text + _ARRAY + _FIELD.join(items)
+    return Word(text, dynamic=bool(_UNRESOLVED.search(text)), substitutions=token.substitutions)
 
 
 def _split_unquoted(original: Word, expanded: Word, ctx: _Context) -> list[Word]:
@@ -843,6 +858,8 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
         for text in assignments:
             _assign(_through_nameref(text, ctx), ctx.variables, ctx.conditional)
         return rest, ()
+    if rest[0].text in _SPECIAL_BUILTINS and not rest[0].quoted:
+        _persist_prefix(assignments, rest, ctx)
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
         for word in _declare_attributes(rest[0].text, rest[1:], ctx):
@@ -856,6 +873,24 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
             if _ASSIGNMENT.match(word.text):
                 _assign(_through_nameref(word.text, ctx), ctx.variables, ctx.conditional)
     return rest, tuple(assignments)
+
+
+# POSIX special builtins: assignments before them stay in the shell (sh, dash,
+# bash --posix). Plain bash keeps them only when `export`/`readonly` names them.
+_SPECIAL_BUILTINS = frozenset({":", ".", "source", "break", "continue", "eval", "exec", "exit", "export",
+                               "readonly", "return", "set", "shift", "times", "trap", "unset"})
+
+
+def _persist_prefix(assignments: list[str], rest: list[Word], ctx: _Context) -> None:
+    """`X=r export X` keeps X=r in every shell; `X=r :` keeps it in POSIX shells
+    only, so there the value is one possibility beside the old one."""
+    named = {w.text.split("=", 1)[0] for w in rest[1:]} if rest[0].text in ("export", "readonly") else set()
+    for text in assignments:
+        name = text.split("=", 1)[0].rstrip("+")
+        certain = name in named
+        if not certain and name not in ctx.variables:
+            ctx.variables[name] = (UNSET,)
+        _assign(_through_nameref(text, ctx), ctx.variables, ctx.conditional or not certain)
 
 
 def _through_nameref(text: str, ctx: _Context) -> str:
@@ -1084,6 +1119,9 @@ def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: boo
     name, _, value = text.partition("=")
     append = name.endswith("+")
     name = name[:-1] if append else name
+    if value.startswith(_ARRAY) and _NAME.fullmatch(name):
+        _assign_array(name, value[1:].split(_FIELD) if value[1:] else [], append, variables, keep_previous)
+        return
     element = _ELEMENT.fullmatch(name)
     # `X[2]=v` sets element X[2]; element 0 is also plain $X, as in bash.
     keys = [f"{element.group(1)}[{int(element.group(2))}]"] if element else []
@@ -1097,6 +1135,27 @@ def _assign(text: str, variables: dict[str, tuple[str, ...]], keep_previous: boo
         # Not capped: every value stays possible. Their number is bounded by the
         # assignments written in the command line itself.
         variables[key] = tuple(dict.fromkeys(values))
+
+
+_INDEXED = re.compile(r"\[(\d+)\]=(.*)", re.DOTALL)
+
+
+def _assign_array(name: str, items: list[str], append: bool, variables: dict[str, tuple[str, ...]],
+                  keep_previous: bool) -> None:
+    """`X=(a b)` sets X[0]=a, X[1]=b (and $X is X[0]); `X+=(c)` appends after the
+    last element; `[N]=v` sets element N."""
+    indexes = [int(m.group(1)) for k in variables if (m := re.fullmatch(re.escape(name) + r"\[(\d+)\]", k))]
+    if not append and not keep_previous:
+        for key in [k for k in variables if k == name or k.startswith(name + "[")]:
+            variables.pop(key)
+        indexes = []
+    position = max(indexes) + 1 if append and indexes else 0
+    for item in items:
+        indexed = _INDEXED.fullmatch(item)
+        if indexed:
+            position, item = int(indexed.group(1)), indexed.group(2)
+        _assign(f"{name}[{position}]={item}", variables, keep_previous)
+        position += 1
 
 
 def _bounded(options: list[str | None]) -> tuple[str | None, ...]:

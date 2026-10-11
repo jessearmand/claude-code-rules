@@ -32,6 +32,8 @@ REDIRECT_OPERATORS = frozenset({"<<-", "<<<", "&>>", "&>", "<<", ">>", ">|", "<&
 HEREDOC_OPERATORS = frozenset({"<<", "<<-"})
 # Only space and tab are blanks to the shell; a carriage return is part of a word.
 _METACHARACTERS = frozenset(" \t\n|&;()<>")
+# The text before `(` in a compound array assignment: `X=`, `X+=`.
+_COMPOUND_TARGET = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 _ANSI_C_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b",
                    "f": "\f", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
 
@@ -56,6 +58,8 @@ class Word:
     # Offsets in `text` of the unquoted `{`, `,` and `}`: only those take part in
     # brace expansion (`{rm,-rf,x}` is three words; `'{a,b}'` is one).
     braces: tuple[int, ...] = ()
+    # `X=(a "b c")`: the elements of a compound array assignment; None otherwise.
+    elements: list[Word] | None = None
 
 
 @dataclass(frozen=True)
@@ -178,7 +182,32 @@ class _Lexer:
                 add(c)
                 self.i += 1
         word.text = "".join(parts)
+        if self.i < self.n and self.s[self.i] == "(" and not word.quoted and _COMPOUND_TARGET.fullmatch(word.text):
+            self._compound_elements(word)
         return word
+
+    def _compound_elements(self, word: Word) -> None:
+        """`NAME=(...)` / `NAME+=(...)`: read the element words up to the closing `)`."""
+        self.i += 1
+        word.elements = []
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c == ")":
+                self.i += 1
+                return
+            if c in " \t\n":
+                self.i += 1
+            elif c == "#":
+                end = self.s.find("\n", self.i)
+                self.i = self.n if end < 0 else end
+            elif c in _METACHARACTERS:
+                self.i += 1  # not valid inside an array; bash rejects the line
+            else:
+                element = self._read_word()
+                word.elements.append(element)
+                word.dynamic = word.dynamic or element.dynamic
+                word.substitutions.extend(element.substitutions)
+        self.result.unterminated = True
 
     def _single_quoted(self) -> str:
         end = self.s.find("'", self.i + 1)

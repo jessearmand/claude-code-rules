@@ -151,6 +151,11 @@ SHOULD_BLOCK = [
     "X=r; X+=m; declare -n Y=X; \"$Y\" -rf victim",  # declare attributes (PR review)
     "declare -l X=RM; $X -rf victim",
     "f(){ local -n r=$1; r=rm; }; f X; $X -rf victim",
+    "X=(r); X[0]+=m; \"${X[0]}\" -rf victim",  # compound array assignments (PR review)
+    "X=(echo); X+=(rm); ${X[1]} -rf victim",
+    "declare -a X=([3]=rm); ${X[3]} -rf victim",
+    "X=r export X; X+=m; \"$X\" -rf victim",  # prefix assignments kept by export (PR review)
+    "X=r :; X+=m; \"$X\" -rf victim",  # and by any special builtin in POSIX shells
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line

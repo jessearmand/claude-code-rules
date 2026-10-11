@@ -125,6 +125,13 @@ def main() -> int:
     parsed = parse("f(){ local -n r=$1; r=rm; }; f X; echo $X", "/")
     _check(parsed.commands[-1].argv == ("echo", "rm") and not parsed.truncated,
            f"local -n in a function: {[c.argv for c in parsed.commands]}", failures)
+    argv = parse("X=(a 'b c' $Y [5]=d); X+=(e); echo \"${X[1]}\" ${X[5]} ${X[6]} $X; X=(z); echo ${X[1]}",
+                 "/").commands
+    _check([c.argv for c in argv] == [("echo", "b c", "d", "e", "a"), ("echo", "${X[1]}")],
+           f"compound array assignments: {[c.argv for c in argv]}", failures)
+    argv = parse("X=a; X=b true; echo $X; X=c export X; echo $X", "/").commands
+    _check(argv[1].argv == ("echo", "a") and argv[-1].argv == ("echo", "c"),
+           f"prefix assignments: temporary, kept by export: {[c.argv for c in argv]}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 
