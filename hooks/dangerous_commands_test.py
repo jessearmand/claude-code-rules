@@ -225,6 +225,10 @@ CASES = [
     ("{git,clean,-fdx}", "ask", "git-clean-force"),
     ("printf 'DROP TABLE users;\\n' | sqlite3 prod.db", "deny", "sql-destructive"),  # piped SQL (PR review)
     ("printf 'SELECT 1;' | sqlite3 prod.db", None, None),
+    ("psql -c 'DELETE FROM users -- all rows'", "deny", "sql-destructive"),  # a comment ends nothing (PR review)
+    ("psql -c 'DELETE FROM users WHERE id = 1 -- one'", None, None),
+    ("cat <<'SQL' | psql\nDROP TABLE users;\nSQL", "deny", "sql-destructive"),  # SQL piped through cat (PR review)
+    ("cat <<'SQL' | psql\nSELECT 1;\nSQL", None, None),
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 prod.db < q.sql", "deny", "sql-destructive"),
     ("$(printf git) reset --hard", "deny", "git-reset-hard"),
     ("cd /dev && sudo dd if=/dev/zero of=sda", "deny", "device-write"),  # relative dd output (PR review)

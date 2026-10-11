@@ -297,16 +297,36 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
             text = _input_file(redirect.target, command, ctx)
             if text:
                 texts.append(text)
-    # `printf 'DROP TABLE t;' | sqlite3 db`: statements piped in from literal text.
+    # `printf 'DROP TABLE t;' | sqlite3 db`, `cat <<SQL | psql`: statements piped in.
     feeder = ctx.parsed.previous_stage(command)
-    if feeder is not None and feeder.name in ("echo", "printf") and not feeder.dynamic_head:
-        texts.append(echoed_text(feeder))
+    if feeder is not None and not feeder.dynamic_head:
+        texts += _piped_texts(feeder, ctx)
     return texts
+
+
+def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
+    """What a pipeline stage prints when it is literal: echo/printf text, or
+    `cat` of its heredoc, here-string or files."""
+    if feeder.name in ("echo", "printf"):
+        return [echoed_text(feeder)]
+    if feeder.name != "cat":
+        return []
+    texts = [r.body or r.target for r in feeder.redirects if r.op in ("<<", "<<-", "<<<")]
+    texts += [r for r in (_input_file(r.target, feeder, ctx) for r in feeder.redirects
+                          if r.op == "<" and not r.dynamic) if r]
+    texts += [t for t in (_input_file(a, feeder, ctx) for a in operands(feeder.args) if a != "-") if t]
+    return texts
+
+
+# SQL comments: `-- to end of line` and `/* ... */`.
+_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 
 
 def _destructive_sql(command: SimpleCommand, ctx: RuleContext) -> str | None:
     for text in _sql_texts(command, ctx):
-        match = _SQL_DESTRUCTIVE.search(text) or _NOSQL.search(text)
+        # `DELETE FROM users -- all rows` still deletes every row: match without comments.
+        uncommented = _SQL_COMMENT.sub(" ", text)
+        match = _SQL_DESTRUCTIVE.search(uncommented) or _NOSQL.search(uncommented)
         if match:
             return f"{command.name}: {match.group(0).strip()}"
     return None

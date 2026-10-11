@@ -46,6 +46,11 @@ REDACTIONS = [
     ("KEY='-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----'; echo ok",
      "KEY='<redacted private key>'; echo ok"),
     ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA", "<redacted private key>"),
+    # Basic-auth credentials (PR review).
+    ("curl -u alice:s3cr3t https://example.com", "curl -u alice:<redacted> https://example.com"),
+    ("curl https://alice:s3cr3t@example.com/x", "curl https://alice:<redacted>@example.com/x"),
+    ("curl --user=bob:pw x", "curl --user=bob:<redacted> x"),
+    ("ssh user@host", "ssh user@host"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),
     # References and substitutions are not literals. Redacting them used to turn
