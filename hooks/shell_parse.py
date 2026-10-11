@@ -62,6 +62,7 @@ from shell_expand import (
     _glob_words,
     _split_unquoted,
     _star_separator,
+    array_words,
     command_output,
     echoed_text,
 )
@@ -164,8 +165,11 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     new_shell = depth > 0 and not shares_shell
     if new_shell:
         ctx.trap_frames.append([])
-    outer_returned = ctx.returned
+    outer_returned, outer_exited = ctx.returned, ctx.exited
     ctx.returned = False
+    if new_shell:
+        ctx.exited = False
+    coproc_level: int | None = None  # block depth a `coproc { ... }` body runs above
 
     pipeline, stage = ctx.next_pipeline(), 0
     segment: list = []
@@ -186,6 +190,12 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                     # do not let its assignments or cd change the declaring shell.
                     functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name, []))
                 isolated = token.op in _PIPES or stage > 0 or token.op == "&"
+                first = next((t for t in segment if isinstance(t, Word)), None)
+                if first is not None and first.text == "coproc" and not first.quoted:
+                    # `coproc CMD` runs asynchronously, like `CMD &`, body and all.
+                    isolated, coproc_level = True, blocks
+                elif coproc_level is not None and blocks > coproc_level:
+                    isolated = True
                 if isolated and stage > 0 and token.op not in _PIPES and token.op != "&" \
                         and "on" in ctx.variables.get(SHELL_OPTION + "lastpipe", ()):
                     # `shopt -s lastpipe`: the last stage runs in this shell (`... | read X`).
@@ -196,16 +206,30 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                     functions[-1][3].append(_BodyStep(tuple(segment), isolated,
                                                       previous in _AND_OR or blocks > level + 1))
                 blocks = _track_blocks(segment, blocks)
+                if coproc_level is not None and blocks <= coproc_level and not (
+                        first is not None and first.text == "coproc"):
+                    coproc_level = None
                 if isolated:
                     # Every part of a pipeline, and a background command, runs in its own subshell.
                     saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                     ctx.cwd, ctx.cwd_options, ctx.variables = saved
-                    ctx.returned = False  # a `return` in a subshell ends only that
+                    ctx.returned = ctx.exited = False  # a `return`/`exit` in a subshell ends only that
                 else:
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                 if functions:
-                    ctx.returned = False  # a body being declared does not run yet
+                    ctx.returned = ctx.exited = False  # a body being declared does not run yet
+                if ctx.exited and subshells:
+                    ctx.exited = False  # `( exit )` ends only the subshell
+                if ctx.exited:
+                    # `exit` ends this shell: nothing after it runs. One that may not have
+                    # run leaves the rest possible.
+                    ctx.exited = False
+                    if not may_not_run:
+                        ctx.exited = True
+                        segment = []
+                        break
+                    outer_conditional = True
                 if ctx.returned and return_boundary:
                     # `return` in a sourced script ends it; after one that may not have
                     # run, the rest of the script may not run either.
@@ -237,9 +261,10 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     ctx.conditional = outer_conditional
     if new_shell:
         # The shell ends here: its EXIT traps run with the state it ends in.
+        ctx.exited = False
         _run_exit_traps(ctx)
         ctx.trap_frames.pop()
-        ctx.returned = outer_returned
+        ctx.returned, ctx.exited = outer_returned, outer_exited
         ctx.cwd, ctx.cwd_options, ctx.variables = entry
     elif not shares_shell or return_boundary:
         ctx.returned = outer_returned
@@ -377,8 +402,11 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
             words.append(_compound_word(token, ctx, choice))
         elif isinstance(token, Word):
             params = _positionals(ctx) if token.text in ("$@", "${@}", "$*", "${*}") else None
-            pieces = _at_word_pieces(token, ctx) if params is None else None
-            if params is not None:
+            elements = array_words(token, ctx) if params is None else None
+            pieces = _at_word_pieces(token, ctx) if params is None and elements is None else None
+            if elements is not None:
+                words.extend(elements)  # `"${X[@]}"`: one word per element
+            elif params is not None:
                 # `"$@"`: one word per positional parameter; quoted `"$*"` joins them
                 # with the first character of IFS (`IFS=; "$*"` runs them together).
                 joined = token.quoted and "*" in token.text
@@ -539,8 +567,9 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
     ctx.result.commands.append(command)
     if command.name in ("return", "exit") and not command.dynamic_head:
         # `return`, `then return`, `command return`: the enclosing function or
-        # sourced script ends here (`exit` ends even more).
+        # sourced script ends here; `exit` ends the whole shell.
         ctx.returned = True
+        ctx.exited = ctx.exited or command.name == "exit"
     _record_written_file(command, ctx)
     _record_link(command, ctx)
     _parse_payloads(command, ctx, depth)

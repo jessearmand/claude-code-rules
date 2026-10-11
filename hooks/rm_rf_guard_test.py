@@ -189,6 +189,12 @@ SHOULD_BLOCK = [
     "read X <<<echo <<< r''m; \"$X\" -rf victim",  # the last stdin redirect wins (PR review)
     "X=r''m; read -t0 X <<<echo; \"$X\" -rf victim",  # read -t 0 assigns nothing (PR review)
     "X=rm; read -t \"$T\" X <<<echo; $X -rf victim",
+    "X=echo; trap '\"$X\" -rf victim' EXIT; X=r; X+=m; exit; X=echo",  # exit ends the shell (PR review)
+    "X=r; X+=m; coproc X=echo; \"$X\" -rf victim",  # coproc runs on its own (PR review)
+    "X=r; X+=m; coproc name { X=echo; }; \"$X\" -rf victim",
+    "X=(r m); ${X[-2]}${X[-1]} -rf victim",  # negative and arithmetic subscripts (PR review)
+    "i=1; X=(a rm); ${X[i]} -rf victim",
+    "X=(rm -rf victim); \"${X[@]}\"",  # every element as its own word
     "X='a[$(rm -rf victim)]'; Y=X; let Y+1",
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return

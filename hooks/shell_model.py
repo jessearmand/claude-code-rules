@@ -204,6 +204,8 @@ class _Context:
     # A `return` ran in the step being parsed; the enclosing function call or
     # sourced script decides what it ends.
     returned: bool = False
+    # An `exit` ran: the shell it ends stops there (its EXIT traps then run).
+    exited: bool = False
     # Per shell, innermost last: trap handlers to check again when it exits,
     # as (handler, via, depth, indirect).
     trap_frames: list[list[tuple[str, tuple[str, ...], int, bool]]] = field(default_factory=lambda: [[]])
@@ -219,6 +221,19 @@ def _positionals(ctx: _Context) -> tuple[str, ...] | None:
     if not values or values[0] == UNSET:
         return None
     return tuple(values[0].split(_FIELD)) if values[0] else ()
+
+
+def _array_items(name: str, variables: dict[str, tuple[str, ...]]) -> list[tuple[int, str]] | None:
+    """(index, current value) of every element of array `name`, by index; a
+    scalar is element 0. None when nothing about `name` is known."""
+    prefix = name + "["
+    items = sorted((int(key[len(prefix):-1]), values[0]) for key, values in variables.items()
+                   if key.startswith(prefix) and key.endswith("]") and key[len(prefix):-1].isdigit())
+    if not items and name in variables:
+        items = [(0, variables[name][0])]
+    if not items:
+        return None
+    return [(index, value) for index, value in items if value != UNSET]
 
 
 def _target_name(name: str, ctx: _Context) -> str:

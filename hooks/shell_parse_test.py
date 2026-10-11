@@ -157,6 +157,10 @@ def main() -> int:
     parsed = parse("X=abc; echo ${X@U} ${X@Q} ${X@P}", "/")
     _check(parsed.commands[0].argv == ("echo", "ABC", "'abc'", "${X@P}") and parsed.truncated,
            f"@ transformations; @P is not modelled: {parsed.commands[0].argv}", failures)
+    argv = parse("X=(a 'b c' d); echo ${#X[@]} \"${X[@]}\" ${X[*]} ${X[1+1]} ${X[-1]}", "/").commands[-1].argv
+    _check(argv == ("echo", "3", "a", "b c", "d", "a", "b", "c", "d", "d", "d"), f"array subscripts: {argv}", failures)
+    argv = [c.argv for c in parse("X=echo; (exit); X=ls; exit; X=rm; echo $X", "/").commands]
+    _check(argv == [("exit",), ("exit",)], f"exit ends the shell, ( exit ) only the subshell: {argv}", failures)
     argv = parse("bash <(printf 'echo '; printf hi)", "/").commands[-1].argv
     _check(argv == ("echo", "hi"), f"process substitution output is one stream: {argv}", failures)
 

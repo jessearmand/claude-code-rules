@@ -8,6 +8,7 @@ Part of shell_parse; import from there.
 
 from __future__ import annotations
 
+import ast
 import glob
 import itertools
 import os
@@ -20,7 +21,6 @@ import shell_printf
 from shell_lexer import Word, nested_substitutions
 from shell_model import (
     _ARRAY,
-    _ELEMENT,
     _FIELD,
     _NAME,
     _UNRESOLVED,
@@ -28,6 +28,7 @@ from shell_model import (
     UNSET,
     ParseResult,
     SimpleCommand,
+    _array_items,
     _assign,
     _Context,
     _positionals,
@@ -62,6 +63,76 @@ def _arithmetic_expressions(text: str) -> list[str]:
 
 
 _UNMODELLED_TRANSFORM = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?@[A-Za-z]\}")
+_SUBSCRIPTED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\[([^\]]+)\]")
+
+
+def _element_value(name: str, subscript: str, ctx: _Context) -> str | None:
+    """`X[N]` (negative N counts back from the last element), `X[@]`/`X[*]`
+    (every element, space-joined) or `X[#]` (their count), when X is known."""
+    items = _array_items(name, ctx.variables)
+    if items is None:
+        return None
+    if subscript in ("@", "*"):
+        return (_star_separator(ctx) if subscript == "*" else " ").join(v for _, v in items)
+    if subscript == "#":
+        return str(len(items))
+    if not re.fullmatch(r"-?\d+", subscript):
+        return None
+    index = int(subscript)
+    if index < 0:
+        index = (items[-1][0] + 1 + index) if items else -1
+    return next((v for i, v in items if i == index), None) if index >= 0 else None
+
+
+def array_words(token: Word, ctx: _Context) -> list[Word] | None:
+    """`"${X[@]}"`: one word per element; `"${X[*]}"` one word joining them;
+    unquoted, each element is split further. None if not that shape or X unknown."""
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\[([@*])\]\}", token.text)
+    items = _array_items(_target_name(match.group(1), ctx), ctx.variables) if match else None
+    if items is None:
+        return None
+    values = [v for _, v in items]
+    if token.quoted:
+        return [Word(_star_separator(ctx).join(values))] if match.group(2) == "*" else [Word(v) for v in values]
+    return [Word(part) for v in values for part in shell_ifs.split(v, _ifs_values(ctx)[0])]
+
+
+def _arithmetic_index(expression: str, value: Callable[[str, bool], str | None]) -> int | None:
+    """An array subscript's value: integer arithmetic over known variables
+    (`i`, `$i`, `n-1`); None if any part is not known."""
+    def name_value(match: re.Match[str]) -> str:
+        found = value(match.group(1), False)
+        return found if found is not None and re.fullmatch(r"-?\d+", found.strip()) else "\0"
+    text = re.sub(r"\$?\{?([A-Za-z_][A-Za-z0-9_]*)\}?", name_value, expression)
+    if "\0" in text or not re.fullmatch(r"[\d\s+\-*/%()]+", text):
+        return None
+    try:
+        return _integer(ast.parse(text.strip(), mode="eval").body)
+    except (SyntaxError, ValueError, ZeroDivisionError, RecursionError):
+        return None
+
+
+def _integer(node: ast.AST) -> int:
+    """Evaluate integer arithmetic the way bash does (division truncates toward zero)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        operand = _integer(node.operand)
+        return -operand if isinstance(node.op, ast.USub) else operand
+    if isinstance(node, ast.BinOp):
+        left, right = _integer(node.left), _integer(node.right)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
+            quotient = abs(left) // abs(right) * (1 if (left >= 0) == (right >= 0) else -1)
+            return left - right * quotient if isinstance(node.op, ast.Mod) else quotient
+    raise ValueError("not integer arithmetic")
+
+
 _ARITHMETIC_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -259,6 +330,9 @@ def _expand_word(word: Word, ctx: _Context, choice: dict[str, str] | None = None
         if name in ctx.variables:
             current = ctx.variables[name][0]
             return None if current == UNSET else _with_case(name, current, ctx)
+        subscripted = _SUBSCRIPTED.fullmatch(name)
+        if subscripted:
+            return _element_value(_target_name(subscripted.group(1), ctx), subscripted.group(2), ctx)
         if "[" in name:
             return None
         if name == "HOME":
@@ -414,12 +488,21 @@ def _expand_braced(body: str, original: str, value: Callable[[str, bool], str | 
     if _NAME.fullmatch(body) or body.isdigit() or body in ("@", "*"):
         found = value(body, at_start)
         return original if found is None else found
-    element = _ELEMENT.fullmatch(body)
+    element = _SUBSCRIPTED.fullmatch(body)
     if element:
-        # `${X[0]}`: elements are stored as X[0], X[1]...; X[0] is also plain $X.
-        found = value(f"{element.group(1)}[{int(element.group(2))}]", False)
-        if found is None and int(element.group(2)) == 0:
-            found = value(element.group(1), False)
+        # `${X[0]}`, `${X[-1]}`, `${X[i+1]}`, `${X[@]}`: elements are stored as X[0],
+        # X[1]...; X[0] is also plain $X. A subscript is arithmetic.
+        name, subscript = element.groups()
+        if subscript not in ("@", "*"):
+            index = _arithmetic_index(subscript, value)
+            if index is None:
+                return original
+            subscript = str(index)
+        found = value(f"{name}[{subscript}]", False)
+        return original if found is None else found
+    counted = _SUBSCRIPTED.fullmatch(body[1:]) if body.startswith("#") else None
+    if counted and counted.group(2) in ("@", "*"):
+        found = value(f"{counted.group(1)}[#]", False)  # `${#X[@]}`: how many elements
         return original if found is None else found
     if body.startswith("!") and _NAME.fullmatch(body[1:]):
         # `${!X}`: the value of the variable whose name X holds.
