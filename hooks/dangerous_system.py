@@ -173,10 +173,11 @@ def _run_downloaded(command: SimpleCommand, ctx: RuleContext) -> str | None:
 
 
 def _uninspected_program(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    """A script, Makefile or recipe set this command runs that was too large to read."""
+    """A script, Makefile or recipe set this command runs that could not be read
+    (too large, binary, or past a resolver limit)."""
     for skipped, label in ctx.parsed.skipped_sources:
         if skipped is command:
-            return f"{command.name} runs {label} (too large to inspect)"
+            return f"{command.name} runs {label} (could not be inspected)"
     return None
 
 
@@ -512,7 +513,7 @@ SYSTEM_RULES: tuple[DangerRule, ...] = (
                _fetch_and_execute),
     DangerRule("run-downloaded", CRITICAL, "runs a file downloaded earlier in the same command", _FETCH_HINT,
                _run_downloaded),
-    DangerRule("uninspected-program", HIGH, "runs program text too large for the guards to read",
+    DangerRule("uninspected-program", HIGH, "runs program text the guards could not read",
                "Confirm with the user, or run the steps it needs directly so they can be checked.",
                _uninspected_program, decision="ask"),
     DangerRule("incomplete-analysis", HIGH, "could not be analysed completely",

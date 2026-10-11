@@ -107,10 +107,8 @@ def _read_text(path: str) -> str | None:
         data = handle.read(MAX_SOURCE_BYTES + 1)
     if b"\0" in data:
         return None
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    # bash runs a script with stray non-UTF-8 bytes; read it the same way.
+    return data.decode("utf-8", errors="replace")
 
 
 def _absolute(path: str, cwd: str) -> str:
@@ -140,7 +138,10 @@ def _script(path: str, cwd: str, written: dict[str, WrittenFile], require_sheban
     if _too_large(absolute):
         return [(SOURCE_TOO_LARGE, f"script {path}")]  # the caller asks instead of guessing
     text = _read_text(absolute)
-    return [] if text is None else [(text, f"script {path}")]
+    if text is None:
+        # A file a shell runs that cannot be read as text: ask rather than guess.
+        return [(SOURCE_TOO_LARGE, f"script {path}")] if os.path.isfile(absolute) else []
+    return [(text, f"script {path}")]
 
 
 # --------------------------------------------------------------------------- #
@@ -250,7 +251,7 @@ def _workspace_dirs(root: str) -> list[str]:
     for pattern in patterns:
         if pattern.startswith("!"):
             continue
-        for path in sorted(glob.glob(os.path.join(root, pattern)))[:200]:
+        for path in sorted(glob.glob(os.path.join(root, pattern))):
             if os.path.isfile(os.path.join(path, "package.json")) and path not in found:
                 found.append(os.path.normpath(path))
     return found

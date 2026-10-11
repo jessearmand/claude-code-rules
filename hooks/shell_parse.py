@@ -190,6 +190,15 @@ SourceResolver = Callable[[SimpleCommand, str, "dict[str, WrittenFile]"], "list[
 _MAX_CWD_OPTIONS = 8
 
 
+@dataclass(frozen=True)
+class _BodyStep:
+    """One command of a function body, as declared."""
+
+    tokens: tuple
+    isolated: bool  # a pipeline stage or background command: its own subshell
+    conditional: bool  # after && / || or inside an if/loop in the body
+
+
 @dataclass
 class _Context:
     result: ParseResult
@@ -204,8 +213,9 @@ class _Context:
     variables: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # The command being parsed may not run: assignments add values, not replace them.
     conditional: bool = False
-    # Declared functions: name -> variables their body sets (None: makes unknown).
-    functions: dict[str, dict[str, tuple[str, ...] | None]] = field(default_factory=dict)
+    # Declared functions: name -> the body's commands, replayed at each call.
+    functions: dict[str, list[_BodyStep]] = field(default_factory=dict)
+    calling: set[str] = field(default_factory=set)  # functions being replayed (no recursion)
     # Files this command line writes from literal text before running them:
     # `cat > x.sh <<'EOF' ... EOF; bash x.sh`. Absolute path -> content.
     written_files: dict[str, WrittenFile] = field(default_factory=dict)
@@ -249,8 +259,10 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     segment: list = []
     subshells: list[tuple[str | None, tuple[str | None, ...], dict[str, tuple[str, ...]]]] = []
     outer_conditional, previous, blocks = ctx.conditional, ";", 0
-    # Function bodies being declared: (block depth before the body, state to restore at its end).
-    functions: list[tuple[int, tuple[str | None, tuple[str | None, ...], dict[str, tuple[str, ...]]], str]] = []
+    # Function bodies being declared: (block depth before the body, state to restore
+    # at its end, name, the body's commands).
+    functions: list[tuple[int, tuple[str | None, tuple[str | None, ...], dict[str, tuple[str, ...]]], str,
+                          list[_BodyStep]]] = []
     header = _FunctionHeader()
     for token in [*lexed.tokens, Operator("\n")]:
         if isinstance(token, Operator) and (token.op in _SEPARATORS or token.op in _PIPES):
@@ -260,9 +272,14 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                 if header.opens_body(segment):
                     # A declared function runs only when called: check its body, but
                     # do not let its assignments or cd change the declaring shell.
-                    functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name))
+                    functions.append((blocks, (ctx.cwd, ctx.cwd_options, dict(ctx.variables)), header.name, []))
+                isolated = token.op in _PIPES or stage > 0 or token.op == "&"
+                if functions:
+                    level = functions[-1][0]
+                    functions[-1][3].append(_BodyStep(tuple(segment), isolated,
+                                                      previous in _AND_OR or blocks > level + 1))
                 blocks = _track_blocks(segment, blocks)
-                if token.op in _PIPES or stage > 0 or token.op == "&":
+                if isolated:
                     # Every part of a pipeline, and a background command, runs in its own subshell.
                     saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables))
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
@@ -270,11 +287,9 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
                 else:
                     _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                 while functions and blocks <= functions[-1][0]:
-                    _, saved, name = functions.pop()
+                    _, saved, name, body = functions.pop()
                     if name:
-                        # What calling it later does to the caller's variables.
-                        ctx.functions[name] = {key: ctx.variables.get(key) for key in {*saved[2], *ctx.variables}
-                                               if ctx.variables.get(key) != saved[2].get(key)}
+                        ctx.functions[name] = body  # replayed, with its arguments, at each call
                     ctx.cwd, ctx.cwd_options, ctx.variables = saved
                 header.after_segment(segment)
                 segment = []
@@ -764,6 +779,10 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context) -> 
     text = next((r.target + "\n" if r.op == "<<<" else r.body for r in redirects
                  if (r.op == "<<<" and not r.dynamic) or (r.op in HEREDOC_OPERATORS and r.body is not None)),
                 None)
+    if text is None:
+        # `read X < <(echo rm)`: what the producer prints, when that is known.
+        text = next((t for r in redirects if r.op == "<" and (t := _produced_text(r.target, ctx)) is not None),
+                    None)
     array = "-a" in args
     if text is None or array:
         for name in names:
@@ -897,23 +916,42 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
     _record_written_file(command, ctx)
     _record_link(command, ctx)
     _parse_payloads(command, ctx, depth)
-    _call_function(command, ctx)
+    _call_function(command, ctx, depth)
     if outer is not None:
         ctx.cwd, ctx.cwd_options = outer  # the wrapper's directory applied to the child only
     else:
         _follow_directory_change(command, ctx)
 
 
-def _call_function(command: SimpleCommand, ctx: _Context) -> None:
-    """Calling a declared function applies what its body assigns, in this shell."""
-    effects = ctx.functions.get(command.name) if not command.dynamic_head else None
-    for name, values in (effects or {}).items():
-        if values is None:
-            ctx.variables.pop(name, None)
-        elif ctx.conditional:
-            ctx.variables[name] = tuple(dict.fromkeys((*values, *ctx.variables.get(name, ()))))
+def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
+    """Calling a declared function runs its body here, in this shell, with the
+    call's arguments as $1..$n: `f(){ "$1" -rf x; }; f rm` runs rm."""
+    body = ctx.functions.get(command.name) if not command.dynamic_head else None
+    if body is None or command.name in ctx.calling:
+        return
+    if depth >= MAX_DEPTH:
+        ctx.result.truncated = True
+        return
+    positionals = ctx.variables.get(_POSITIONALS)
+    conditional = ctx.conditional
+    ctx.variables[_POSITIONALS] = (_FIELD.join(command.args),)
+    ctx.calling.add(command.name)
+    try:
+        for step in body:
+            ctx.conditional = conditional or step.conditional
+            saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables)) if step.isolated else None
+            _segment(list(step.tokens), ctx, (*command.via, f"{command.name}()"), depth + 1, command.indirect,
+                     ctx.next_pipeline(), 0)
+            if saved:
+                ctx.cwd, ctx.cwd_options, ctx.variables = saved
+    finally:
+        ctx.calling.discard(command.name)
+        ctx.conditional = conditional
+        # The caller's positional parameters come back when the function returns.
+        if positionals is None:
+            ctx.variables.pop(_POSITIONALS, None)
         else:
-            ctx.variables[name] = values
+            ctx.variables[_POSITIONALS] = positionals
 
 
 def _follow_directory_change(command: SimpleCommand, ctx: _Context) -> None:
@@ -1251,6 +1289,17 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
     elif feeder.name == "cat" and len(feeder.args) == 1:
         # `cat script.sh | bash` runs the file just like `bash script.sh`.
         _run_file(feeder.args[0], command, ctx, nested)
+
+
+def _produced_text(operand: str, ctx: _Context) -> str | None:
+    """What `<(producer)` prints, when the producer only echoes literal text."""
+    if not (operand.startswith("<(") and operand.endswith(")")):
+        return None
+    producer = parse(operand[2:-1], ctx.cwd or "/")
+    if not producer.commands or any(c.name not in ("echo", "printf") or c.dynamic_head or c.via
+                                    for c in producer.commands):
+        return None
+    return "\n".join(_echoed_text(c) for c in producer.commands) + "\n"
 
 
 def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],

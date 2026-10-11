@@ -256,6 +256,10 @@ def main() -> int:
             handle.write("#!/bin/sh\n" + "echo hi\n" * 40_000 + "rm -rf victim\n")
         os.chmod(os.path.join(project, "large.sh"), 0o755)
         _check(_decision(_run_hook("./large.sh", project)) == "ask", "oversized script -> ask", failures)
+        with open(os.path.join(project, "binary.sh"), "wb") as handle:
+            handle.write(b"#!/bin/sh\0\nrm -rf victim\n")
+        os.chmod(os.path.join(project, "binary.sh"), 0o755)
+        _check(_decision(_run_hook("./binary.sh", project)) == "ask", "unreadable script -> ask", failures)
         with open(os.path.join(project, "Makefile"), "w", encoding="utf-8") as handle:
             handle.write("".join(f"t{i}:\n\techo {i}\n" for i in range(300)))
         targets = " ".join(f"t{i}" for i in range(300))

@@ -219,8 +219,10 @@ def written_paths(command: SimpleCommand) -> list[PathWrite]:
         found += _copy_like(args, _COPY_WITH_ARG[name])
         if name == "ln":
             found = [PathWrite(w.path, LINK) if w.action == WRITE else w for w in found]
-        if name == "mv":
-            operands = _operands(args, frozenset({"-t", "--target-directory", "-S", "--suffix"}))
+        if name == "mv" or (name == "rsync" and "--remove-source-files" in args):
+            # mv, and rsync --remove-source-files, take the sources away.
+            operands = _operands(args, frozenset({"-t", "--target-directory", "-S", "--suffix"})
+                                 | _COPY_WITH_ARG.get(name, frozenset()))
             target_dir = _option_value(args, ("-t", "--target-directory"))
             sources = operands if target_dir else operands[:-1]
             found += [PathWrite(path, MOVE) for path in sources]

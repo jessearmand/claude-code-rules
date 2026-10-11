@@ -123,6 +123,10 @@ SHOULD_BLOCK = [
     "for X in rm; do \"$X\" -rf victim; done",
     "X=rm; function f { X=echo; }; $X -rf victim",
     "X=echo; f() { X=rm; }; f; $X -rf victim",
+    # A call runs the body with its arguments; read from <(...) (PR review).
+    "f(){ \"$1\" -rf victim; }; f rm",
+    "function g { \"$@\"; }; g rm -rf victim",
+    "read X < <(echo rm); \"$X\" -rf victim",
     "X=rm; true || unset X; $X -rf victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
@@ -142,6 +146,8 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "f(){ \"$1\" -rf victim; }; f echo",
+    "f(){ f; }; f",  # recursion stops
     "X=echo; f() { X=rm; }; $X -rf victim",  # declared, never called
     "printf '%s\\n' a.txt b.txt | xargs rm",
     "mkdir -p src/{lib,bin} && echo '{rm,-rf,x}'",  # quoted braces stay one word
@@ -228,6 +234,11 @@ def main() -> int:
         invocations, _ = find_recursive_force_invocations("make --eval='x:;rm -rf victim' x", tmp,
                                                           shell_sources.resolve)
         _check(bool(invocations) and not invocations[0].indirect, "make --eval recipe", failures)
+        with open(os.path.join(tmp, "latin.sh"), "wb") as handle:
+            handle.write(b"#!/bin/sh\n# caf\xe9\nrm -rf victim\n")
+        os.chmod(os.path.join(tmp, "latin.sh"), 0o755)
+        invocations, _ = find_recursive_force_invocations("./latin.sh", tmp, shell_sources.resolve)
+        _check(bool(invocations), "script with a non-UTF-8 byte is still read", failures)
 
     print("\nTarget analysis:")
     with tempfile.TemporaryDirectory() as tmp:
