@@ -14,7 +14,13 @@ from collections.abc import Callable
 from shell_expand import (
     _echoed_text,
 )
-from shell_interpreters import awk_commands, inline_programs, shell_strings
+from shell_interpreters import (
+    awk_commands,
+    direct_shell_strings,
+    inline_programs,
+    interpreter_kind,
+    shell_strings,
+)
 from shell_lexer import HEREDOC_OPERATORS
 from shell_model import (
     _FIELD,
@@ -48,15 +54,21 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     nested_via = via
     indirect = command.indirect
 
-    def nested(text: str, label: str, from_file: bool = False, shares_shell: bool = False) -> None:
-        _parse_into(text, ctx, (*nested_via, label), depth + 1, indirect or from_file, shares_shell)
+    def nested(text: str, label: str, not_typed: bool = False, shares_shell: bool = False) -> None:
+        # `not_typed`: text the agent did not type as a command here (a file's
+        # program, a string literal), so the guards ask about it instead of denying.
+        _parse_into(text, ctx, (*nested_via, label), depth + 1, indirect or not_typed, shares_shell)
 
     if name in SHELLS:
         _shell_payload(command, args, ctx, nested)
     elif inline_programs(name, command.args, command.redirects):
         for program in inline_programs(name, command.args, command.redirects):
+            direct = direct_shell_strings(program, interpreter_kind(name))
             for literal in shell_strings(program):
-                nested(literal, f"{name} string")
+                # A string passed straight to a shell (`os.system("...")`) is a command;
+                # any other literal of the program may only be data
+                # (`subprocess.run(["echo", "rm -rf x"])` deletes nothing), so it asks.
+                nested(literal, f"{name} string", not_typed=literal not in direct)
     elif awk_commands(name, command.args):
         for literal in awk_commands(name, command.args):
             nested(literal, f"{name} system()")
@@ -113,7 +125,7 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             caller_params = ctx.variables.get(_POSITIONALS)
             if sourcing and len(command.args) > 1:
                 ctx.variables[_POSITIONALS] = (_FIELD.join(command.args[1:]),)
-            nested(text, label, from_file=not label.startswith("written "), shares_shell=sourcing)
+            nested(text, label, not_typed=not label.startswith("written "), shares_shell=sourcing)
             if sourcing and len(command.args) > 1:
                 if caller_params is None:
                     ctx.variables.pop(_POSITIONALS, None)
@@ -223,7 +235,7 @@ def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[.
     as_script = SimpleCommand((shell.argv[0], path), indirect=shell.indirect, cwd=shell.cwd,
                               cwd_options=shell.cwd_options)
     for text, label in _sources_for(as_script, ctx):
-        nested(text, label, not label.startswith("written "))
+        nested(text, label, not_typed=not label.startswith("written "))
 
 
 def _sources_for(command: SimpleCommand, ctx: _Context) -> list[tuple[str, str]]:

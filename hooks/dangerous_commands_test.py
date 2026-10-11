@@ -138,7 +138,11 @@ CASES = [
     ("sudo -u deploy git push --force", "deny", "git-push-force"),
     ("bash -c 'git reset --hard'", "deny", "git-reset-hard"),
     ("ssh prod 'kubectl delete ns prod'", "deny", "kubectl-delete-broad"),
+    # A string passed to a shell is a command; other literals may be data and ask (owner's call).
     ("python3 -c \"import subprocess; subprocess.run('git push -f', shell=True)\"", "deny", "git-push-force"),
+    ("node -e 'require(\"child_process\").execSync(\"git push --force\")'", "deny", "git-push-force"),
+    ("python3 -c 'import subprocess; subprocess.run([\"echo\", \"git push --force origin main\"])'",
+     "ask", "git-push-force"),
     ("echo 'git clean -fdx' | sh", "ask", "git-clean-force"),
     # ---- false positives found against cc-safety-net's corpus ----
     ("git switch -cfeature", None, None),

@@ -16,6 +16,7 @@ Native file APIs such as shutil.rmtree are likewise left to the judge.
 from __future__ import annotations
 
 import re
+import shlex
 
 from shell_lexer import HEREDOC_OPERATORS
 
@@ -99,11 +100,50 @@ def shell_strings(program: str) -> list[str]:
         return []
     found: list[str] = []
     for match in _STRING_LITERAL.finditer(program):
-        literal = next((group for group in match.groups() if group is not None), "")
-        literal = literal.replace("\\'", "'").replace('\\"', '"').replace("\\n", "\n")
+        literal = _unescape(next((group for group in match.groups() if group is not None), ""))
         if literal.strip() and literal not in found:
             found.append(literal)
     return _with_argv_joins(program, found)
+
+
+# A call whose first argument a shell (or exec) runs: `os.system("...")`,
+# `execSync("...")`, `system("...")`, `subprocess.run([...])`, `do shell script "..."`.
+_SINK_CALL = re.compile(
+    r"\b(?:os\.(?:system|popen|exec\w*|spawn\w*)|subprocess\.\w+|commands\.getoutput|check_output|check_call"
+    r"|getoutput|system|popen|exec(?:Sync|File|FileSync)?|spawn(?:Sync)?|shell_exec|passthru|proc_open"
+    r"|Open3\.\w+|IO\.popen|Kernel\.(?:system|exec|spawn)|Deno\.Command|Bun\.spawn(?:Sync)?)\s*\(\s*"
+    r"|\bdo shell script\s+",
+)
+# Interpreters where a backtick string (or qx//, %x()) runs a shell command.
+_BACKTICK_RUNS = frozenset({"ruby", "perl", "php"})
+
+
+def direct_shell_strings(program: str, kind: str | None) -> list[str]:
+    """The literals in `program` that a shell or exec certainly receives: the
+    first argument of a sink call (a string, or a list joined into argv), and
+    backtick/qx/%x strings where those run commands. Other literals
+    `shell_strings` returns may only be data (`["echo", "rm -rf x"]`)."""
+    found: list[str] = []
+    for call in _SINK_CALL.finditer(program):
+        rest = program[call.end():]
+        literal = _STRING_LITERAL.match(rest)
+        if literal:
+            found.append(_unescape(next((g for g in literal.groups() if g is not None), "")))
+        elif rest.startswith("["):
+            joined = _with_argv_joins(rest, [])
+            found += joined[:1]
+    if kind in _BACKTICK_RUNS:
+        for match in _STRING_LITERAL.finditer(program):
+            groups = match.groups()
+            command = next((g for g in groups[4:] if g is not None), None)  # `...`, qx{...}, qx(...)
+            if command is not None:
+                found.append(_unescape(command))
+        found += [_unescape(m.group(1)) for m in re.finditer(r"%x\(([^)]*)\)", program)]
+    return [text for text in dict.fromkeys(found) if text.strip()]
+
+
+def _unescape(literal: str) -> str:
+    return literal.replace("\\'", "'").replace('\\"', '"').replace("\\n", "\n")
 
 
 def _with_argv_joins(program: str, literals: list[str]) -> list[str]:
@@ -112,7 +152,8 @@ def _with_argv_joins(program: str, literals: list[str]) -> list[str]:
     for match in re.finditer(r"\[\s*((?:(['\"])[^'\"]*\2\s*,\s*)+(?:(['\"])[^'\"]*\3)?)", program):
         words = re.findall(r"['\"]([^'\"]*)['\"]", match.group(1))
         if len(words) > 1:
-            joined.append(" ".join(words))
+            # An argv list reaches no shell: each element stays one word (`>` is text).
+            joined.append(shlex.join(words))
     return literals + [text for text in joined if text not in literals]
 
 

@@ -120,7 +120,8 @@ def build_reason(finding: Finding) -> str:
     if command.via:
         lines.append(f"    reached via: {command.origin()}")
     if command.indirect:
-        lines.append("    (inside a file this command runs, not typed in this call)")
+        lines.append("    (not typed as a command in this call: found in a file this command runs, "
+                     "or in a string inside an interpreter program, which may only be data)")
     lines += ["", rule.remediation]
     if finding.decision == "deny":
         lines += [

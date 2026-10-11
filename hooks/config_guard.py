@@ -347,7 +347,7 @@ def evaluate(tool_name: str, inputs: dict, cwd: str) -> Finding | None:
 
 def build_reason(finding: Finding, tool_name: str, decision: str) -> str:
     verb = "BLOCKED" if decision == "deny" else "Confirm"
-    source = (" (inside a script this command runs)" if finding.indirect
+    source = (" (inside a script, or an interpreter program's string, this command runs)" if finding.indirect
               else f" ({finding.uncertain})" if finding.uncertain else "")
     return "\n".join(
         [

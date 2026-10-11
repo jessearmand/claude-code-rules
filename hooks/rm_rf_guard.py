@@ -363,10 +363,11 @@ def build_ask_reason(invocations: list[RmInvocation], cwd: str, unparseable: boo
 
 
 def build_indirect_reason(invocations: list[RmInvocation], cwd: str) -> str:
-    """Feedback for an `rm -rf` found only inside a file the command runs."""
+    """Feedback for an `rm -rf` found only inside a file or an interpreter's string."""
     lines = [
-        "rm-rf-guard: this command runs a script or recipe that contains a recursive "
-        "forced `rm`. The agent did not type it here, so the user decides:",
+        "rm-rf-guard: this command runs a script, recipe or interpreter program that contains "
+        "a recursive forced `rm` (in a string, it may only be data). The agent did not type it "
+        "as a command here, so the user decides:",
         "",
     ]
     lines += [f"  {invocation.rendered()}" for invocation in invocations]

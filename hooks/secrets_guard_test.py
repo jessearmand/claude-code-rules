@@ -21,6 +21,7 @@ from secrets_guard import (  # noqa: E402
     DEFAULT_LEVEL,
     check_command,
     check_path,
+    find_command_rule,
     is_allowlisted,
 )
 from secrets_guard_rules import CRITICAL, HIGH, STRICT  # noqa: E402
@@ -228,6 +229,8 @@ COMMAND_CASES = [
     ("ssh host 'cat .env'", "read-env"),
     ("echo 'cat .env' | sh", "read-env"),
     ("python3 -c \"import os; os.system('cat ~/.ssh/id_rsa')\"", "read-private-key"),
+    # Any other literal may only be data: found, but asked about (below).
+    ("python3 -c \"import subprocess; subprocess.run(['echo', 'cat ~/.ssh/id_rsa'])\"", None),
     ("cat <<'EOF' > notes.md\ncat .env\nEOF", None),
 ]
 
@@ -291,6 +294,10 @@ def main() -> int:
         rule = check_command(command, level)
         actual = rule.rule_id if rule else None
         _check(actual == expected, f"{command:<52} -> {actual}", failures)
+
+    found = find_command_rule("python3 -c \"import subprocess; subprocess.run(['echo', 'cat ~/.ssh/id_rsa'])\"", level)
+    _check(found is not None and found[0].rule_id == "read-private-key" and found[2],
+           "a secret read in an interpreter string is found and asked about", failures)
 
     print("\nLevel gating:")
     for threshold, command, expected in LEVEL_COMMAND_CASES:

@@ -126,6 +126,12 @@ BASH_CASES = [
     ("git -C ~/.claude clone --depth 1 https://example.invalid/e.git plugins/e", "ask", "agent-config-dir"),
     ("git worktree add ~/.claude/x", "ask", "agent-config-dir"),
     ("git clone https://example.invalid/e.git vendor/e", None, None),
+    # A string an interpreter passes to a shell is a command; any other literal may
+    # only be data, so it asks (owner's call).
+    ("python3 -c 'import os; os.system(\"printf x > ~/.claude/settings.json\")'", "deny", "claude-settings"),
+    ("python3 -c 'import subprocess; subprocess.run([\"echo\", \"x\", \"printf x > ~/.claude/settings.json\"])'",
+     "ask", "claude-settings"),
+    ("python3 -c 'import subprocess; print(\"printf x > ~/.claude/settings.json\")'", "ask", "claude-settings"),
     # A target computed at run time: what the command does decides (owner's call).
     ("cp payload.json \"$OUT\"", "ask", "unknown-target"),
     ("curl -s https://example.com/x > \"$OUT\"", "ask", "unknown-target"),
