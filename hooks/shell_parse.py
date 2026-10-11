@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 from math import prod
 
 from shell_effects import (
@@ -158,6 +159,7 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     """Parse `text` as a command list. Nested code runs in a child shell unless
     `shares_shell` (eval, source): then its `cd` and assignments persist.
     `return_boundary` (a sourced script): a `return` in it ends the script."""
+    ctx.set_names.update(_bare_names(text))
     if depth > MAX_DEPTH:
         ctx.result.truncated = True
         return
@@ -576,6 +578,20 @@ def _branch_skipped(guard: tuple[str, str], ctx: _Context) -> bool:
     return not any(selects_word(value) for value in values)
 
 
+_BARE_NAME = re.compile(r"(?<![$\w{#!])([A-Za-z_][A-Za-z0-9_]*)")
+_HEAD_REFERENCE = re.compile(r"\$\{?[#!]?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _bare_names(text: str) -> set[str]:
+    """Identifiers `text` uses other than right after `$` / `${`."""
+    return set(_BARE_NAME.findall(text))
+
+
+def _computed_here(head: str, ctx: _Context) -> bool:
+    """Whether an unresolved program name refers to a variable the line sets."""
+    return any(name in ctx.set_names for name in _HEAD_REFERENCE.findall(head))
+
+
 def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: tuple[str, ...],
           depth: int, indirect: bool, pipeline: int, stage: int, dynamic_head: bool,
           wrappers: tuple[str, ...], environment: tuple[str, ...] = ()) -> None:
@@ -634,6 +650,10 @@ def _unwrap_and_record(argv: list[str], redirects: tuple[Redirect, ...], ctx: _C
     else:
         ctx.result.truncated = True  # more nested wrappers than are unwrapped
 
+    if dynamic_head and argv and _computed_here(argv[0], ctx):
+        # The program is computed from a variable this line sets, in a way not
+        # modelled (`declare -A X; X[k]=rm; ${X[k]}`): what runs is not known.
+        ctx.result.truncated = True
     command = SimpleCommand(tuple(argv), redirects, via, wrappers, dynamic_head, indirect,
                             pipeline, stage, ctx.cwd, ctx.cwd_options, tuple(ctx.variables.items()))
     ctx.result.commands.append(command)

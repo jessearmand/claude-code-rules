@@ -256,7 +256,8 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
             _assign(f"{ALIAS}{name}={UNSET}", ctx.variables, ctx.conditional)
     elif len(argv) >= 2 and argv[0] in ("for", "select") and _NAME.fullmatch(argv[1]):
         # `for X in a b; do ... done`: X takes each word, or keeps its value if the
-        # list is empty. Without `in`, the words are the positional parameters.
+        # list is empty (or the loop may not run). `select` sets X to "" for an
+        # invalid choice. Without `in`, the words are the positional parameters.
         if len(argv) >= 3 and argv[2] == "in":
             items = tuple(argv[3:])
         else:
@@ -264,8 +265,9 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
         if items is None:
             ctx.variables.pop(argv[1], None)
         else:
-            earlier = ctx.variables.get(argv[1], (UNSET,))
-            ctx.variables[argv[1]] = tuple(dict.fromkeys((*items, *earlier)))
+            earlier = ctx.variables.get(argv[1], (UNSET,)) if not items or ctx.conditional else ()
+            invalid = ("",) if argv[0] == "select" else ()
+            ctx.variables[argv[1]] = tuple(dict.fromkeys((*items, *invalid, *earlier)))
     elif len(argv) >= 4 and argv[0] == "printf" and argv[1] == "-v" and (
             _NAME.fullmatch(argv[2]) or _ELEMENT.fullmatch(argv[2])):
         # `printf -v X ...` or an array element, `printf -v 'X[0]' ...`.
