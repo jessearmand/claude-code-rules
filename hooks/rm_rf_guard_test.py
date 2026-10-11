@@ -199,6 +199,9 @@ SHOULD_BLOCK = [
     "exec 3<<<$'echo\\nrm'; read -u 3 A; read -u 3 B; \"$B\" -rf victim",
     "exec <<< rm; read X; $X -rf victim",
     "exec 4<<<rm; read X <&4; $X -rf victim",
+    "X[0]=echo; read 'X[0]' <<< rm; \"${X[0]}\" -rf victim",  # read into an element (PR review)
+    "R=r; M=m; X[0]=echo; unset 'X[0]'; \"${X[0]:-$R$M}\" -rf victim",  # unset an element (PR review)
+    "X=(echo ls); unset X; \"${X[1]:-rm}\" -rf victim",
     "X='a[$(rm -rf victim)]'; Y=X; let Y+1",
     "printf -v 'X[0]' %b '\\162\\155'; \"${X[0]}\" -rf victim",  # printf -v into an element (PR review)
     "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return

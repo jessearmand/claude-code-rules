@@ -254,7 +254,12 @@ def _builtin_mutation(argv: list[str], redirects: list[Redirect], ctx: _Context,
             _assign(f"{_POSITIONALS}={_FIELD.join(params)}", ctx.variables, ctx.conditional)
     elif argv and argv[0] == "unset":
         for name in argv[1:]:
-            if _NAME.fullmatch(name):
+            if _ELEMENT.fullmatch(name):
+                _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)  # `unset 'X[0]'`: that element
+            elif _NAME.fullmatch(name):
+                # `unset X`: the variable, and every element if it is an array.
+                for key in [k for k in ctx.variables if k == name or k.startswith(name + "[")]:
+                    _assign(f"{key}={UNSET}", ctx.variables, ctx.conditional)
                 _assign(f"{name}={UNSET}", ctx.variables, ctx.conditional)
 
 
@@ -293,7 +298,9 @@ def _read_builtin(args: list[str], redirects: list[Redirect], ctx: _Context, ifs
     delimiter = options["d"][:1] or "\0" if "d" in options else "\n"
     if "a" in options:
         names.insert(0, options["a"])
-    names = [_target_name(n, ctx) for n in names if _NAME.fullmatch(n)] or ["REPLY"]
+    # A name, or an array element (`read 'X[0]'`).
+    names = [_target_name(n, ctx) if _NAME.fullmatch(n) else n for n in names
+             if _NAME.fullmatch(n) or _ELEMENT.fullmatch(n)] or ["REPLY"]
     timeout = options.get("t")
     if timeout is not None and re.fullmatch(r"0*\.?0*", timeout) and timeout.strip("."):
         return  # `read -t 0`: only tests for input; nothing is read or assigned

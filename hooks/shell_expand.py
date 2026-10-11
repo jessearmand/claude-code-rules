@@ -39,7 +39,7 @@ from shell_model import (
 _ONE_CHAR = re.compile(r".")
 
 # `${NAME<op>word}` forms whose result is NAME's value or `word`.
-_BRACED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(:?[-=+?])(.*)", re.DOTALL)
+_BRACED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)(:?[-=+?])(.*)", re.DOTALL)
 
 _MAX_BRACE_WORDS = 64
 

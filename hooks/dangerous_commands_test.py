@@ -138,6 +138,8 @@ CASES = [
     ("sudo -u deploy git push --force", "deny", "git-push-force"),
     ("bash -c 'git reset --hard'", "deny", "git-reset-hard"),
     ("ssh prod 'kubectl delete ns prod'", "deny", "kubectl-delete-broad"),
+    ("k3s kubectl delete pod web", "ask", "kubectl-delete"),  # k3s's embedded kubectl (PR review)
+    ("k3s kubectl get pods", None, None),
     # A program name that is decoded text (PR review); an ordinary $(...) head passes.
     ("$(base64 -d <<< cm0=) -rf victim", "deny", "decode-and-execute"),
     ("`xxd -r -p <<< 726d` -rf victim", "deny", "decode-and-execute"),

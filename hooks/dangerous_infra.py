@@ -199,6 +199,9 @@ def _kubectl_delete(command: SimpleCommand, ctx: RuleContext) -> str | None:
         return None
     if command.name in ("kubectl", "oc") and "delete" in operands(command.args, _KUBE_WITH_VALUE):
         return "kubectl delete"
+    words = operands(command.args, _KUBE_WITH_VALUE)
+    if command.name == "k3s" and words[:1] == ["kubectl"] and "delete" in words[1:]:
+        return "k3s kubectl delete"  # k3s runs its embedded kubectl
     if command.name == "helm" and positional_words(command)[:1] in (["uninstall"], ["delete"], ["del"], ["un"]):
         return "helm uninstall"
     return None
