@@ -143,3 +143,50 @@ SUBCOMMAND_RUNNERS: dict[str, SubcommandRunner] = {
 # follows them.
 RESERVED_PREFIXES = frozenset({"!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done",
                                "while", "until", "time", "coproc"})
+
+
+# Options that take a separate value, per CLI, wherever they appear: before
+# the subcommand (`npm -w web publish`, `helm -n prod uninstall`) or after
+# it. Without them the value reads as the subcommand and the rule misses.
+CLI_OPTIONS_WITH_VALUE: dict[str, frozenset[str]] = {
+    "npm": frozenset({"-w", "--workspace", "--registry", "--prefix", "--userconfig",
+                      "--globalconfig", "--cache", "--tag", "--access", "--otp", "--loglevel",
+                      "--scope", "--auth-type", "--include", "--omit"}),
+    "pnpm": frozenset({"-C", "--dir", "-F", "--filter", "--registry", "--tag", "--access",
+                       "--otp", "--loglevel", "--publish-branch", "--report-summary"}),
+    "yarn": frozenset({"--cwd", "--registry", "--tag", "--access", "--otp", "--new-version"}),
+    "bun": frozenset({"--cwd", "-c", "--config", "--registry", "--tag", "--access", "--otp"}),
+    "cargo": frozenset({"-Z", "--config", "--color", "-C", "--manifest-path", "--registry",
+                        "--index", "--token", "-p", "--package", "-j", "--jobs", "--target",
+                        "--target-dir", "-F", "--features"}),
+    "gem": frozenset({"-k", "--key", "--host", "--otp"}),
+    "twine": frozenset({"-r", "--repository", "--repository-url", "-u", "--username", "-p",
+                        "--password", "-c", "--comment", "-i", "--identity", "--sign-with",
+                        "--config-file", "--cert", "--client-cert"}),
+    "uv": frozenset({"--directory", "--project", "--config-file", "--cache-dir", "--index",
+                     "--publish-url", "-u", "--username", "-p", "--password", "-t", "--token",
+                     "--trusted-publishing", "--check-url"}),
+    "poetry": frozenset({"-C", "--directory", "-P", "--project", "-r", "--repository", "-u",
+                         "--username", "-p", "--password", "--cert", "--client-cert"}),
+    "pdm": frozenset({"-p", "--project", "-r", "--repository", "-u", "--username", "-P",
+                      "--password"}),
+    "hatch": frozenset({"-r", "--repo", "-u", "--user", "-a", "--auth", "-e", "--env"}),
+    "mvn": frozenset({"-f", "--file", "-s", "--settings", "-gs", "--global-settings", "-P",
+                      "--activate-profiles", "-pl", "--projects", "-rf", "--resume-from", "-T",
+                      "--threads", "-t", "--toolchains"}),
+    "gradle": frozenset({"-p", "--project-dir", "-c", "--settings-file", "-g", "--gradle-user-home",
+                         "-I", "--init-script", "-x", "--exclude-task"}),
+    "docker": frozenset({"-H", "--host", "--context", "-c", "--config", "-l", "--log-level",
+                         "--tlscacert", "--tlscert", "--tlskey"}),
+    "podman": frozenset({"--url", "--connection", "-c", "--identity", "--log-level", "--root",
+                         "--runroot"}),
+    "helm": frozenset({"-n", "--namespace", "--kube-context", "--kubeconfig", "--kube-apiserver",
+                       "--kube-token", "--registry-config", "--repository-config",
+                       "--repository-cache"}),
+    "gh": frozenset({"-R", "--repo", "--hostname"}),
+}
+CLI_OPTIONS_WITH_VALUE["gradlew"] = CLI_OPTIONS_WITH_VALUE["gradle"]
+CLI_OPTIONS_WITH_VALUE["buildah"] = CLI_OPTIONS_WITH_VALUE["podman"]
+CLI_OPTIONS_WITH_VALUE["systemctl"] = frozenset({"-H", "--host", "-M", "--machine", "-t", "--type",
+                                                 "-p", "--property", "--state", "-n", "--lines",
+                                                 "-o", "--output", "--root", "--signal", "-s"})

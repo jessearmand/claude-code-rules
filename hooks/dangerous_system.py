@@ -25,6 +25,7 @@ from danger_rule import (
     is_inside,
     long_flag,
     operands,
+    positional_words,
     short_flag,
 )
 from shell_interpreters import interpreter_kind
@@ -194,9 +195,9 @@ def _schedule(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if command.name == "launchctl" and command.args and command.args[0] in (
             "load", "bootstrap", "enable", "submit", "kickstart"):
         return f"launchctl {command.args[0]}"
-    if command.name == "systemctl" and any(a in ("enable", "link", "preset", "edit", "set-property")
-                                           for a in operands(command.args)[:1]):
-        return f"systemctl {operands(command.args)[0]}"
+    if command.name == "systemctl" and positional_words(command)[:1] in (
+            ["enable"], ["link"], ["preset"], ["edit"], ["set-property"]):
+        return f"systemctl {positional_words(command)[0]}"
     return None
 
 
@@ -231,7 +232,7 @@ def _publish(command: SimpleCommand, ctx: RuleContext) -> str | None:
     verbs = _PUBLISH.get(command.name)
     if not verbs:
         return None
-    words = operands(command.args)
+    words = positional_words(command)
     if not words or words[0] not in verbs:
         return None
     if command.name == "yarn" and words[0] == "npm" and (len(words) < 2 or words[1] != "publish"):
@@ -242,7 +243,7 @@ def _publish(command: SimpleCommand, ctx: RuleContext) -> str | None:
 
 
 def _push_artifact(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    words = operands(command.args)
+    words = positional_words(command)
     if command.name in ("docker", "podman", "buildah") and words[:1] == ["push"]:
         return f"{command.name} push"
     if command.name == "gh" and words[:2] in (["release", "create"], ["release", "delete"], ["repo", "delete"]):
@@ -373,12 +374,13 @@ def _weaken_security(command: SimpleCommand, ctx: RuleContext) -> str | None:
         return f"{command.name} flush/accept-all"
     if command.name == "nft" and has(command.args, "flush") and has(command.args, "ruleset"):
         return "nft flush ruleset"
-    stops = command.args[:1] and command.args[0] in ("stop", "disable", "mask", "unload", "bootout")
+    verb = positional_words(command)[:1]
+    stops = verb and verb[0] in ("stop", "disable", "mask", "unload", "bootout")
     if command.name in ("systemctl", "launchctl") and stops and any(
         _SECURITY_SERVICES.match(os.path.basename(a).removesuffix(".service").removesuffix(".plist"))
         for a in command.args[1:]
     ):
-        return f"{command.name} {command.args[0]} (security service)"
+        return f"{command.name} {verb[0]} (security service)"
     if command.name == "defaults" and "LSQuarantine" in command.args:
         return "defaults write LSQuarantine"
     if command.name in ("npm", "pnpm", "yarn") and has(command.args, "strict-ssl") and has(command.args, "false"):

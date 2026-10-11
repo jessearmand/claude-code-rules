@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from shell_parse import ParseResult, SimpleCommand
+from shell_wrappers import CLI_OPTIONS_WITH_VALUE
 
 CRITICAL = "critical"
 HIGH = "high"
@@ -123,3 +124,15 @@ def is_broad_target(path: str, cwd: str) -> bool:
     home = os.path.expanduser("~")
     strict_ancestor = resolved != cwd and is_inside(cwd, resolved)
     return resolved in _BROAD_ROOTS or resolved == home or strict_ancestor or os.path.dirname(resolved) == "/"
+
+
+def positional_words(command: SimpleCommand) -> list[str]:
+    """The command's positional words (subcommand first), skipping its options' values.
+
+    `cargo +nightly publish` names a toolchain before the subcommand; it is skipped too.
+    """
+    words = operands(command.args, CLI_OPTIONS_WITH_VALUE.get(command.name, frozenset()))
+    if command.name == "cargo":
+        words = [word for word in words if not word.startswith("+")]
+    return words
+

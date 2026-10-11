@@ -28,7 +28,7 @@ import os
 import re
 
 from shell_parse import SimpleCommand
-from shell_wrappers import SHELL_OPTIONS_WITH_ARG, SHELLS
+from shell_wrappers import CLI_OPTIONS_WITH_VALUE, SHELL_OPTIONS_WITH_ARG, SHELLS
 
 MAX_SOURCE_BYTES = 256 * 1024
 _SHEBANG_SHELL = re.compile(r"^#!\s*\S*?(?:/env\s+(?:-S\s+)?)?\S*?\b(?:ba|z|da|k|mk|a)?sh\b")
@@ -141,8 +141,24 @@ def _script(path: str, cwd: str, written: dict[str, str], require_shebang: bool)
 # --------------------------------------------------------------------------- #
 
 
+def _operands(args: list[str], with_value: frozenset[str]) -> list[str]:
+    """Positional words, skipping option values (`npm -w web run build`)."""
+    words: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            break  # arguments for the script itself
+        if not arg.startswith("-"):
+            words.append(arg)
+        elif arg in with_value:
+            index += 1
+        index += 1
+    return words
+
+
 def _package_script(runner: str, args: list[str], cwd: str) -> list[tuple[str, str]]:
-    positionals = [arg for arg in args if not arg.startswith("-")]
+    positionals = _operands(args, CLI_OPTIONS_WITH_VALUE.get(runner, frozenset()))
     if not positionals:
         return []
     verb = positionals[0]

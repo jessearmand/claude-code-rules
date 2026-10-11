@@ -90,9 +90,11 @@ def _decision_for(rule: DangerRule, command: SimpleCommand) -> str:
 def find_dangers(command: str, cwd: str, level: str = DEFAULT_LEVEL) -> list[Finding]:
     """Every rule hit in `command`, denies first."""
     parsed = parse(command, cwd, shell_sources.resolve)
-    context = RuleContext(parsed, cwd)
     findings: list[Finding] = []
     for simple in parsed.commands:
+        # Rules resolve relative paths where the command runs, after any `cd`.
+        # An unknown directory (computed `cd`) is judged as `/`, the worst case.
+        context = RuleContext(parsed, simple.cwd or os.sep)
         for rule in RULES:
             if LEVEL_ORDER[rule.level] > LEVEL_ORDER[level]:
                 continue

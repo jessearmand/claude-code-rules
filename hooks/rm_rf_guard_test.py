@@ -224,6 +224,9 @@ def main() -> int:
         failures,
     )
 
+    reason = (_run_hook("cd ~ && rm -rf .") or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    _check("entire home directory" in reason, "target analysis follows `cd` (cd ~ && rm -rf .)", failures)
+
     print("\nCommands run from files the agent did not type here -> ask:")
     with tempfile.TemporaryDirectory() as project:
         _write(project, "clean.sh", "#!/usr/bin/env bash\nset -e\nrm -rf ~/stuff\n")

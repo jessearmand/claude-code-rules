@@ -155,6 +155,23 @@ CASES = [
     ("find /tmp/build-cache -name '*.o' -delete", "ask", "find-delete"),
     ("printf 'git push -f' | bash -n", None, None),
     ("gh pr create --body \"$(cat <<'EOF'\nit's about git push --force\nEOF\n)\"", None, None),
+    # ---- option values before the subcommand or remote (PR review) ----
+    ("git push --repo origin +main", "deny", "git-push-force"),
+    ("git push --repo=origin :old-branch", "deny", "git-push-delete"),
+    ("git push --repo origin main", None, None),
+    ("npm -w web publish", "deny", "publish-package"),
+    ("npm --registry https://registry.example.com publish", "deny", "publish-package"),
+    ("pnpm -C packages/ui publish", "deny", "publish-package"),
+    ("cargo +nightly publish", "deny", "publish-package"),
+    ("cargo --manifest-path crates/a/Cargo.toml publish", "deny", "publish-package"),
+    ("npm install publish", None, None),
+    ("helm -n prod uninstall web", "ask", "kubectl-delete"),
+    ("docker --context prod volume rm data", "deny", "docker-prune-volumes"),
+    ("systemctl --user stop firewalld", "deny", "weaken-security"),
+    # ---- relative paths resolve after `cd` (PR review) ----
+    ("cd / && find . -name '*.log' -delete", "deny", "find-delete-outside"),
+    ("cd ~ && chmod -R 777 .", "deny", "chmod-dangerous"),
+    ("cd \"$TARGET\" && find . -delete", "deny", "find-delete-outside"),
     # ---- ordinary commands ----
     ("ls -la", None, None),
     ("git status && git diff", None, None),

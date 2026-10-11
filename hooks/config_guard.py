@@ -97,6 +97,8 @@ class Finding:
     target: str
     action: str
     indirect: bool = False
+    # The write is relative to a directory a computed `cd` made unknown.
+    unknown_dir: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -197,19 +199,35 @@ def _check_tree(candidates: list[str], cwd: str) -> ConfigRule | None:
     return None
 
 
+def _check_from_unknown_dir(path: str, cwd: str, action: str) -> ConfigRule | None:
+    """A relative write after `cd "$DIR"`: protected if it would be from any protected root."""
+    if os.path.isabs(os.path.expanduser(path)):
+        return check_path(path, cwd, action)
+    for root in _protected_roots(cwd):
+        rule = check_path(os.path.join(root, path), cwd, action)
+        if rule is not None:
+            return rule
+    return None
+
+
 def check_command(command: str, cwd: str) -> Finding | None:
+    """The first protected write in `command`, resolving each relative path against
+    the directory that command runs in (after any `cd` earlier in the line)."""
     parsed = parse(command, cwd, shell_sources.resolve)
-    indirect_finding: Finding | None = None
+    softer: Finding | None = None
     for simple in parsed.commands:
         for write in written_paths(simple):
-            rule = check_path(write.path, cwd, write.action)
+            if simple.cwd is None:
+                rule = _check_from_unknown_dir(write.path, cwd, write.action)
+            else:
+                rule = check_path(write.path, simple.cwd, write.action)
             if rule is None:
                 continue
-            finding = Finding(rule, write.path, write.action, simple.indirect)
-            if not simple.indirect:
+            finding = Finding(rule, write.path, write.action, simple.indirect, simple.cwd is None)
+            if not (finding.indirect or finding.unknown_dir):
                 return finding
-            indirect_finding = indirect_finding or finding
-    return indirect_finding
+            softer = softer or finding
+    return softer
 
 
 def evaluate(tool_name: str, inputs: dict, cwd: str) -> Finding | None:
@@ -230,7 +248,8 @@ def evaluate(tool_name: str, inputs: dict, cwd: str) -> Finding | None:
 
 def build_reason(finding: Finding, tool_name: str, decision: str) -> str:
     verb = "BLOCKED" if decision == "deny" else "Confirm"
-    source = " (inside a script this command runs)" if finding.indirect else ""
+    source = (" (inside a script this command runs)" if finding.indirect
+              else " (relative to a directory set by a computed `cd`)" if finding.unknown_dir else "")
     return "\n".join(
         [
             f"🧷 {verb} by config-guard [{finding.rule.rule_id}] — cannot "
@@ -257,7 +276,8 @@ def run(data: dict) -> Decision | None:
     if finding is None:
         return None
 
-    asks = env_flag("CONFIG_GUARD_ASK") or finding.indirect or finding.rule is LIVE_SOURCE_RULE
+    asks = (env_flag("CONFIG_GUARD_ASK") or finding.indirect or finding.unknown_dir
+            or finding.rule is LIVE_SOURCE_RULE)
     decision = "ask" if asks else "deny"
     log_event(
         HOOK_NAME,

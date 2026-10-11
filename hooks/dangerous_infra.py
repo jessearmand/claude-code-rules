@@ -21,6 +21,7 @@ from danger_rule import (
     has,
     long_flag,
     operands,
+    positional_words,
     short_flag,
 )
 from shell_parse import SimpleCommand
@@ -197,7 +198,7 @@ def _kubectl_delete(command: SimpleCommand, ctx: RuleContext) -> str | None:
         return None
     if command.name in ("kubectl", "oc") and "delete" in operands(command.args, _KUBE_WITH_VALUE):
         return "kubectl delete"
-    if command.name == "helm" and any(a in ("uninstall", "delete", "del", "un") for a in command.args[:2]):
+    if command.name == "helm" and positional_words(command)[:1] in (["uninstall"], ["delete"], ["del"], ["un"]):
         return "helm uninstall"
     return None
 
@@ -205,7 +206,7 @@ def _kubectl_delete(command: SimpleCommand, ctx: RuleContext) -> str | None:
 def _docker_prune(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if command.name not in ("docker", "podman"):
         return None
-    words = operands(command.args)
+    words = positional_words(command)
     if words[:2] == ["system", "prune"] and (short_flag(command.args, "a") or long_flag(command.args, "--all", "--volumes")):
         return f"{command.name} system prune --all/--volumes"
     if words[:1] == ["volume"] and len(words) > 1 and words[1] in ("rm", "prune", "remove"):

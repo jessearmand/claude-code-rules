@@ -48,7 +48,13 @@ from dataclasses import dataclass, field
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 import shell_sources  # noqa: E402
-from hook_protocol import Decision, emit, for_permission_mode, read_input, tool_input  # noqa: E402
+from hook_protocol import (  # noqa: E402
+    Decision,
+    emit,
+    for_permission_mode,
+    read_input,
+    tool_input,
+)
 from shell_parse import SimpleCommand, SourceResolver, parse  # noqa: E402
 
 # Long options, matched by unambiguous prefix the way GNU coreutils does.
@@ -107,6 +113,8 @@ class RmInvocation:
     origin: str = ""
     # Found inside a file the command runs rather than typed in this call.
     indirect: bool = False
+    # Directory it runs in after any earlier `cd`; None when that is computed.
+    cwd: str | None = None
 
     @property
     def is_recursive_force(self) -> bool:
@@ -193,6 +201,7 @@ def find_recursive_force_invocations(
         if invocation.is_recursive_force:
             invocation.origin = simple.origin()
             invocation.indirect = simple.indirect
+            invocation.cwd = simple.cwd
             invocations.append(invocation)
 
     incomplete = parsed.unparseable or parsed.truncated
@@ -225,6 +234,13 @@ def _severity_for(resolved: str, cwd: str) -> tuple[str, str | None]:
     if not resolved.startswith(home + os.sep):
         return "high", "this is outside your home directory"
     return "normal", None
+
+
+def _analysis_cwd(invocation: RmInvocation, cwd: str) -> str:
+    """Where relative targets resolve: after any `cd`, or `/` (worst case) when unknown."""
+    if invocation.cwd is not None:
+        return invocation.cwd
+    return os.sep if invocation.targets else cwd
 
 
 def analyze_target(target: str, cwd: str) -> TargetAnalysis:
@@ -310,7 +326,7 @@ def build_denial_reason(invocations: list[RmInvocation], cwd: str, unparseable: 
         sections.append("")
 
         analyses = [
-            analyze_target(target, cwd)
+            analyze_target(target, _analysis_cwd(invocation, cwd))
             for invocation in invocations
             for target in invocation.targets
         ]
@@ -359,7 +375,8 @@ def build_indirect_reason(invocations: list[RmInvocation], cwd: str) -> str:
         "",
     ]
     lines += [f"  {invocation.rendered()}" for invocation in invocations]
-    analyses = [analyze_target(t, cwd) for invocation in invocations for t in invocation.targets]
+    analyses = [analyze_target(t, _analysis_cwd(invocation, cwd))
+                for invocation in invocations for t in invocation.targets]
     if analyses:
         lines += ["", "Target analysis:", *_format_target_section(analyses)]
     lines += [

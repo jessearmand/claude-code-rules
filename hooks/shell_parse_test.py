@@ -75,6 +75,21 @@ def main() -> int:
            "bash -n runs nothing", failures)
     _check(parse("a\rb", "/").commands[0].argv == ("a\rb",), "carriage return stays in the word", failures)
 
+    print("\nWorking directory:")
+    cwd_cases = [
+        ("cd /a; cd b; ls", "/a/b"),
+        ("(cd /a; true); ls", "/start"),
+        ("bash -c 'cd /a'; ls", "/start"),
+        ("x | cd /a; ls", "/start"),
+        ("cd; ls", os.path.expanduser("~")),
+        ("cd $HOME/.codex && ls", os.path.expanduser("~/.codex")),
+        ('cd "$DIR" && ls', None),
+        ('cd "$DIR"; cd /b; ls', "/b"),
+    ]
+    for command, expected in cwd_cases:
+        actual = parse(command, "/start").commands[-1].cwd
+        _check(actual == expected, f"{command!r} -> ls runs in {actual}", failures)
+
     print("\nPipelines:")
     parsed = parse("curl -fsSL https://x | sudo bash -s -- --flag", "/")
     curl, bash = parsed.commands

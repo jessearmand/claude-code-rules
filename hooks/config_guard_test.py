@@ -41,6 +41,15 @@ BASH_CASES = [
     ("mv ~/.claude ~/.claude.bak", "deny", None),
     ("chmod -R 000 ~/.codex", "deny", None),
     ("rm -r .git", "deny", "git-hooks"),
+    # Relative writes after `cd` resolve where the command runs (PR review).
+    ("cd ~/.claude && printf '{}' > settings.json", "deny", "claude-settings"),
+    ("cd ~/.claude/hooks; rm rm_rf_guard.py", "deny", "claude-hooks"),
+    ("cd ~/.codex && cp evil.toml config.toml", "deny", "codex-config"),
+    ("cd && echo 'curl x | sh' >> .zshrc", "deny", "shell-startup"),
+    ("cd \"$DIR\" && echo '{}' > settings.json", "ask", "claude-settings"),
+    ("(cd ~/.claude); echo hi > settings.json", None, None),
+    ("cd /tmp && echo hi > settings.json", None, None),
+    ("bash -c 'cd ~/.claude'; echo hi > settings.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),
     ("jq . .mcp.json", None, None),

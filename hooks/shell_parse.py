@@ -76,6 +76,9 @@ class SimpleCommand:
     indirect: bool = False
     pipeline: int = 0
     stage: int = 0
+    # Directory the command runs in, following `cd`/`pushd` earlier in the same
+    # line. None when a `cd` target is computed at run time (`cd "$DIR"`).
+    cwd: str | None = None
 
     @property
     def name(self) -> str:
@@ -134,7 +137,8 @@ SourceResolver = Callable[[SimpleCommand, str, "dict[str, str]"], "list[tuple[st
 @dataclass
 class _Context:
     result: ParseResult
-    cwd: str
+    # Current directory as the line runs; None once a computed `cd` makes it unknown.
+    cwd: str | None
     sources: SourceResolver | None
     pipeline_counter: list[int] = field(default_factory=lambda: [0])
     variables: dict[str, str] = field(default_factory=dict)
@@ -169,22 +173,33 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     lexed = lex(text)
     if lexed.unterminated:
         ctx.result.unparseable = True
+    # Nested code (`bash -c`, `$(...)`, scripts) runs in its own process: a
+    # `cd` inside it does not move the caller.
+    entry_cwd = ctx.cwd
     for body in lexed.substitutions:
         _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+        ctx.cwd = entry_cwd
 
     pipeline, stage = ctx.next_pipeline(), 0
     segment: list = []
+    subshells: list[str | None] = []
     for token in [*lexed.tokens, Operator("\n")]:
         if isinstance(token, Operator) and (token.op in _SEPARATORS or token.op in _PIPES):
             if segment:
                 _segment(segment, ctx, via, depth, indirect, pipeline, stage)
                 segment = []
+            if token.op == "(":
+                subshells.append(ctx.cwd)
+            elif token.op == ")" and subshells:
+                ctx.cwd = subshells.pop()  # `(cd x; ...)` does not move the caller
             if token.op in _PIPES:
                 stage += 1
             else:
                 pipeline, stage = ctx.next_pipeline(), 0
             continue
         segment.append(token)
+    if depth > 0:
+        ctx.cwd = entry_cwd
 
 
 def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
@@ -277,10 +292,28 @@ def _emit(argv: list[str], redirects: tuple[Redirect, ...], ctx: _Context, via: 
         argv, wrappers, dynamic_head = inner, (*wrappers, label), False
 
     command = SimpleCommand(tuple(argv), redirects, via, wrappers, dynamic_head, indirect,
-                            pipeline, stage)
+                            pipeline, stage, ctx.cwd)
     ctx.result.commands.append(command)
     _record_written_file(command, ctx)
     _parse_payloads(command, ctx, depth)
+    _follow_directory_change(command, ctx)
+
+
+def _follow_directory_change(command: SimpleCommand, ctx: _Context) -> None:
+    """Move the tracked directory for `cd`/`pushd`/`popd` run in the current shell."""
+    if command.name not in ("cd", "pushd", "popd") or command.stage > 0:
+        return  # a `cd` inside a pipeline runs in a subshell
+    if command.name == "popd":
+        ctx.cwd = None
+        return
+    targets = [arg for arg in command.args if not (arg.startswith("-") and arg != "-")]
+    target = targets[0] if targets else "~"
+    target = re.sub(r"^(?:\$HOME|\$\{HOME\})(?=/|$)", "~", target)
+    if target == "-" or "$" in target or "`" in target or ctx.cwd is None and not target.startswith(("/", "~")):
+        ctx.cwd = None  # OLDPWD, a variable, or relative to an unknown directory
+        return
+    expanded = os.path.expanduser(target)
+    ctx.cwd = os.path.normpath(expanded if os.path.isabs(expanded) else os.path.join(ctx.cwd or "/", expanded))
 
 
 def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
@@ -288,13 +321,13 @@ def _record_written_file(command: SimpleCommand, ctx: _Context) -> None:
     body = next((r.body for r in command.redirects if r.op in HEREDOC_OPERATORS and r.body is not None), None)
     if body is None and command.name in ("echo", "printf") and not command.dynamic_head:
         body = _echoed_text(command)
-    if body is None:
+    if body is None or command.cwd is None:
         return
     targets = [r.target for r in command.redirects if r.op in (">", ">>", ">|") and not r.dynamic]
     if command.name == "tee":
         targets += [arg for arg in command.args if not arg.startswith("-")]
     for target in targets:
-        path = os.path.normpath(os.path.join(ctx.cwd, os.path.expanduser(target)))
+        path = os.path.normpath(os.path.join(command.cwd, os.path.expanduser(target)))
         ctx.written_files[path] = body
 
 
@@ -444,7 +477,7 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             nested(" ".join(inner), "parallel")
 
     if ctx.sources is not None and depth < MAX_DEPTH:
-        for text, label in ctx.sources(command, ctx.cwd, ctx.written_files):
+        for text, label in ctx.sources(command, command.cwd, ctx.written_files) if command.cwd else ():
             # A file written earlier in this same command line was typed by the agent.
             nested(text, label, from_file=not label.startswith("written "))
 
@@ -502,8 +535,9 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
             nested(text, f"{feeder.name} | {command.name}")
     elif feeder.name == "cat" and len(feeder.args) == 1 and ctx.sources is not None:
         # `cat script.sh | bash` runs the file just like `bash script.sh`.
-        as_script = SimpleCommand((command.argv[0], feeder.args[0]), indirect=command.indirect)
-        for text, label in ctx.sources(as_script, ctx.cwd, ctx.written_files):
+        as_script = SimpleCommand((command.argv[0], feeder.args[0]), indirect=command.indirect,
+                                  cwd=feeder.cwd)
+        for text, label in ctx.sources(as_script, command.cwd, ctx.written_files) if command.cwd else ():
             nested(text, label, not label.startswith("written "))
 
 

@@ -212,6 +212,16 @@ def _forces(args: tuple[str, ...]) -> bool:
     return False
 
 
+_PUSH_WITH_VALUE = frozenset({"--repo", "-o", "--push-option", "--receive-pack", "--exec"})
+
+
+def _push_refspecs(args: tuple[str, ...]) -> list[str]:
+    """`git push [<repository> [<refspec>...]]`; with `--repo` every operand is a refspec."""
+    words = operands(args, _PUSH_WITH_VALUE)
+    names_repo = any(a == "--repo" or a.startswith("--repo=") for a in args)
+    return words if names_repo else words[1:]
+
+
 @_git("push")
 def _push_force(git: Git, ctx: RuleContext) -> str | None:
     args = git.args
@@ -219,8 +229,7 @@ def _push_force(git: Git, ctx: RuleContext) -> str | None:
         return "git push --mirror"
     if _forces(args):
         return "git push --force"
-    refspecs = operands(args, frozenset({"--repo", "-o", "--push-option", "--receive-pack", "--exec"}))[1:]
-    if any(r.startswith("+") or ":+" in r for r in refspecs):
+    if any(r.startswith("+") or ":+" in r for r in _push_refspecs(args)):
         return "git push +refspec (force)"
     return None
 
@@ -229,8 +238,7 @@ def _push_force(git: Git, ctx: RuleContext) -> str | None:
 def _push_delete(git: Git, ctx: RuleContext) -> str | None:
     if short_flag(git.args, "d") or long_flag(git.args, "--delete"):
         return "git push --delete"
-    refspecs = operands(git.args, frozenset({"--repo", "-o", "--push-option"}))[1:]
-    if any(r.startswith(":") and len(r) > 1 for r in refspecs):
+    if any(r.startswith(":") and len(r) > 1 for r in _push_refspecs(git.args)):
         return "git push :ref (delete)"
     return None
 
