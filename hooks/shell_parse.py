@@ -152,6 +152,8 @@ class ParseResult:
     # Every string that was parsed as shell code beyond the top level, with
     # how it was reached. Regex-based guards rescan these.
     nested_sources: list[NestedSource] = field(default_factory=list)
+    # Files the line writes from literal text before using them (see _Context.written_files).
+    written_files: dict[str, WrittenFile] = field(default_factory=dict)
     # Symlinks and hard links the line creates: absolute link path -> absolute target.
     links: dict[str, str] = field(default_factory=dict)
     # (command, label) for program text a command runs that was too large to read.
@@ -230,6 +232,7 @@ def parse(command: str, cwd: str = "", sources: SourceResolver | None = None) ->
     start = cwd or os.getcwd()
     context = _Context(ParseResult(), start, sources, (start,))
     _parse_into(command, context, via=(), depth=0, indirect=False)
+    context.result.written_files = dict(context.written_files)
     return context.result
 
 
@@ -620,6 +623,12 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
     out: list[str] = []
     index = 0
     while index < len(text):
+        literal = _literal_substitution(text, index)
+        if literal is not None:
+            # `$(printf git)` / `` `echo git` ``: the output of a literal echo is known.
+            output, index = literal
+            out.append(output)
+            continue
         if text.startswith("${", index):
             end = _closing_brace(text, index + 2)
             if end is None:
@@ -640,6 +649,32 @@ def _expand_text(text: str, value: Callable[[str, bool], str | None], at_start: 
         out.append(text[index])
         index += 1
     return "".join(out)
+
+
+def _literal_substitution(text: str, index: int) -> tuple[str, int] | None:
+    """(output, end) for a command substitution at `index` whose body only echoes
+    literal text; trailing newlines are dropped, as bash does. None otherwise."""
+    if text.startswith("$(", index) and not text.startswith("$((", index):
+        depth, end = 1, index + 2
+        while end < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[end], 0)
+            end += 1
+        if depth:
+            return None
+        body = text[index + 2:end - 1]
+    elif text[index] == "`":
+        close = text.find("`", index + 1)
+        if close < 0:
+            return None
+        body, end = text[index + 1:close], close + 1
+    else:
+        return None
+    producer = parse(body, "/")
+    if not producer.commands or producer.unparseable or any(
+            c.name not in ("echo", "printf") or c.dynamic_head or c.via or c.redirects
+            or any("$" in a or "`" in a for a in c.argv) for c in producer.commands):
+        return None
+    return "".join(_echoed_text(c) + ("\n" if c.name == "echo" else "") for c in producer.commands).rstrip("\n"), end
 
 
 def _closing_brace(text: str, start: int) -> int | None:
@@ -1083,6 +1118,12 @@ def _unwrap_once(name: str, argv: list[str], ctx: _Context, via: tuple[str, ...]
     if name == "find":
         return None
     if name in SUBCOMMAND_RUNNERS:
+        command = _runner_command_string(args, name)
+        if command is not None:
+            # `npm exec -c 'CMD'`, `mise exec -c 'CMD'`: a string a shell runs.
+            sub, value = command
+            _parse_into(value, ctx, (*via, f"{name} {sub} -c"), depth + 1, indirect)
+            return None, f"{name} {sub}", None
         found = _skip_subcommand_runner(args, name)
         if not found:
             return None
@@ -1175,17 +1216,41 @@ def _skip_options(args: list[str], spec: WrapperSpec) -> list[str] | None:
     return args[index:] if index <= len(args) else []
 
 
+def _subcommand_index(args: list[str], name: str) -> int | None:
+    """Where the runner's subcommand is, after any global options."""
+    runner = SUBCOMMAND_RUNNERS[name]
+    global_with_value = runner.with_arg | CLI_OPTIONS_WITH_VALUE.get(name, frozenset())
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "--":
+        index += 2 if args[index] in global_with_value else 1
+    return index if index < len(args) and args[index] in runner.subcommands else None
+
+
+def _runner_command_string(args: list[str], name: str) -> tuple[str, str] | None:
+    """(subcommand, command string) for `npm exec -c 'CMD'` and the like."""
+    options = SUBCOMMAND_RUNNERS[name].command_options
+    index = _subcommand_index(args, name) if options else None
+    if index is None:
+        return None
+    # Only the runner's own options, before the command it runs (`exec sh -c` is sh's -c).
+    runner, own, rest = SUBCOMMAND_RUNNERS[name], [], args[index + 1:]
+    position = 0
+    while position < len(rest) and rest[position].startswith("-") and rest[position] != "--":
+        takes_value = rest[position] in runner.with_arg or rest[position] in options
+        own += rest[position:position + (2 if takes_value else 1)]
+        position += 2 if takes_value else 1
+    value = option_value(own, options)
+    return (args[index], value) if value is not None else None
+
+
 def _skip_subcommand_runner(args: list[str], name: str) -> tuple[str, list[str]] | None:
     """(subcommand, command it runs) for `uv [opts] run [opts] cmd...` and the like.
 
     Global options may come before the subcommand (`uv --directory . run ...`).
     """
     runner = SUBCOMMAND_RUNNERS[name]
-    global_with_value = runner.with_arg | CLI_OPTIONS_WITH_VALUE.get(name, frozenset())
-    index = 0
-    while index < len(args) and args[index].startswith("-") and args[index] != "--":
-        index += 2 if args[index] in global_with_value else 1
-    if index >= len(args) or args[index] not in runner.subcommands:
+    index = _subcommand_index(args, name)
+    if index is None:
         return None
     subcommand, rest = args[index], args[index + 1:]
     if "--" in rest:

@@ -127,6 +127,9 @@ SHOULD_BLOCK = [
     "f(){ \"$1\" -rf victim; }; f rm",
     "function g { \"$@\"; }; g rm -rf victim",
     "read X < <(echo rm); \"$X\" -rf victim",
+    "npm exec -c 'rm -rf victim'",  # npm exec command strings (PR review)
+    "npm x --call='rm -rf victim'",
+    "$(printf rm) -rf victim",  # literal command substitution (PR review)
     "X=rm; true || unset X; $X -rf victim",
     # Runner global options before the subcommand; long command options (PR review).
     "uv --directory . run rm -rf build",
@@ -146,6 +149,8 @@ SHOULD_BLOCK = [
 ]
 
 SHOULD_ALLOW = [
+    "npm exec -- eslint .",
+    "pnpm --dir . exec sh -c 'echo hi'",
     "f(){ \"$1\" -rf victim; }; f echo",
     "f(){ f; }; f",  # recursion stops
     "X=echo; f() { X=rm; }; $X -rf victim",  # declared, never called

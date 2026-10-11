@@ -12,6 +12,7 @@ rulebooks (MIT, cc-safety-net/rulebooks).
 
 from __future__ import annotations
 
+import os
 import re
 
 from danger_rule import (
@@ -237,6 +238,26 @@ _NOSQL = re.compile(r"\b(?:dropDatabase|\.drop\(\)|deleteMany\(\s*\{\s*\}\s*\)|F
                     re.IGNORECASE)
 
 
+def _input_file(path: str, command: SimpleCommand, ctx: RuleContext) -> str | None:
+    for directory in command.possible_cwds:
+        if directory is None:
+            continue
+        absolute = os.path.normpath(os.path.join(directory, os.path.expanduser(path)))
+        entry = ctx.parsed.written_files.get(absolute)
+        if entry is not None:
+            return entry.text
+        try:
+            if os.path.isfile(absolute) and os.path.getsize(absolute) <= _MAX_SQL_FILE:
+                with open(absolute, encoding="utf-8", errors="replace") as handle:
+                    return handle.read()
+        except OSError:
+            continue
+    return None
+
+
+_MAX_SQL_FILE = 256 * 1024
+
+
 def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
     flags = _SQL_CLIENTS.get(command.name)
     if flags is None:
@@ -250,6 +271,12 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
     if command.name == "sqlite3":
         texts += [a for a in operands(command.args)[1:]]
     texts += [r.body or r.target for r in command.redirects if r.op in ("<<", "<<-", "<<<")]
+    # `sqlite3 db < q.sql`: the file, as written earlier on the line or as on disk.
+    for redirect in command.redirects:
+        if redirect.op == "<" and not redirect.dynamic:
+            text = _input_file(redirect.target, command, ctx)
+            if text:
+                texts.append(text)
     # `printf 'DROP TABLE t;' | sqlite3 db`: statements piped in from literal text.
     feeder = ctx.parsed.previous_stage(command)
     if feeder is not None and feeder.name in ("echo", "printf") and not feeder.dynamic_head:

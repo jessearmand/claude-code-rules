@@ -195,6 +195,8 @@ CASES = [
     ("{git,clean,-fdx}", "deny", "git-clean-force"),
     ("printf 'DROP TABLE users;\\n' | sqlite3 prod.db", "deny", "sql-destructive"),  # piped SQL (PR review)
     ("printf 'SELECT 1;' | sqlite3 prod.db", None, None),
+    ("printf 'DROP TABLE users;' > q.sql; sqlite3 prod.db < q.sql", "deny", "sql-destructive"),
+    ("$(printf git) reset --hard", "deny", "git-reset-hard"),
     # Anything the parser had to stop analysing asks (PR review).
     ("env " * 17 + "true", "ask", "incomplete-analysis"),
     ("printf '" + "echo ok\\n" * 70 + "' | xargs -I{} sh -c '{}'", "ask", "incomplete-analysis"),

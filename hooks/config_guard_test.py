@@ -113,6 +113,11 @@ BASH_CASES = [
     ("for P in notes $HOME/.claude/settings.json; do printf x > \"$P\"; done", "deny", "claude-settings"),
     ("rsync --remove-source-files ~/.claude/settings.json /var/tmp/", "deny", "claude-settings"),
     ("rsync -a ~/.claude/settings.json /var/tmp/", None, None),
+    # Archive extraction into a protected directory; literal substitutions (PR review).
+    ("unzip -o payload.zip -d ~/.claude", "ask", "agent-config-dir"),
+    ("tar xzf p.tgz -C ~/.claude", "ask", "agent-config-dir"),
+    ("tar -tzf p.tgz -C ~/.claude", None, None),
+    ("printf x > \"$(echo $HOME/.claude/settings.json)\"", "deny", "claude-settings"),
     ("curl -sSL https://example.com/s -o out.json", None, None),
     # Reads and ordinary writes.
     ("cat ~/.claude/settings.json", None, None),

@@ -232,10 +232,33 @@ def written_paths(command: SimpleCommand) -> list[PathWrite]:
         found += _dd(args)
     elif name in ("curl", "wget"):
         found += _download(name, args)
+    elif name in ("tar", "bsdtar", "gtar", "unzip", "7z", "7za"):
+        found += _extract(name, args)
     elif name in ("ed", "ex", "patch"):
         found += [PathWrite(path, WRITE) for path in _operands(args, frozenset({"-i", "-o", "-r", "-d",
                                                                               "-p", "-B", "-z", "-D"}))[:1]]
     return found
+
+
+def _extract(name: str, args: tuple[str, ...]) -> list[PathWrite]:
+    """The directory an archive extraction writes into (file names unknown)."""
+    if name == "unzip":
+        if any(a in ("-l", "-v", "-t", "-Z", "-p", "-c") for a in args):
+            return []  # list, test or print to stdout
+        return [PathWrite(_option_value(args, ("-d",)) or ".", INTO_DIR)]
+    if name in ("7z", "7za"):
+        if not args or args[0] not in ("x", "e"):
+            return []
+        output = next((a[2:] for a in args if a.startswith("-o") and len(a) > 2), ".")
+        return [PathWrite(output, INTO_DIR)]
+    first = args[0] if args else ""
+    extracting = any(a in ("-x", "--extract", "--get") for a in args) or (
+        first and not first.startswith("-") and "x" in first) or any(
+        re.fullmatch(r"-[a-zA-Z]*x[a-zA-Z]*", a) for a in args)
+    if not extracting or any(a in ("-O", "--to-stdout") for a in args):
+        return []
+    directory = _option_value(args, ("-C", "--directory"))
+    return [PathWrite(directory or ".", INTO_DIR)]
 
 
 def _recursive(args: tuple[str, ...]) -> bool:
