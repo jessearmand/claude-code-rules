@@ -109,6 +109,9 @@ def main() -> int:
     links = parse("ln -s /etc/hosts h; ln -st /tmp /a/b", "/w").links
     _check(links == {"/w/h": "/etc/hosts", "/tmp/b": "/a/b"}, f"links recorded: {links}", failures)
 
+    argv = parse('set -- a b c; echo x"$@"y', "/").commands[-1].argv
+    _check(argv == ("echo", "xa", "b", "cy"), f'"$@" inside a word: {argv}', failures)
+
     print("\nWorking directory:")
     cwd_cases = [
         ("cd /a; cd b; ls", "/a/b"),

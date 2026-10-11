@@ -249,7 +249,10 @@ def _chown_broad(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if command.name not in ("chown", "chgrp"):
         return None
     recursive = short_flag(command.args, "R") or long_flag(command.args, "--recursive")
-    targets = operands(command.args, frozenset({"--reference", "--from"}))[1:]
+    words = operands(command.args, frozenset({"--reference", "--from"}))
+    # `chown --reference=RFILE FILE...`: no owner operand, every operand is a target.
+    by_reference = any(a == "--reference" or a.startswith("--reference=") for a in command.args)
+    targets = words if by_reference else words[1:]
     if recursive and any(is_broad_target(t, ctx.cwd) for t in targets):
         return f"{command.name} -R {targets[0]}"
     return None

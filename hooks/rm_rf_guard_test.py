@@ -130,6 +130,8 @@ SHOULD_BLOCK = [
     "npm exec -c 'rm -rf victim'",  # npm exec command strings (PR review)
     "read -a X <<< r; \"${X[0]}m\" -rf victim",  # arrays from read -a; $@ inside a word (PR review)
     "set -- r; \"$@\"m -rf victim",
+    "set -- m x; r\"$@\" -rf victim",  # "$@" keeps one word per parameter (PR review)
+    "X=r; X+=m; f(){ local X=echo; }; f; \"$X\" -rf victim",  # local restored on return
     "X[1]=rm; ${X[1]} -rf victim",
     "printf 'rm\\n' > q; read X < q; \"$X\" -rf victim",  # read from a file written on the line
     "npm x --call='rm -rf victim'",
@@ -259,6 +261,13 @@ def main() -> int:
             open(os.path.join(tmp, "bin", f"s{i}"), "w").close()
         invocations, _ = find_recursive_force_invocations("bin/[r-z]* -rf victim", tmp, shell_sources.resolve)
         _check(bool(invocations), "overflowing command-word glob keeps its first match", failures)
+        # `source FILE ARGS` binds ARGS as the file's $1..$n (PR review).
+        with open(os.path.join(tmp, "positional.sh"), "w") as handle:
+            handle.write('"$1" -rf victim\n')
+        invocations, _ = find_recursive_force_invocations("source positional.sh rm", tmp, shell_sources.resolve)
+        _check(bool(invocations), "source binds its arguments", failures)
+        invocations, _ = find_recursive_force_invocations("source positional.sh echo", tmp, shell_sources.resolve)
+        _check(not invocations, "source with harmless arguments", failures)
 
     print("\nTarget analysis:")
     with tempfile.TemporaryDirectory() as tmp:

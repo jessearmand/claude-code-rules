@@ -219,6 +219,8 @@ class _Context:
     # Declared functions: name -> the body's commands, replayed at each call.
     functions: dict[str, list[_BodyStep]] = field(default_factory=dict)
     calling: set[str] = field(default_factory=set)  # functions being replayed (no recursion)
+    # Names declared `local` in each function call being replayed, innermost last.
+    local_scopes: list[set[str]] = field(default_factory=list)
     # Files this command line writes from literal text before running them:
     # `cat > x.sh <<'EOF' ... EOF; bash x.sh`. Absolute path -> content.
     written_files: dict[str, WrittenFile] = field(default_factory=dict)
@@ -429,10 +431,14 @@ def _expand_and_emit(tokens: list, ctx: _Context, via: tuple[str, ...], depth: i
                 continue
         elif isinstance(token, Word):
             params = _positionals(ctx) if token.text in ("$@", "${@}", "$*", "${*}") else None
+            pieces = _at_word_pieces(token, ctx) if params is None else None
             if params is not None:
                 # `"$@"`: one word per positional parameter; quoted `"$*"` joins them.
                 joined = token.quoted and "*" in token.text
                 words.extend([Word(" ".join(params))] if joined else [Word(p) for p in params])
+            elif pieces is not None:
+                for piece in pieces:
+                    words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
             else:
                 for piece in _brace_expand(token, ctx):
                     words.extend(_split_unquoted(piece, _expand_word(piece, ctx, choice)))
@@ -465,6 +471,24 @@ def _run_substitutions(tokens: list, ctx: _Context, via: tuple[str, ...], depth:
         for body in getattr(token, "substitutions", ()):
             # A subshell: _parse_into restores the caller's directory and variables.
             _parse_into(body, ctx, (*via, "$(...)"), depth + 1, indirect)
+
+
+def _at_word_pieces(token: Word, ctx: _Context) -> list[Word] | None:
+    """`r"$@"x` with $1=a $2=b is two words, `ra` and `bx`: each parameter is its own
+    word, the surrounding text joins the first and last. None if not that shape."""
+    marker = next((m for m in ("${@}", "$@") if m in token.text), None)
+    params = _positionals(ctx) if marker else None
+    if params is None or token.text.count(marker) != 1:
+        return None
+    prefix, suffix = token.text.split(marker)
+    if not params:
+        texts = [prefix + suffix] if prefix or suffix else []
+    elif len(params) == 1:
+        texts = [prefix + params[0] + suffix]
+    else:
+        texts = [prefix + params[0], *params[1:-1], params[-1] + suffix]
+    return [Word(text, dynamic=bool(_UNRESOLVED.search(text)), quoted=token.quoted, splits=token.splits)
+            for text in texts]
 
 
 def _glob_words(words: list[Word], ctx: _Context) -> list[Word]:
@@ -766,6 +790,11 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
         for word in rest[1:]:
+            if ctx.local_scopes and rest[0].text in ("local", "declare", "typeset"):
+                # Inside a function these shadow the caller's variable until it returns.
+                name = word.text.split("=", 1)[0].split("[", 1)[0].rstrip("+")
+                if _NAME.fullmatch(name):
+                    ctx.local_scopes[-1].add(name)
             if _ASSIGNMENT.match(word.text):
                 _assign(word.text, ctx.variables, ctx.conditional)
     return rest, tuple(assignments)
@@ -998,8 +1027,10 @@ def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
         return
     positionals = ctx.variables.get(_POSITIONALS)
     conditional = ctx.conditional
+    before = dict(ctx.variables)
     ctx.variables[_POSITIONALS] = (_FIELD.join(command.args),)
     ctx.calling.add(command.name)
+    ctx.local_scopes.append(set())
     try:
         for step in body:
             ctx.conditional = conditional or step.conditional
@@ -1009,6 +1040,12 @@ def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             if saved:
                 ctx.cwd, ctx.cwd_options, ctx.variables = saved
     finally:
+        # `local` variables give the caller its own values back.
+        for name in ctx.local_scopes.pop():
+            if name in before:
+                ctx.variables[name] = before[name]
+            else:
+                ctx.variables.pop(name, None)
         ctx.calling.discard(command.name)
         ctx.conditional = conditional
         # The caller's positional parameters come back when the function returns.
@@ -1344,9 +1381,18 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
                 ctx.result.skipped_sources.append((command, label))
                 continue
             # A file written earlier in this same command line was typed by the agent.
-            # `source`/`.` run the file in this shell: its cd and assignments persist.
-            nested(text, label, from_file=not label.startswith("written "),
-                   shares_shell=command.name in ("source", "."))
+            # `source`/`.` run the file in this shell: its cd and assignments persist,
+            # and `source FILE ARGS` makes ARGS its $1..$n for the duration.
+            sourcing = command.name in ("source", ".")
+            caller_params = ctx.variables.get(_POSITIONALS)
+            if sourcing and len(command.args) > 1:
+                ctx.variables[_POSITIONALS] = (_FIELD.join(command.args[1:]),)
+            nested(text, label, from_file=not label.startswith("written "), shares_shell=sourcing)
+            if sourcing and len(command.args) > 1:
+                if caller_params is None:
+                    ctx.variables.pop(_POSITIONALS, None)
+                else:
+                    ctx.variables[_POSITIONALS] = caller_params
 
 
 def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,

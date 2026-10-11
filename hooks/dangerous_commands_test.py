@@ -200,6 +200,7 @@ CASES = [
     ("cd /dev && sudo dd if=/dev/zero of=sda", "deny", "device-write"),  # relative dd output (PR review)
     ("chmod -R --reference=/var/tmp/mode /usr", "deny", "chmod-dangerous"),
     ("chmod --reference=a.txt b.txt", None, None),
+    ("chown -R --reference=/var/tmp/ref /usr", "deny", "chown-broad"),
     # Anything the parser had to stop analysing asks (PR review).
     ("env " * 17 + "true", "ask", "incomplete-analysis"),
     ("printf '" + "echo ok\\n" * 70 + "' | xargs -I{} sh -c '{}'", "ask", "incomplete-analysis"),
