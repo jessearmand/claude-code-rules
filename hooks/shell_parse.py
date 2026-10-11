@@ -631,7 +631,8 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     elif name == "parallel" and "--dry-run" not in args:
         inner = _parallel_command(args)
         if inner:
-            nested(" ".join(inner), "parallel")
+            # parallel runs the argv it was given; keep each word's quoting.
+            nested(shlex.join(inner), "parallel")
 
     if depth < MAX_DEPTH:
         for text, label in _sources_for(command, ctx):
