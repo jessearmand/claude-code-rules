@@ -59,6 +59,13 @@ REDACTIONS = [
     (f'{{"token": "{_PLACEHOLDER} with spaces"}}', '{"token": "<redacted>"}'),  # the whole quoted value
     (f"curl -u 'alice:{_PLACEHOLDER} with spaces' x", "curl -u 'alice:<redacted>' x"),
     (f'{{"token":"a\\"{_PLACEHOLDER} more"}}', '{"token":"<redacted>"}'),  # an escaped quote does not end it
+    # An auth scheme inside a quoted value, and credential terms inside longer names (PR review).
+    (f'{{"authorization":"Basic {_PLACEHOLDER}"}}', '{"authorization":"Basic <redacted>"}'),
+    (f"{{'Authorization': 'Bearer {_PLACEHOLDER}'}}", "{'Authorization': 'Bearer <redacted>'}"),
+    (f"AWS_SECRET_ACCESS_KEY={_PLACEHOLDER} aws s3 ls", "AWS_SECRET_ACCESS_KEY=<redacted> aws s3 ls"),
+    (f'{{"aws_secret_access_key": "{_PLACEHOLDER}"}}', '{"aws_secret_access_key": "<redacted>"}'),
+    ("PASSWORD_FILE=/run/secrets/db ./start", "PASSWORD_FILE=/run/secrets/db ./start"),  # where, not what
+    ("kubectl --token-file=/var/run/t get pods", "kubectl --token-file=/var/run/t get pods"),
     ("ssh user@host", "ssh user@host"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),

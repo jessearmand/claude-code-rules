@@ -1,0 +1,134 @@
+"""
+Where the files of a copy or archive extraction land.
+
+`tar xf payload.tar` in a project, or `cp -r template/. .`, writes files whose
+names the command line does not show. When the destination holds protected
+config (`.claude/`, `.git/hooks/`, `~/.ssh/`), config_guard needs those names:
+this lists them, relative to the destination, or returns None when they cannot
+be known (an archive read from stdin, too large, renamed on the way out, or a
+member link pointing outside the destination).
+"""
+
+from __future__ import annotations
+
+import os
+import tarfile
+import zipfile
+from collections.abc import Callable, Iterator
+
+from shell_writes import Contents
+
+MAX_ARCHIVE_BYTES = 64 * 1024 * 1024  # listing a compressed tar reads all of it
+MAX_ENTRIES = 20_000
+
+
+class _Unknown(Exception):
+    pass
+
+
+def landing_paths(contents: Contents | None, cwd: str, descend: Callable[[str], bool],
+                  made_earlier: Callable[[str], bool] = lambda name: True) -> list[str] | None:
+    """Paths relative to the destination, or None when they cannot be known.
+
+    `descend(relative_dir)`: whether a copied directory's contents matter. Trees
+    are walked only where protected paths may lie, so a large copy stays cheap.
+    `made_earlier(path)`: whether the line writes that file before this command;
+    a missing archive it does not write makes the extraction fail, landing nothing.
+    """
+    if contents is None:
+        return None
+    try:
+        if contents.archive is not None:
+            return list(_archive_members(contents, cwd, made_earlier))
+        return list(_copied(contents, cwd, descend))
+    except (_Unknown, OSError, tarfile.TarError, zipfile.BadZipFile, ValueError, EOFError):
+        return None
+
+
+def _archive_members(contents: Contents, cwd: str, made_earlier: Callable[[str], bool]) -> Iterator[str]:
+    archive = contents.archive or ""
+    if "$" in archive or "`" in archive:
+        raise _Unknown(archive)
+    path = os.path.join(cwd, os.path.expanduser(archive))
+    if not os.path.exists(path):
+        if made_earlier(archive):
+            raise _Unknown(archive)  # downloaded or written earlier on the line
+        return  # nothing to extract: the command fails
+    if not os.path.isfile(path) or os.path.getsize(path) > MAX_ARCHIVE_BYTES:
+        raise _Unknown(archive)
+    names = _zip_names(path) if contents.zip_archive else _tar_names(path)
+    for count, name in enumerate(names):
+        if count >= MAX_ENTRIES:
+            raise _Unknown(archive)
+        member = _stripped(name, contents.strip)
+        if member is None:
+            continue
+        # tar drops a leading `/` unless -P; unzip always does.
+        yield member if contents.absolute_names and not contents.zip_archive else member.lstrip("/")
+
+
+def _zip_names(path: str) -> list[str]:
+    with zipfile.ZipFile(path) as archive:
+        return archive.namelist()
+
+
+def _tar_names(path: str) -> Iterator[str]:
+    with tarfile.open(path, mode="r:*") as archive:
+        for member in archive:
+            if (member.issym() or member.islnk()) and _escapes(member.name, member.linkname):
+                raise _Unknown(member.name)  # later members may be written through it
+            yield member.name
+
+
+def _escapes(name: str, target: str) -> bool:
+    """Whether a link member points outside the directory it is extracted into."""
+    if os.path.isabs(target):
+        return True
+    resolved = os.path.normpath(os.path.join(os.path.dirname(name), target))
+    return resolved == ".." or resolved.startswith("../")
+
+
+def _stripped(name: str, strip: int) -> str | None:
+    if strip <= 0:
+        return name
+    parts = [part for part in name.split("/") if part]
+    return "/".join(parts[strip:]) if len(parts) > strip else None
+
+
+def _copied(contents: Contents, cwd: str, descend: Callable[[str], bool]) -> Iterator[str]:
+    """`cp a b dir/`: `a` and `b` under their own names. A directory copied
+    recursively lands as `dir/NAME/...`, or as `dir/...` for `src/.`, for
+    `src/` where the tool reads it so (rsync, BSD cp), and for ditto."""
+    for source in contents.sources:
+        dynamic = "$" in source or "`" in source or ":" in source.split("/", 1)[0]
+        if dynamic:
+            if contents.recursive:
+                raise _Unknown(source)  # a computed or remote tree
+            continue  # a single file under a name that cannot be known: no protected directory reached
+        path = os.path.join(cwd, os.path.expanduser(source))
+        name = os.path.basename(os.path.normpath(path))
+        if not os.path.isdir(path):
+            yield name
+            continue
+        if not contents.recursive:
+            continue  # cp without -r skips directories
+        holds = contents.copies_contents or source.endswith("/.") or (
+            source.endswith("/") and contents.slash_copies_contents)
+        if not holds:
+            yield name
+        yield from _tree(path, "" if holds else name, descend)
+
+
+def _tree(root: str, prefix: str, descend: Callable[[str], bool]) -> Iterator[str]:
+    stack, seen = [("", root)], 0
+    while stack:
+        relative, directory = stack.pop()
+        for entry in os.scandir(directory):
+            seen += 1
+            if seen > MAX_ENTRIES:
+                raise _Unknown(root)
+            child = f"{relative}/{entry.name}" if relative else entry.name
+            landed = f"{prefix}/{child}" if prefix else child
+            yield landed
+            if entry.is_dir(follow_symlinks=False) and descend(landed):
+                stack.append((child, entry.path))

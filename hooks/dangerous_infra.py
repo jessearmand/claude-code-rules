@@ -351,22 +351,27 @@ def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
     return texts
 
 
-def _without_comments(sql: str, backslash_escapes: bool = False) -> str:
+def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: bool = False) -> str:
     """`sql` with `-- ...` and `/* ... */` comments blanked, outside quoted
     strings and identifiers ('', "", ``, []): in `SELECT '--'; DROP TABLE t`
     the `--` is data. `backslash_escapes`: inside a string `\\'` does not end it,
-    as in MySQL; standard SQL (SQLite, PostgreSQL) treats the backslash as text."""
+    as in MySQL; standard SQL (SQLite, PostgreSQL) treats the backslash as text.
+    `blank_quoted`: quoted text is blanked too, keeping its quotes."""
     out: list[str] = []
     index, quote = 0, ""
     while index < len(sql):
         char = sql[index]
         if quote:
             if backslash_escapes and char == "\\" and quote in "'\"" and index + 1 < len(sql):
-                out.append(sql[index:index + 2])
+                out.append("  " if blank_quoted else sql[index:index + 2])
                 index += 2
                 continue
             if char == quote:
                 quote = ""
+            elif blank_quoted:
+                out.append(" ")
+                index += 1
+                continue
         elif char in "'\"`[":
             quote = "]" if char == "[" else char  # `[name]` quotes an identifier (SQLite, SQL Server)
         elif sql.startswith("--", index):
@@ -391,7 +396,11 @@ def _destructive_sql(command: SimpleCommand, ctx: RuleContext) -> str | None:
         match = None
         for backslash_escapes in (False, True):
             uncommented = _without_comments(text, backslash_escapes)
-            match = _SQL_DESTRUCTIVE.search(uncommented) or _NOSQL.search(uncommented)
+            # A `WHERE` inside a literal (`DELETE FROM t RETURNING 'WHERE'`) is data:
+            # also match with quoted text blanked, keeping it for the keywords above.
+            unquoted = _without_comments(text, backslash_escapes, blank_quoted=True)
+            match = _SQL_DESTRUCTIVE.search(uncommented) or _SQL_DESTRUCTIVE.search(unquoted) \
+                or _NOSQL.search(uncommented)
             if match:
                 break
         if match:

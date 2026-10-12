@@ -237,6 +237,9 @@ CASES = [
     ("sqlite3 db 'DELETE FROM \"user table\" WHERE id = 1;'", None, None),
     ("sqlite3 db 'DELETE FROM users RETURNING id;'", "deny", "sql-destructive"),  # RETURNING (PR review)
     ("sqlite3 db 'DELETE FROM users WHERE id = 1 RETURNING id;'", None, None),
+    ("sqlite3 db \"DELETE FROM users RETURNING 'WHERE';\"", "deny", "sql-destructive"),  # a literal (PR review)
+    ("psql -c \"DELETE FROM t WHERE note = 'a;b'\"", None, None),
+    ("psql -c 'DELETE FROM \"my t\" WHERE id = 1'", None, None),
     ("sqlite3 :memory: \"CREATE TABLE users(x); SELECT '--'; DROP TABLE users;\"", "deny", "sql-destructive"),
     ("sqlite3 :memory: 'CREATE TABLE t(\"--\"); SELECT [--] FROM t; DROP TABLE t;'", "deny", "sql-destructive"),
     ("mysql -e \"SELECT '\\\\'--'; DROP TABLE users;\"", "deny", "sql-destructive"),  # MySQL \' escapes (PR review)

@@ -136,15 +136,17 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
                 ctx.result.skipped_sources.append((command, label))
                 continue
             # A file written earlier in this same command line was typed by the agent.
-            # `source`/`.` run the file in this shell: its cd and assignments persist,
-            # and `source FILE ARGS` makes ARGS its $1..$n for the duration.
+            # `source`/`.` run the file in this shell: its cd and assignments persist.
+            # `source FILE ARGS`, `bash FILE ARGS` and `./FILE ARGS` make ARGS its
+            # $1..$n for the duration; with none given, they stay unknown.
             sourcing = command.name in ("source", ".")
             caller_params = ctx.variables.get(_POSITIONALS)
-            if sourcing and len(command.args) > 1:
-                ctx.variables[_POSITIONALS] = (_FIELD.join(command.args[1:]),)
+            arguments = _script_arguments(command)
+            if arguments:
+                ctx.variables[_POSITIONALS] = (_FIELD.join(arguments),)
             nested(text, label, not_typed=not label.startswith("written "), shares_shell=sourcing,
                    return_boundary=sourcing)
-            if sourcing and len(command.args) > 1:
+            if arguments:
                 if caller_params is None:
                     ctx.variables.pop(_POSITIONALS, None)
                 else:
@@ -377,6 +379,17 @@ def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[.
                               cwd_options=shell.cwd_options)
     for text, label in _sources_for(as_script, ctx):
         nested(text, label, not_typed=not label.startswith("written "))
+
+
+def _script_arguments(command: SimpleCommand) -> tuple[str, ...]:
+    """The arguments a script `command` runs is given as $1, $2, ..."""
+    if command.name in ("source", "."):
+        return command.args[1:]
+    if command.name in SHELLS:
+        return shell_invocation(command.name, command.args).script_args
+    if command.argv and "/" in command.argv[0]:
+        return command.args  # `./cleanup.sh a b`
+    return ()  # package scripts and Make recipes do not see the caller's arguments
 
 
 def _sources_for(command: SimpleCommand, ctx: _Context) -> list[tuple[str, str]]:

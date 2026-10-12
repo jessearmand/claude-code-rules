@@ -87,11 +87,17 @@ _CANDIDATE = re.compile(
 # Only literals are redacted. A value that starts with `$`, a backtick, `<` or
 # `(` is a reference or substitution: it holds no secret itself, and removing it
 # hides exactly the behaviour the model is being asked about.
+# A credential term, possibly inside a longer name (`AWS_SECRET_ACCESS_KEY`), but not
+# one naming where the secret lives (`PASSWORD_FILE`, `SECRET_NAME`).
+_SECRET_KEY = (
+    r"(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)"
+    r"(?:[_-][A-Za-z0-9]+)*(?<![_-]file)(?<![_-]path)(?<![_-]dir)(?<![_-]name)"
+)
 _SECRET_VALUE = re.compile(
     # The key bare (`TOKEN=`) or quoted on both sides (`"api_key":`, `'github_token':`).
-    r"(?i)(?P<key>(?:[\"'][\w-]*?(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)[\"']"
-    r"|(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie))"
-    r"(?:[\s:=]+(?:bearer|basic)\b)?[\s:=]+)(?![\"']?(?:[$`<(]|(?:bearer|basic)\b))"
+    rf"(?i)(?P<key>(?:[\"'][\w-]*?{_SECRET_KEY}[\"']|{_SECRET_KEY})"
+    # An auth scheme is kept, quoted or not: `"authorization":"Basic <redacted>"`.
+    r"(?:[\s:=]+[\"']?(?:bearer|basic)\b)?[\s:=]+)(?![\"']?(?:[$`<(]|(?:bearer|basic)\b))"
     # A quoted value is redacted through its closing quote (spaces included).
     # Backslash escapes inside it (`"a\\"b"`) do not end it.
     r"(?:\"(?P<double>(?:[^\"\\]|\\.)*)\"|'(?P<single>(?:[^'\\]|\\.)*)'|[\"']?[^\s\"']+)"

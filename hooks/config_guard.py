@@ -76,12 +76,14 @@ from hook_protocol import (  # noqa: E402
     tool_input,
     truncate,
 )
+from landing_paths import landing_paths
 from shell_parse import SimpleCommand, parse  # noqa: E402
 from shell_writes import (  # noqa: E402
     DELETE_TREE,
     INTO_DIR,
     MOVE,
     PERMISSIONS,
+    WRITE,
     PathWrite,
     written_paths,
 )
@@ -242,16 +244,50 @@ def _check_from_unknown_dir(path: str, cwd: str, action: str) -> ConfigRule | No
     return None
 
 
-def _check_into_dir(path: str, cwd: str) -> ConfigRule | None:
-    """A copy whose file names are unknown, into a protected or live directory."""
+_INTO_PROTECTED = "copied into a protected directory under names that cannot be known"
+_HOLDS_PROTECTED = "copied or extracted into a directory holding protected config, with contents that cannot be listed"
+
+
+def _check_into_dir(write: PathWrite, path: str, cwd: str,
+                    made_earlier: frozenset[str] = frozenset()) -> tuple[ConfigRule | None, str | None]:
+    """A copy or extraction into a directory: (rule, why it is uncertain).
+
+    Into a protected or live directory, the names do not matter. Into a
+    directory that holds one (`tar xf x.tar` in a project or in ~), the files
+    it lands are listed and each is checked; when they cannot be listed, ask.
+    """
     roots = _protected_roots(cwd)
     for candidate in candidate_paths(path, cwd):
         if not candidate.startswith("/"):
             continue
         if any(_is_inside(candidate, root) for root in roots):
-            return CONFIG_DIR_RULE
+            return CONFIG_DIR_RULE, _INTO_PROTECTED
         if any(_is_inside(candidate, root) for root in live_source_dirs()):
-            return LIVE_SOURCE_RULE
+            return LIVE_SOURCE_RULE, _INTO_PROTECTED
+        held = [root for root in roots if _is_inside(root, candidate)]
+        if not held:
+            continue
+        rule = _check_landed(write, candidate, held, cwd, made_earlier)
+        if rule is not None:
+            return rule
+    return None, None
+
+
+def _check_landed(write: PathWrite, destination: str, held: list[str], cwd: str,
+                  made_earlier: frozenset[str]) -> tuple[ConfigRule | None, str | None] | None:
+    def descend(relative: str) -> bool:
+        # Only directories on the way to, or inside, a protected root matter.
+        target = os.path.join(destination, relative)
+        return any(_is_inside(root, target) or _is_inside(target, root) for root in held)
+
+    landed = landing_paths(write.contents, cwd, descend, lambda name: os.path.basename(name) in made_earlier)
+    if landed is None:
+        return CONFIG_DIR_RULE, _HOLDS_PROTECTED
+    for relative in landed:
+        target = os.path.normpath(os.path.join(destination, relative))
+        rule = check_path(target, cwd, WRITE)
+        if rule is not None:
+            return rule, None  # a named file the command writes: as certain as `cp x target`
     return None
 
 
@@ -281,7 +317,7 @@ def _through_links(path: str, links: dict[str, str]) -> str:
 
 
 def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: SimpleCommand,
-                 links: dict[str, str] | None = None) -> Finding | None:
+                 links: dict[str, str] | None = None, made_earlier: frozenset[str] = frozenset()) -> Finding | None:
     """Check one write as if its command runs in `directory` (None: unknown)."""
     uncertain = None
     path = _inherited(write.path)
@@ -289,8 +325,7 @@ def _finding_for(write: PathWrite, directory: str | None, cwd: str, simple: Simp
         rule = _check_from_unknown_dir(path, cwd, write.action)
         uncertain = "relative to a directory set by a computed `cd`"
     elif write.action == INTO_DIR:
-        rule = _check_into_dir(path, directory)
-        uncertain = "copied into a protected directory under names that cannot be known"
+        rule, uncertain = _check_into_dir(write, path, directory, made_earlier)
     else:
         rule = check_path(path, directory, write.action)
         if rule is None and links:
@@ -312,10 +347,14 @@ def check_command(command: str, cwd: str) -> Finding | None:
     """
     parsed = parse(command, cwd, shell_sources.resolve)
     softer: Finding | None = None
+    made: set[str] = set()  # names of files written earlier on the line (`curl -o a.tgz URL`)
     for simple in parsed.commands:
-        for write in written_paths(simple):
+        writes = written_paths(simple)
+        made_earlier = frozenset(made)
+        made.update(os.path.basename(w.path.rstrip("/")) for w in writes)
+        for write in writes:
             for directory in simple.possible_cwds:
-                finding = _finding_for(write, directory, cwd, simple, parsed.links)
+                finding = _finding_for(write, directory, cwd, simple, parsed.links, made_earlier)
                 if finding is None:
                     continue
                 if not (finding.indirect or finding.uncertain):

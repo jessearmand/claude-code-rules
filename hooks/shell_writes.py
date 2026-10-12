@@ -15,6 +15,7 @@ the model judge sees those.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 
 from shell_parse import SimpleCommand
@@ -31,10 +32,26 @@ _WRITE_REDIRECTS = frozenset({">", ">>", ">|", "&>", "&>>", "<>"})
 
 
 @dataclass(frozen=True)
+class Contents:
+    """What an INTO_DIR write puts in its directory, so it can be listed."""
+
+    archive: str | None = None  # a tar or zip file whose members land there
+    zip_archive: bool = False
+    strip: int = 0  # tar --strip-components
+    absolute_names: bool = False  # tar -P: members keep a leading /
+    sources: tuple[str, ...] = ()  # copied paths: a file under its own name, a directory with its tree
+    recursive: bool = False  # directories among the sources are copied with what they hold
+    # `src/` copies what src holds, not src itself: rsync, and BSD cp (macOS).
+    slash_copies_contents: bool = False
+    copies_contents: bool = False  # ditto: always what the source holds
+
+
+@dataclass(frozen=True)
 class PathWrite:
     path: str
     action: str
     dynamic: bool = False
+    contents: Contents | None = None  # INTO_DIR: None when what lands there cannot be listed
 
 
 def _operands(args: tuple[str, ...], with_arg: frozenset[str] = frozenset()) -> list[str]:
@@ -65,7 +82,10 @@ def _option_value(args: tuple[str, ...], names: tuple[str, ...]) -> str | None:
     return None
 
 
-def _copy_like(args: tuple[str, ...], with_arg: frozenset[str]) -> list[PathWrite]:
+_RECURSIVE_COPY = re.compile(r"-[A-Za-z]*[rRa][A-Za-z]*|--recursive|--archive")
+
+
+def _copy_like(args: tuple[str, ...], with_arg: frozenset[str], name: str = "cp") -> list[PathWrite]:
     """cp/mv/install/ln/rsync: what the destination may become.
 
     A destination that is (or turns out to be) a directory receives each
@@ -84,10 +104,16 @@ def _copy_like(args: tuple[str, ...], with_arg: frozenset[str]) -> list[PathWrit
         return []
     found = [] if directory else [PathWrite(destination, WRITE)]
     for source in sources:
-        name = source.rstrip("/").rsplit("/", 1)[-1]
-        if name and not source.endswith("/"):
-            found.append(PathWrite(f"{destination.rstrip('/')}/{name}", WRITE))
-    found.append(PathWrite(destination, INTO_DIR))
+        base = source.rstrip("/").rsplit("/", 1)[-1]
+        if base and not source.endswith("/"):
+            found.append(PathWrite(f"{destination.rstrip('/')}/{base}", WRITE))
+    contents = Contents(
+        sources=tuple(sources),
+        recursive=name in ("mv", "ditto") or any(_RECURSIVE_COPY.fullmatch(a) for a in args),
+        slash_copies_contents=name == "rsync" or (name == "cp" and sys.platform == "darwin"),
+        copies_contents=name == "ditto",
+    )
+    found.append(PathWrite(destination, INTO_DIR, contents=contents))
     return found
 
 
@@ -218,7 +244,7 @@ def written_paths(command: SimpleCommand) -> list[PathWrite]:
         by_reference = any(a == "--reference" or a.startswith("--reference=") for a in args)
         found += [PathWrite(path, _LEADING_SPEC[name]) for path in operands[0 if by_reference else 1:]]
     elif name in _COPY_WITH_ARG:
-        found += _copy_like(args, _COPY_WITH_ARG[name])
+        found += _copy_like(args, _COPY_WITH_ARG[name], name)
         if name == "ln":
             found = [PathWrite(w.path, LINK) if w.action == WRITE else w for w in found]
         if name == "mv" or (name == "rsync" and "--remove-source-files" in args):
@@ -303,7 +329,9 @@ def _extract(name: str, args: tuple[str, ...]) -> list[PathWrite]:
     if name == "unzip":
         if any(a in ("-l", "-v", "-t", "-Z", "-p", "-c") for a in args):
             return []  # list, test or print to stdout
-        return [PathWrite(_option_value(args, ("-d",)) or ".", INTO_DIR)]
+        archive = next(iter(_operands(args, frozenset({"-d", "-P"}))), None)
+        contents = Contents(archive=archive, zip_archive=True) if archive else None
+        return [PathWrite(_option_value(args, ("-d",)) or ".", INTO_DIR, contents=contents)]
     if name in ("7z", "7za"):
         if not args or args[0] not in ("x", "e"):
             return []
@@ -316,7 +344,43 @@ def _extract(name: str, args: tuple[str, ...]) -> list[PathWrite]:
     if not extracting or any(a in ("-O", "--to-stdout") for a in args):
         return []
     directory = _option_value(args, ("-C", "--directory"))
-    return [PathWrite(directory or ".", INTO_DIR)]
+    return [PathWrite(directory or ".", INTO_DIR, contents=_tar_contents(args))]
+
+
+_TAR_RENAMES = ("--transform", "--xform", "-s")  # member names rewritten: not listable here
+
+
+def _tar_contents(args: tuple[str, ...]) -> Contents | None:
+    archive = _tar_archive(args)
+    if not archive or archive == "-" or any(a.split("=", 1)[0] in _TAR_RENAMES for a in args):
+        return None  # read from stdin, or renamed on the way out
+    strip = _option_value(args, ("--strip-components",))
+    if strip is not None and not strip.isdigit():
+        return None
+    absolute = "--absolute-names" in args or any(re.fullmatch(r"-[A-Za-z]*P[A-Za-z]*", a) for a in args)
+    return Contents(archive=archive, strip=int(strip or 0), absolute_names=absolute)
+
+
+def _tar_archive(args: tuple[str, ...]) -> str | None:
+    """The file `tar` reads: `-f FILE`, `--file=FILE`, `-xzf FILE`, `xzf FILE`."""
+    named = _option_value(args, ("--file",))
+    if named is not None:
+        return named
+    for index, arg in enumerate(args):
+        if arg.startswith("--"):
+            continue
+        if arg.startswith("-"):
+            cluster = arg[1:]
+        elif index == 0:
+            cluster = arg  # old style: `tar xzf FILE`
+        else:
+            continue
+        if "f" in cluster:
+            attached = cluster[cluster.index("f") + 1:]
+            if attached and arg.startswith("-"):
+                return attached  # `-fFILE`, `-xfFILE`
+            return args[index + 1] if index + 1 < len(args) else None
+    return None
 
 
 def _recursive(args: tuple[str, ...]) -> bool:

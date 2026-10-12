@@ -122,6 +122,7 @@ class ShellInvocation:
     # Positional arguments after a `-c` string: $0, $1, ...
     command_args: tuple[str, ...] = ()
     script: str | None = None  # `bash script.sh`
+    script_args: tuple[str, ...] = ()  # `bash script.sh a b`: its $1, $2, ...
     reads_stdin: bool = False  # `bash`, `bash -s args`, `bash -`
     syntax_only: bool = False  # `-n`: parse and check, run nothing
     interactive: bool = False  # `-i`: prompts, and PROMPT_COMMAND, are shown and run
@@ -171,15 +172,16 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
     positionals = list(args[index:])
     command_args: tuple[str, ...] = ()
     script = None
+    script_args: tuple[str, ...] = ()
     if dash_c and not command_given and positionals:
         commands.append(positionals[0])  # `bash -c STR $0 $1 ...`
         command_args = tuple(positionals[1:])
     elif dash_c:
         command_args = tuple(positionals)
     elif not reads_stdin and positionals and positionals[0] not in STDIN_PATHS:
-        script = positionals[0]
+        script, script_args = positionals[0], tuple(positionals[1:])
     stdin = reads_stdin or (not dash_c and script is None)
-    return ShellInvocation(tuple(commands), command_args, script, stdin, syntax_only, interactive)
+    return ShellInvocation(tuple(commands), command_args, script, script_args, stdin, syntax_only, interactive)
 
 # Wrappers whose command is a string the shell parses again.
 STRING_RUNNERS: dict[str, WrapperSpec] = {

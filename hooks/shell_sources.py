@@ -430,6 +430,31 @@ def _make_recipes(rules: dict[str, tuple[list[str], list[str]]], wanted: list[st
         seen.add(target)
         prerequisites, recipe = rules[target]
         if recipe:
-            found.append(("\n".join(recipe), f"make {target}"))
-        queue.extend(prerequisites)
+            found.append((_automatic_variables("\n".join(recipe), target, prerequisites), f"make {target}"))
+        queue.extend(p for p in prerequisites if p != "|")
     return found
+
+
+_AUTOMATIC = re.compile(r"\$\$|\$\(([@<^+])([DF]?)\)|\$\{([@<^+])([DF]?)\}|\$([@<^+])")
+
+
+def _automatic_variables(recipe: str, target: str, prerequisites: list[str]) -> str:
+    """The recipe as Make hands it to the shell: `$@` is the target, `$<` the first
+    prerequisite, `$^` and `$+` all of them, with `D`/`F` forms; `$$` is a `$`.
+    `$*` and `$?` depend on pattern stems and timestamps and stay as written."""
+    normal = prerequisites[:prerequisites.index("|")] if "|" in prerequisites else prerequisites
+    values = {"@": [target], "<": normal[:1], "^": list(dict.fromkeys(normal)), "+": normal}
+
+    def replace(match: re.Match[str]) -> str:
+        if match.group(0) == "$$":
+            return "$"
+        name = match.group(1) or match.group(3) or match.group(5)
+        part = match.group(2) or match.group(4) or ""
+        words = values[name]
+        if part == "D":
+            words = [os.path.dirname(word) or "." for word in words]
+        elif part == "F":
+            words = [os.path.basename(word) for word in words]
+        return " ".join(words)
+
+    return _AUTOMATIC.sub(replace, recipe)

@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -184,12 +187,67 @@ def _bash(command: str, cwd: str) -> tuple[str | None, str | None]:
     return result.decision, result.reason.split("[", 1)[1].split("]", 1)[0]
 
 
+def _make_archives(project: str) -> None:
+    """Archives and trees whose contents land in the project when extracted or copied."""
+    def add(archive: tarfile.TarFile, name: str, data: bytes = b"x") -> None:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+
+    with tarfile.open(os.path.join(project, "payload.tar"), "w") as archive:
+        add(archive, ".claude/settings.json", b"{}")
+    with tarfile.open(os.path.join(project, "release.tgz"), "w:gz") as archive:
+        add(archive, "release/bin/app")
+    with tarfile.open(os.path.join(project, "nested.tar"), "w") as archive:
+        add(archive, "pkg-1.0/.git/hooks/pre-commit")
+    with tarfile.open(os.path.join(project, "link.tar"), "w") as archive:
+        link = tarfile.TarInfo("up")
+        link.type, link.linkname = tarfile.SYMTYPE, "../.."
+        archive.addfile(link)
+    with zipfile.ZipFile(os.path.join(project, "hook.zip"), "w") as archive:
+        archive.writestr(".git/hooks/post-checkout", "x")
+    with zipfile.ZipFile(os.path.join(project, "docs.zip"), "w") as archive:
+        archive.writestr("docs/index.md", "x")
+    template = os.path.join(project, "template", ".claude")
+    os.makedirs(template)
+    open(os.path.join(template, "settings.json"), "w").close()
+    os.makedirs(os.path.join(project, "assets", "img"))
+
+
+# Extracting or copying into a directory that holds protected config: the files
+# that land are listed and checked; when they cannot be listed, ask (PR review).
+LANDING_CASES = [
+    ("tar xf payload.tar", "deny", "claude-settings"),
+    ("unzip -o hook.zip", "deny", "git-hooks"),
+    ("tar -xf nested.tar --strip-components=1", "deny", "git-hooks"),
+    ("cp -r template/. .", "deny", "claude-settings"),
+    ("tar xzf release.tgz", None, None),
+    ("unzip docs.zip", None, None),
+    ("tar xf nested.tar", "deny", "git-hooks"),  # any repository's hooks, as for a direct write
+    ("tar xf payload.tar -C vendor", None, None),
+    ("cp -r assets dist", None, None),
+    ("cp -r template backup", None, None),
+    ("tar xf link.tar", "ask", "agent-config-dir"),  # a link out of the destination
+    ("curl -sL https://example.com/x.tgz | tar xz", "ask", "agent-config-dir"),
+    ("curl -sL https://example.com/x.tgz | tar xz -C vendor", None, None),
+    ("curl -sLo x.tgz https://example.com/x.tgz && tar xzf x.tgz", "ask", "agent-config-dir"),
+    ("tar xzf not-here.tgz", None, None),  # nothing to extract: tar fails
+]
+
+
 def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as project:
         os.makedirs(os.path.join(project, ".git", "hooks"))
         print("Bash writes:")
         for command, decision, rule_id in BASH_CASES:
+            actual = _bash(command, project)
+            ok = actual[0] == decision and (rule_id is None or actual[1] == rule_id)
+            _check(ok, f"{command!r} -> {actual}", failures)
+
+        print("\nCopies and extractions:")
+        _make_archives(project)
+        for command, decision, rule_id in LANDING_CASES:
             actual = _bash(command, project)
             ok = actual[0] == decision and (rule_id is None or actual[1] == rule_id)
             _check(ok, f"{command!r} -> {actual}", failures)

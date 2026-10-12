@@ -522,6 +522,16 @@ def main() -> int:
                         "make --file=sub/Makefile clean"):
             decision = _decision(_run_hook(command, project))
             _check(decision == "ask", f"make attached/= options (PR review): {command} -> {decision}", failures)
+        # A script's arguments are its $1.. and Make's `$@` is the target (PR review).
+        _write(project, "run.sh", '#!/bin/sh\n"$1" -rf victim\n')
+        os.makedirs(os.path.join(project, "auto"))
+        _write(project, os.path.join("auto", "Makefile"), "rm:; $@ -rf victim\nout/x: a b\n\techo $(@D) $^ $$HOME\n")
+        for command in ("bash run.sh rm", "./run.sh rm", "sh -x run.sh rm", "make -C auto rm"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == "ask", f"arguments reach the script: {command} -> {decision}", failures)
+        for command in ("bash run.sh echo", "make -C auto out/x"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision is None, f"{command} -> {decision}", failures)
         decision = _decision(_run_hook("bash -n < clean.sh", project))
         _check(decision is None, f"bash -n < clean.sh only checks syntax -> {decision}", failures)
         # `source NAME` looks NAME up in PATH first (PR review).
