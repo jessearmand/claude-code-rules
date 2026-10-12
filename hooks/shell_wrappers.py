@@ -124,6 +124,7 @@ class ShellInvocation:
     script: str | None = None  # `bash script.sh`
     reads_stdin: bool = False  # `bash`, `bash -s args`, `bash -`
     syntax_only: bool = False  # `-n`: parse and check, run nothing
+    interactive: bool = False  # `-i`: prompts, and PROMPT_COMMAND, are shown and run
 
 
 def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvocation:
@@ -131,7 +132,7 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
     command_options = SHELL_COMMAND_OPTIONS.get(name, frozenset())
     with_arg = SHELL_OPTIONS_WITH_ARG | SHELL_EXTRA_OPTIONS_WITH_ARG.get(name, frozenset())
     commands: list[str] = []
-    dash_c = reads_stdin = syntax_only = False
+    dash_c = reads_stdin = syntax_only = interactive = False
     command_given = False  # fish `-c CMD`: the string came with the option
     index = 0
     while index < len(args):
@@ -160,6 +161,7 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
             syntax_only = syntax_only or "n" in letters
             dash_c = dash_c or "c" in letters
             reads_stdin = reads_stdin or "s" in letters
+            interactive = interactive or "i" in letters
             index += 1
             continue
         if arg.startswith(("+", "--")) and arg not in ("+", "--"):
@@ -177,7 +179,7 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
     elif not reads_stdin and positionals and positionals[0] not in STDIN_PATHS:
         script = positionals[0]
     stdin = reads_stdin or (not dash_c and script is None)
-    return ShellInvocation(tuple(commands), command_args, script, stdin, syntax_only)
+    return ShellInvocation(tuple(commands), command_args, script, stdin, syntax_only, interactive)
 
 # Wrappers whose command is a string the shell parses again.
 STRING_RUNNERS: dict[str, WrapperSpec] = {

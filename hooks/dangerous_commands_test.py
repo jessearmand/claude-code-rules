@@ -237,6 +237,7 @@ CASES = [
     ("sqlite3 db 'DELETE FROM users RETURNING id;'", "deny", "sql-destructive"),  # RETURNING (PR review)
     ("sqlite3 db 'DELETE FROM users WHERE id = 1 RETURNING id;'", None, None),
     ("sqlite3 :memory: \"CREATE TABLE users(x); SELECT '--'; DROP TABLE users;\"", "deny", "sql-destructive"),
+    ("sqlite3 :memory: 'CREATE TABLE t(\"--\"); SELECT [--] FROM t; DROP TABLE t;'", "deny", "sql-destructive"),
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 -init q.sql :memory:", "deny", "sql-destructive"),  # -init
     ("sqlite3 -cmd 'DROP TABLE t' db.sqlite .tables", "deny", "sql-destructive"),
     ("cat <<'SQL' | psql\nDROP TABLE users;\nSQL", "deny", "sql-destructive"),  # SQL piped through cat (PR review)

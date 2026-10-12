@@ -333,7 +333,8 @@ def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
 
 def _without_comments(sql: str) -> str:
     """`sql` with `-- ...` and `/* ... */` comments blanked, outside quoted
-    strings and identifiers: in `SELECT '--'; DROP TABLE t` the `--` is data."""
+    strings and identifiers ('', "", ``, []): in `SELECT '--'; DROP TABLE t`
+    the `--` is data."""
     out: list[str] = []
     index, quote = 0, ""
     while index < len(sql):
@@ -341,8 +342,8 @@ def _without_comments(sql: str) -> str:
         if quote:
             if char == quote:
                 quote = ""
-        elif char in "'\"`":
-            quote = char
+        elif char in "'\"`[":
+            quote = "]" if char == "[" else char  # `[name]` quotes an identifier (SQLite, SQL Server)
         elif sql.startswith("--", index):
             end = sql.find("\n", index)
             index = len(sql) if end < 0 else end

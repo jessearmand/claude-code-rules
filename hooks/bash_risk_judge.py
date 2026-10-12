@@ -102,7 +102,10 @@ _SECRET_VALUE = re.compile(
 _URL_USERINFO = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s/:@]+:)[^\s/@]+@")
 # The password half of Basic-auth credentials given to curl's -u / --user (spaced,
 # attached or with =) and -U / --proxy-user.
-_BASIC_AUTH_OPTION = re.compile(r"((?:\s-u|\s--user|\s--proxy-user|\s-U)(?:\s+|=)?[\"']?)([^\s:\"']+:)[^\s\"']+")
+_BASIC_AUTH_OPTION = re.compile(
+    r"((?:\s-u|\s--user|\s--proxy-user|\s-U)(?:\s+|=)?)"
+    # A quoted credential is redacted through its closing quote (spaces included).
+    r"(?:'([^':]+:)[^']*'|\"([^\":]+:)[^\"]*\"|([^\s:\"']+:)[^\s\"']+)")
 # A PEM/OpenSSH/PGP private key block, or one cut off before its END line.
 _PRIVATE_KEY = re.compile(
     r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----.*?(?:-----END \1-----|\Z)", re.DOTALL)
@@ -193,6 +196,15 @@ def should_judge(command: str, parsed: ParseResult) -> bool:
     return any(is_candidate(nested.text) or nested.indirect for nested in parsed.nested_sources)
 
 
+def _basic_auth_redacted(match: re.Match[str]) -> str:
+    """`-u 'user:pass words'` -> `-u 'user:<redacted>'`, keeping the quoting."""
+    if match.group(2) is not None:
+        return f"{match.group(1)}'{match.group(2)}<redacted>'"
+    if match.group(3) is not None:
+        return f'{match.group(1)}"{match.group(3)}<redacted>"'
+    return f"{match.group(1)}{match.group(4)}<redacted>"
+
+
 def redact(command: str) -> str:
     def _replace(match: re.Match[str]) -> str:
         if not match.group("key"):
@@ -205,7 +217,7 @@ def redact(command: str) -> str:
 
     text = _PRIVATE_KEY.sub("<redacted private key>", command)
     text = _URL_USERINFO.sub(r"\1<redacted>@", text)
-    text = _BASIC_AUTH_OPTION.sub(r"\1\2<redacted>", text)
+    text = _BASIC_AUTH_OPTION.sub(_basic_auth_redacted, text)
     return _SECRET_VALUE.sub(_replace, text)
 
 

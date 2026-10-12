@@ -162,6 +162,8 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         for value in command.env_values("BASH_ENV"):
             for path in _startup_paths(value, command, ctx):
                 _run_file(path, command, ctx, nested)
+    if command.name == "bash" and shell.interactive:
+        _interactive_hooks(command, nested)
     prelude = _option_prelude(command.name, args)
     for text in shell.commands:
         nested(prelude + _bind_positionals(text, list(shell.command_args)), f"{command.name} -c")
@@ -185,6 +187,17 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
     elif feeder.name == "cat" and len(feeder.args) == 1:
         # `cat script.sh | bash` runs the file just like `bash script.sh`.
         _run_file(feeder.args[0], command, ctx, nested)
+
+
+def _interactive_hooks(command: SimpleCommand, nested: Callable[..., None]) -> None:
+    """An interactive bash (`bash -i`) runs $PROMPT_COMMAND before each prompt and
+    expands $PS0/$PS1, whose `$(...)` runs too: parse what the environment sets."""
+    for value in command.env_values("PROMPT_COMMAND"):
+        nested(value, "bash -i PROMPT_COMMAND")
+    for name in ("PS0", "PS1"):
+        for value in command.env_values(name):
+            if "$(" in value or "`" in value:
+                nested(': "' + value.replace('"', '\\"') + '"', f"bash -i {name}")
 
 
 _STARTUP_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")

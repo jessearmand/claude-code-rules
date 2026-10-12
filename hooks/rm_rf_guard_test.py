@@ -206,6 +206,7 @@ SHOULD_BLOCK = [
     "X=rm; declare -n R=X; declare -r R; printf -v R %s echo; \"$X\" -rf victim",  # attributes via a nameref
     "X=foo; declare -n R=X; declare -l R; R=RM; \"$X\" -rf victim",
     "touch -- -rf; rm -* victim",  # a glob sees files made earlier on the line (PR review)
+    "PROMPT_COMMAND='rm -rf victim' bash --noprofile --norc -i <<< exit",  # interactive bash (PR review)
     "mkdir -- -rf; rm -* victim",
     "X=; f(){ X+=$2; }; mapfile -t -C f -c 1 A <<< $'r\\nm'; \"$X\" -rf victim",  # -C per line (PR review)  # an exit that may not run ends nothing (PR review)
     "X=echo; trap '\"$X\" -rf victim' USR1; X=r; X+=m; kill -USR1 $$; X=echo",  # signal traps (PR review)
