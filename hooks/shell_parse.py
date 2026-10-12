@@ -44,6 +44,7 @@ from __future__ import annotations
 import itertools
 import os
 import re
+from dataclasses import replace
 from math import prod
 
 from shell_effects import (
@@ -742,7 +743,10 @@ def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
         return
     keys = ctx.variables.get(FUNCTION + command.name, ())
     bodies = [ctx.functions[key] for key in keys if key != UNSET]
-    if not bodies or command.name in ctx.calling:
+    if not bodies:
+        _call_not_found_handler(command, ctx, depth)
+        return
+    if command.name in ctx.calling:
         return
     if depth >= MAX_DEPTH:
         ctx.result.truncated = True
@@ -756,6 +760,41 @@ def _call_function(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             _replay_body(body, command, ctx, depth)
     finally:
         ctx.conditional = conditional
+
+
+_NOT_FOUND_HANDLER = "command_not_found_handle"
+# Names bash never looks up in PATH, so they never reach command_not_found_handle.
+_BASH_BUILTINS = frozenset({
+    ":", ".", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen",
+    "complete", "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec",
+    "exit", "export", "false", "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let",
+    "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray", "readonly",
+    "return", "set", "shift", "shopt", "source", "suspend", "test", "times", "trap", "true", "type",
+    "typeset", "ulimit", "umask", "unalias", "unset", "wait",
+})
+
+
+def _call_not_found_handler(command: SimpleCommand, ctx: _Context, depth: int) -> None:
+    """A command bash cannot find runs `command_not_found_handle NAME ARGS...`,
+    in a separate environment: nothing it sets reaches the caller. Whether the
+    program exists is not known here, so every external command may run it."""
+    if not command.argv or "/" in command.argv[0] or command.name in _BASH_BUILTINS:
+        return
+    keys = ctx.variables.get(FUNCTION + _NOT_FOUND_HANDLER, ())
+    bodies = [ctx.functions[key] for key in keys if key != UNSET]
+    if not bodies or _NOT_FOUND_HANDLER in ctx.calling:
+        return
+    if depth >= MAX_DEPTH:
+        ctx.result.truncated = True
+        return
+    call = replace(command, argv=(_NOT_FOUND_HANDLER, *command.argv))
+    saved = ctx.cwd, ctx.cwd_options, dict(ctx.variables), ctx.exited, ctx.conditional
+    ctx.conditional = True  # only if the program is missing
+    try:
+        for body in bodies:
+            _replay_body(body, call, ctx, depth)
+    finally:
+        ctx.cwd, ctx.cwd_options, ctx.variables, ctx.exited, ctx.conditional = saved
 
 
 def _replay_body(body: list[_BodyStep], command: SimpleCommand, ctx: _Context, depth: int) -> None:

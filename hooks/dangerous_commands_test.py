@@ -277,6 +277,15 @@ CASES = [
     ("ls \"$_\"", None, None),
     # A file made under a computed name may match a later glob as the program or an option.
     ("touch \"$X\"; rm -* victim", "ask", "incomplete-analysis"),
+    # A command bash cannot find runs command_not_found_handle, in its own environment (PR review).
+    ("X=echo; command_not_found_handle(){ \"$X\" reset --hard; }; X=git; nope", "deny", "git-reset-hard"),
+    ("X=echo; command_not_found_handle(){ X=git; }; nope; \"$X\" reset --hard", None, None),
+    ("command_not_found_handle(){ echo \"$1: not found\"; }; ls; git status", None, None),
+    # An interactive POSIX shell runs the file $ENV names; bash only in POSIX mode (PR review).
+    ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh sh -i <<<'exit'", "deny", "git-reset-hard"),
+    ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh bash --posix -i <<<'exit'", "deny", "git-reset-hard"),
+    ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh bash -i <<<'exit'", None, None),
+    ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh sh -c :", None, None),
     ("touch \"$X\"; ./x*", "ask", "incomplete-analysis"),
     ("mkdir -p \"$OUT\" && cp *.txt \"$OUT\"/", None, None),  # an operand only: no change in verdict
     ("touch \"$LOG\"; ls *.log", None, None),

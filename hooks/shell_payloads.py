@@ -168,6 +168,11 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
                 _run_file(path, command, ctx, nested)
     if command.name == "bash" and shell.interactive:
         _interactive_hooks(command, nested)
+    if shell.interactive and _reads_env_file(command.name, args):
+        # An interactive POSIX shell first runs the file $ENV names (PR review).
+        for value in command.env_values("ENV"):
+            for path in _startup_paths(value, command, ctx):
+                _run_file(path, command, ctx, nested)
     prelude = _option_prelude(command.name, args)
     for text in shell.commands:
         nested(prelude + _bind_positionals(text, list(shell.command_args)), f"{command.name} -c")
@@ -191,6 +196,26 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
     elif feeder.name == "cat" and len(feeder.args) == 1:
         # `cat script.sh | bash` runs the file just like `bash script.sh`.
         _run_file(feeder.args[0], command, ctx, nested)
+
+
+# Shells whose interactive startup runs $ENV. bash does so only in POSIX mode;
+# zsh only when emulating sh or ksh, which a command line rarely asks for.
+_ENV_SHELLS = frozenset({"sh", "dash", "ash", "ksh", "mksh", "yash", "posh"})
+
+
+def _reads_env_file(name: str, args: list[str]) -> bool:
+    if name in _ENV_SHELLS:
+        return True
+    return name == "bash" and ("--posix" in args or _set_option(args, "posix"))
+
+
+def _set_option(args: list[str], option: str) -> bool:
+    """`bash -o posix`: the option is set (a later `+o posix` unsets it)."""
+    state = False
+    for index, arg in enumerate(args[:-1]):
+        if arg in ("-o", "+o") and args[index + 1] == option:
+            state = arg == "-o"
+    return state
 
 
 def _interactive_hooks(command: SimpleCommand, nested: Callable[..., None]) -> None:

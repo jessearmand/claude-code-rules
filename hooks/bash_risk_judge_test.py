@@ -58,6 +58,7 @@ REDACTIONS = [
     (f"{{'token': '{_PLACEHOLDER}'}}", "{'token': '<redacted>'}"),
     (f'{{"token": "{_PLACEHOLDER} with spaces"}}', '{"token": "<redacted>"}'),  # the whole quoted value
     (f"curl -u 'alice:{_PLACEHOLDER} with spaces' x", "curl -u 'alice:<redacted>' x"),
+    (f'curl -u "alice:a\\"{_PLACEHOLDER} more" x', 'curl -u "alice:<redacted>" x'),  # an escaped quote (PR review)
     (f'{{"token":"a\\"{_PLACEHOLDER} more"}}', '{"token":"<redacted>"}'),  # an escaped quote does not end it
     # An auth scheme inside a quoted value, and credential terms inside longer names (PR review).
     (f'{{"authorization":"Basic {_PLACEHOLDER}"}}', '{"authorization":"Basic <redacted>"}'),

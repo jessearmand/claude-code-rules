@@ -112,7 +112,8 @@ _URL_USERINFO = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s/:@]+:)[^\s/@]+@")
 _BASIC_AUTH_OPTION = re.compile(
     r"((?:\s-u|\s--user|\s--proxy-user|\s-U)(?:\s+|=)?)"
     # A quoted credential is redacted through its closing quote (spaces included).
-    r"(?:'([^':]+:)[^']*'|\"([^\":]+:)[^\"]*\"|([^\s:\"']+:)[^\s\"']+)")
+    # Inside double quotes a backslash escapes the next character (`\\"` does not end it).
+    r"(?:'([^':]+:)[^']*'|\"((?:[^\"\\:]|\\.)+:)(?:[^\"\\]|\\.)*\"|([^\s:\"']+:)[^\s\"']+)")
 # A PEM/OpenSSH/PGP private key block, or one cut off before its END line.
 _PRIVATE_KEY = re.compile(
     r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----.*?(?:-----END \1-----|\Z)", re.DOTALL)
