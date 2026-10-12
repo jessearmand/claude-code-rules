@@ -331,15 +331,20 @@ def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
     return texts
 
 
-def _without_comments(sql: str) -> str:
+def _without_comments(sql: str, backslash_escapes: bool = False) -> str:
     """`sql` with `-- ...` and `/* ... */` comments blanked, outside quoted
     strings and identifiers ('', "", ``, []): in `SELECT '--'; DROP TABLE t`
-    the `--` is data."""
+    the `--` is data. `backslash_escapes`: inside a string `\\'` does not end it,
+    as in MySQL; standard SQL (SQLite, PostgreSQL) treats the backslash as text."""
     out: list[str] = []
     index, quote = 0, ""
     while index < len(sql):
         char = sql[index]
         if quote:
+            if backslash_escapes and char == "\\" and quote in "'\"" and index + 1 < len(sql):
+                out.append(sql[index:index + 2])
+                index += 2
+                continue
             if char == quote:
                 quote = ""
         elif char in "'\"`[":
@@ -361,9 +366,14 @@ def _without_comments(sql: str) -> str:
 
 def _destructive_sql(command: SimpleCommand, ctx: RuleContext) -> str | None:
     for text in _sql_texts(command, ctx):
-        # `DELETE FROM users -- all rows` still deletes every row: match without comments.
-        uncommented = _without_comments(text)
-        match = _SQL_DESTRUCTIVE.search(uncommented) or _NOSQL.search(uncommented)
+        # `DELETE FROM users -- all rows` still deletes every row: match without comments,
+        # reading backslashes both as MySQL does and as standard SQL does.
+        match = None
+        for backslash_escapes in (False, True):
+            uncommented = _without_comments(text, backslash_escapes)
+            match = _SQL_DESTRUCTIVE.search(uncommented) or _NOSQL.search(uncommented)
+            if match:
+                break
         if match:
             return f"{command.name}: {match.group(0).strip()}"
     return None

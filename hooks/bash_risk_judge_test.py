@@ -58,6 +58,7 @@ REDACTIONS = [
     (f"{{'token': '{_PLACEHOLDER}'}}", "{'token': '<redacted>'}"),
     (f'{{"token": "{_PLACEHOLDER} with spaces"}}', '{"token": "<redacted>"}'),  # the whole quoted value
     (f"curl -u 'alice:{_PLACEHOLDER} with spaces' x", "curl -u 'alice:<redacted>' x"),
+    (f'{{"token":"a\\"{_PLACEHOLDER} more"}}', '{"token":"<redacted>"}'),  # an escaped quote does not end it
     ("ssh user@host", "ssh user@host"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),

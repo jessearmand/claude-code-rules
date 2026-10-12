@@ -93,7 +93,8 @@ _SECRET_VALUE = re.compile(
     r"|(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie))"
     r"(?:[\s:=]+(?:bearer|basic)\b)?[\s:=]+)(?![\"']?(?:[$`<(]|(?:bearer|basic)\b))"
     # A quoted value is redacted through its closing quote (spaces included).
-    r"(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|[\"']?[^\s\"']+)"
+    # Backslash escapes inside it (`"a\\"b"`) do not end it.
+    r"(?:\"(?P<double>(?:[^\"\\]|\\.)*)\"|'(?P<single>(?:[^'\\]|\\.)*)'|[\"']?[^\s\"']+)"
     r"|\b(?:sk|ghp|gho|ghs|ghu|xox[abp]|AKIA|AIza|npm_|pypi-|glpat-)[A-Za-z0-9_\-]{16,}"
     r"|\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
 )

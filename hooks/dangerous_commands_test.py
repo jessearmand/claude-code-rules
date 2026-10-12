@@ -31,6 +31,7 @@ CASES = [
     ("git checkout -f main", "deny", "git-checkout-discard"),
     ("git -c filter.wipe.clean='sh -c x' add file.txt", "deny", "git-unsafe-override"),  # driver programs
     ("git -c diff.x.textconv=evil diff", "deny", "git-unsafe-override"),
+    ("git --config-env=filter.wipe.clean=FILTERCMD add file", "ask", "git-config-env-unknown"),
     ("git checkout -f -b next", "deny", "git-checkout-discard"),  # force with a new branch (PR review)
     ("git checkout -b next", None, None),
     ("git checkout -bfeature", None, None),  # the rest of the cluster is the branch name
@@ -238,6 +239,8 @@ CASES = [
     ("sqlite3 db 'DELETE FROM users WHERE id = 1 RETURNING id;'", None, None),
     ("sqlite3 :memory: \"CREATE TABLE users(x); SELECT '--'; DROP TABLE users;\"", "deny", "sql-destructive"),
     ("sqlite3 :memory: 'CREATE TABLE t(\"--\"); SELECT [--] FROM t; DROP TABLE t;'", "deny", "sql-destructive"),
+    ("mysql -e \"SELECT '\\\\'--'; DROP TABLE users;\"", "deny", "sql-destructive"),  # MySQL \' escapes (PR review)
+    ("sqlite3 db \"SELECT 'a\\\\'; DROP TABLE t; --'\"", "deny", "sql-destructive"),  # standard SQL: \ is text
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 -init q.sql :memory:", "deny", "sql-destructive"),  # -init
     ("sqlite3 -cmd 'DROP TABLE t' db.sqlite .tables", "deny", "sql-destructive"),
     ("cat <<'SQL' | psql\nDROP TABLE users;\nSQL", "deny", "sql-destructive"),  # SQL piped through cat (PR review)

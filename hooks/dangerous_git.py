@@ -430,7 +430,8 @@ def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
 def _config_from_unknown_env(command: SimpleCommand, ctx: RuleContext) -> str | None:
     git = git_invocation(command)
     for key in git.unresolved if git else ():
-        if key.startswith("alias.") or key in _PROGRAM_KEYS or key in ("core.hookspath", "http.sslverify"):
+        if key.startswith("alias.") or key in _PROGRAM_KEYS or key in ("core.hookspath", "http.sslverify") \
+                or _PROGRAM_KEY_PATTERN.fullmatch(key.lower()):
             return f"git --config-env={key}=<unknown value>"
     return None
 
