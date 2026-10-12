@@ -185,7 +185,8 @@ class _Trap:
     depth: int
     indirect: bool
     on_exit: bool  # EXIT (or 0): runs when the shell ends
-    on_signal: bool  # any other condition: may run after any later command
+    on_signal: bool  # a signal, ERR or RETURN: may run after any later command
+    on_debug: bool = False  # DEBUG: runs before every later simple command
     # The shell state it was last checked in (variables, directories, files the
     # line wrote, links and copies); checked again when any of that changes.
     checked: tuple | None = None

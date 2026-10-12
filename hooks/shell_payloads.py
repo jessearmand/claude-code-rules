@@ -93,9 +93,11 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             # then again when the shell exits (EXIT), or after each later command
             # that changes the variables (a signal may arrive at any point).
             nested(handler, "trap")
-            exits = [s.upper().removeprefix("SIG") in ("EXIT", "0") for s in _trap_signals(args)]
+            names = [s.upper().removeprefix("SIG") for s in _trap_signals(args)]
+            exits = [n in ("EXIT", "0") for n in names]
+            others = [n for n in names if n not in ("EXIT", "0", "DEBUG")]
             ctx.trap_frames[-1].append(_Trap(handler, (*via, "trap"), depth + 1, indirect, on_exit=any(exits),
-                                             on_signal=not all(exits), checked=ctx.trap_state()))
+                                             on_signal=bool(others), on_debug="DEBUG" in names))
     elif name in ("mapfile", "readarray"):
         callback = _mapfile_option(args, "C")
         if callback:

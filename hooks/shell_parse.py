@@ -330,21 +330,28 @@ def _run_signal_traps(ctx: _Context) -> None:
     traps = [trap for trap in ctx.trap_frames[-1] if trap.on_signal]
     if ctx.trapping or not traps:
         return
-    state = ctx.trap_state()
     for trap in traps:
-        if trap.checked != state:
-            trap.checked = state
-            _check_trap(trap, "on signal", ctx)
+        if trap.checked != ctx.trap_state():
+            _check_trap(trap, "on signal", ctx, keep_effects=True)
+            # What the handler itself changed does not call for checking it again.
+            trap.checked = ctx.trap_state()
 
 
-def _check_trap(trap: _Trap, label: str, ctx: _Context) -> None:
-    """Parse a trap handler in a scope of its own, as a run that may not happen."""
+def _check_trap(trap: _Trap, label: str, ctx: _Context, keep_effects: bool = False) -> None:
+    """Parse a trap handler as a run that may not happen. `keep_effects`: a
+    signal handler runs in this shell, so what it assigns stays possible
+    afterwards (as a value beside the earlier one); otherwise it is discarded."""
     saved = (ctx.cwd, ctx.cwd_options, dict(ctx.variables), ctx.conditional, ctx.trapping)
     ctx.conditional = ctx.trapping = True
     try:
         _parse_into(trap.handler, ctx, (*trap.via, f"trap ({label})"), trap.depth, trap.indirect, shares_shell=True)
     finally:
-        ctx.cwd, ctx.cwd_options, ctx.variables, ctx.conditional, ctx.trapping = saved
+        options = ctx.cwd_options
+        ctx.cwd, ctx.cwd_options, variables, ctx.conditional, ctx.trapping = saved
+        if keep_effects:
+            ctx.cwd_options = _bounded([*saved[1], *options])  # a `cd` in it may have run
+        else:
+            ctx.variables = variables
 
 
 class _FunctionHeader:
@@ -408,9 +415,25 @@ def _track_blocks(tokens: list, blocks: int) -> int:
 
 def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,
              pipeline: int, stage: int) -> None:
-    """Run one simple command, then the signal handlers that may run after it."""
+    """Run one simple command, with the DEBUG handlers that run before it and
+    the signal handlers that may run after it."""
+    _run_debug_traps(ctx)
     _segment_variants(tokens, ctx, via, depth, indirect, pipeline, stage)
     _run_signal_traps(ctx)
+
+
+def _run_debug_traps(ctx: _Context) -> None:
+    """`trap CMD DEBUG`: CMD runs in this shell before every simple command, so
+    what it assigns holds for the command: `trap 'X=rm' DEBUG; "$X" -rf v`."""
+    if ctx.trapping:
+        return
+    for trap in [t for t in ctx.trap_frames[-1] if t.on_debug]:
+        trapping = ctx.trapping
+        ctx.trapping = True
+        try:
+            _parse_into(trap.handler, ctx, (*trap.via, "trap (DEBUG)"), trap.depth, trap.indirect, shares_shell=True)
+        finally:
+            ctx.trapping = trapping
 
 
 def _segment_variants(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indirect: bool,

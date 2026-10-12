@@ -86,7 +86,9 @@ def _strip_prelude(words: list[Word], ctx: _Context) -> tuple[list[Word], tuple[
         _persist_prefix(assignments, rest, ctx)
     # `export X=rm` / `readonly X=...` / `declare X=...`: also an assignment.
     if rest and rest[0].text in ("export", "readonly", "declare", "typeset", "local"):
-        if ctx.local_scopes and rest[0].text in ("local", "declare", "typeset"):
+        flags = "".join(w.text[1:] for w in rest[1:] if w.text.startswith("-") and not w.quoted)
+        # `declare -g X=v` in a function sets the global X, not a local one.
+        if ctx.local_scopes and (rest[0].text == "local" or rest[0].text in ("declare", "typeset") and "g" not in flags):
             _declare_locals(rest[1:], ctx)
         for word in _declare_attributes(rest[0].text, rest[1:], ctx):
             if _ASSIGNMENT.match(word.text):

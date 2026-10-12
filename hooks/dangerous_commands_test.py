@@ -243,6 +243,8 @@ CASES = [
     ("sqlite3 db \"SELECT 'a\\\\'; DROP TABLE t; --'\"", "deny", "sql-destructive"),  # standard SQL: \ is text
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 -init q.sql :memory:", "deny", "sql-destructive"),  # -init
     ("sqlite3 -cmd 'DROP TABLE t' db.sqlite .tables", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > q.sql; psql -f q.sql", "deny", "sql-destructive"),  # psql -f (PR review)
+    ("printf 'DROP TABLE users;' > q.sql; psql --file=q.sql", "deny", "sql-destructive"),
     ("cat <<'SQL' | psql\nDROP TABLE users;\nSQL", "deny", "sql-destructive"),  # SQL piped through cat (PR review)
     ("cat <<'SQL' | psql\nSELECT 1;\nSQL", None, None),
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 prod.db < q.sql", "deny", "sql-destructive"),

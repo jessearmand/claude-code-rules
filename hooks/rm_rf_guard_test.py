@@ -207,6 +207,9 @@ SHOULD_BLOCK = [
     "X=foo; declare -n R=X; declare -l R; R=RM; \"$X\" -rf victim",
     "touch -- -rf; rm -* victim",  # a glob sees files made earlier on the line (PR review)
     "PROMPT_COMMAND='rm -rf victim' bash --noprofile --norc -i <<< exit",  # interactive bash (PR review)
+    "X=echo; f(){ declare -g X=rm; }; f; \"$X\" -rf victim",  # declare -g sets the global (PR review)
+    "X=echo; trap 'X=rm' DEBUG; \"$X\" -rf victim",  # DEBUG runs before each command (PR review)
+    "X=echo; trap 'X=rm' USR1; kill -USR1 $$; \"$X\" -rf victim",  # a signal handler's assignments
     "mkdir -- -rf; rm -* victim",
     "X=; f(){ X+=$2; }; mapfile -t -C f -c 1 A <<< $'r\\nm'; \"$X\" -rf victim",  # -C per line (PR review)  # an exit that may not run ends nothing (PR review)
     "X=echo; trap '\"$X\" -rf victim' USR1; X=r; X+=m; kill -USR1 $$; X=echo",  # signal traps (PR review)
