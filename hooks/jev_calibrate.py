@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Calibration harness: run the deterministic hooks' test corpora through Jev.
+Calibration harness: run the deterministic hooks' test corpora through a
+decision model (Jev by default; any AI Gateway decision model via --model).
 
 Not a test. It needs network access and an AI Gateway key, and it exists to
 answer "how would the model have judged the cases the regex guards already
 decide?" so thresholds and questions in bash_risk_judge.py can be tuned
 against a fixed corpus instead of gut feel.
 
-Run:  python3 hooks/jev_calibrate.py [--out results.jsonl] [--workers 8]
+Run:  python3 hooks/jev_calibrate.py [--model openai/gpt-6-luna-decisions]
+          [--out results.jsonl] [--workers 8] [--repeat 3]
 
 Corpora and the label each is compared against:
   rm_rf_guard_test    SHOULD_BLOCK / SHOULD_ALLOW  -> recursive_force question
@@ -117,7 +119,7 @@ def judge(case: Case) -> dict:
     return {
         **record,
         "answers": result.answers,
-        "confidence": result.raw.get("providerMetadata", {}).get("typesafe", {}).get("confidence"),
+        "confidence": result.confidence(),
     }
 
 
@@ -189,10 +191,13 @@ def stability(runs: list[list[dict]], threshold: float) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", help="write one JSON record per case to this file")
+    parser.add_argument("--model", help="decision model id (default: HOOK_JEV_MODEL or Jev)")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--threshold", type=float, default=0.7)
     parser.add_argument("--repeat", type=int, default=1, help="run the corpus N times and report verdict flips")
     args = parser.parse_args()
+    if args.model:
+        os.environ["HOOK_JEV_MODEL"] = args.model
 
     cases = corpus()
     print(f"Evaluating {len(cases)} cases with {args.workers} workers...")
@@ -210,7 +215,7 @@ def main() -> int:
 
     errors = sum("error" in r for r in records)
     if errors == len(records):
-        print("every call failed; is `ai evaluate` available and the gateway key set?", file=sys.stderr)
+        print("every call failed; is `ai decide` available and a gateway credential set?", file=sys.stderr)
         return 1
     summarize(records, args.threshold)
     if len(runs) > 1:

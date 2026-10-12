@@ -78,6 +78,19 @@ REDACTIONS = [
     ("password=`cat p.txt`", "password=`cat p.txt`"),
     ("curl -H \"Authorization: Bearer $GH_TOKEN\" x", "curl -H \"Authorization: Bearer $GH_TOKEN\" x"),
     ("mysql --password=<(pass show db)", "mysql --password=<(pass show db)"),
+    # A shell quote that opens before the key holds the whole value (PR review):
+    # the value runs to the closing quote, not the first space.
+    (f"curl -H 'X-Api-Key: {_PLACEHOLDER} horse battery' https://x", "curl -H 'X-Api-Key: <redacted>' https://x"),
+    (f'curl -H "Authorization: Token {_PLACEHOLDER} more" x', 'curl -H "Authorization: Token <redacted>" x'),
+    (f"curl --header 'Cookie: session={_PLACEHOLDER}; other=1' x", "curl --header 'Cookie: <redacted>' x"),
+    (f"curl -d 'user=bob&password={_PLACEHOLDER} two&x=1' x", "curl -d 'user=bob&password=<redacted>' x"),
+    (f"bash -c \"curl -H 'X-Api-Key: {_PLACEHOLDER} b' x\"", "bash -c \"curl -H 'X-Api-Key: <redacted>' x\""),
+    (f'"password={_PLACEHOLDER} it\'s more"', '"password=<redacted>"'),  # `'` is literal inside "…"
+    (f"it\\'s -H 'X-Api-Key: {_PLACEHOLDER} b'", "it\\'s -H 'X-Api-Key: <redacted>'"),  # `\'` opens no quote
+    (f"curl --header=X-Api-Key:\\ {_PLACEHOLDER}\\ b x", "curl --header=X-Api-Key:<redacted> x"),
+    ('curl -H "Authorization: Bearer $GH_TOKEN" -H "X-Api-Key: ${KEY}" x',
+     'curl -H "Authorization: Bearer $GH_TOKEN" -H "X-Api-Key: ${KEY}" x'),
+    ("git commit -m 'rotate token handling'", "git commit -m 'rotate token <redacted>'"),  # bare rule, as before
 ]
 
 # Answers that parse as JSON but must not be trusted. Each voids the whole
@@ -207,6 +220,43 @@ def _context_tests(failures: list[str]) -> None:
         failures.append("BASH_RISK_JUDGE_UNATTENDED_DENY=1 should turn an unattended ask into deny")
 
 
+def _client_tests(failures: list[str]) -> None:
+    """How the hook invokes `ai`: subcommand, credentials and proxy environment."""
+    def _invoke(extra_env: dict[str, str], drop: tuple[str, ...]) -> tuple[dict, list[str]]:
+        with tempfile.TemporaryDirectory() as bindir:
+            capture = os.path.join(bindir, "ai-call.txt")
+            _shim(bindir, f'printf "%s\\n" "proxy=$NODE_USE_ENV_PROXY" "$@" > "{capture}"; cat >/dev/null; '
+                          f"printf '%s' '{SUCCESS_JSON}'")
+            env = {**os.environ, "HOOK_JEV_ENABLE": "1", "PATH": bindir, **extra_env}
+            for name in drop:
+                env.pop(name, None)
+            env["BASH_RISK_JUDGE_LOG_DIR"] = os.path.join(bindir, "logs")
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git clean -xdf"}, "cwd": "/tmp/proj"})
+            completed = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, env=env, check=False)
+            call = open(capture, encoding="utf-8").read().split("\n") if os.path.exists(capture) else []
+            return json.loads(completed.stdout), call
+
+    proxies = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NODE_USE_ENV_PROXY")
+    # A Vercel OIDC token is a credential too: no fnox wrapper needed.
+    out, call = _invoke({"VERCEL_OIDC_TOKEN": "oidc"}, ("AI_GATEWAY_API_KEY", *proxies))
+    if _decision(out) != "ask" or call[1:2] != ["decide"]:
+        failures.append(f"VERCEL_OIDC_TOKEN should call `ai decide` directly, got {out} / {call}")
+    if call[:1] != ["proxy="]:
+        failures.append(f"without a proxy NODE_USE_ENV_PROXY must stay unset, got {call[:1]}")
+    # Node's fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set.
+    out, call = _invoke({"AI_GATEWAY_API_KEY": "k", "HTTPS_PROXY": "http://127.0.0.1:9"}, proxies[1:])
+    if call[:1] != ["proxy=1"]:
+        failures.append(f"with HTTPS_PROXY set the CLI should get NODE_USE_ENV_PROXY=1, got {call[:1]}")
+    # An explicit setting wins.
+    out, call = _invoke({"AI_GATEWAY_API_KEY": "k", "HTTPS_PROXY": "http://127.0.0.1:9", "NODE_USE_ENV_PROXY": "0"}, ())
+    if call[:1] != ["proxy=0"]:
+        failures.append(f"an explicit NODE_USE_ENV_PROXY must be kept, got {call[:1]}")
+    # The model is configurable, e.g. OpenAI's decisions model through the gateway.
+    out, call = _invoke({"AI_GATEWAY_API_KEY": "k", "HOOK_JEV_MODEL": "openai/gpt-6-luna-decisions"}, proxies)
+    if "openai/gpt-6-luna-decisions" not in call:
+        failures.append(f"HOOK_JEV_MODEL should be passed as -m, got {call}")
+
+
 def _decision(output: dict) -> str | None:
     return output.get("hookSpecificOutput", {}).get("permissionDecision")
 
@@ -313,7 +363,7 @@ def main() -> None:
     # Fallbacks: every one of these must defer with `{}`.
     fallbacks = {
         "ai missing from PATH": ("rm -rf build", None, {}),
-        "old ai without evaluate": ("rm -rf build", "echo \"error: unknown command 'evaluate'\" >&2; exit 1", {}),
+        "old ai without decide": ("rm -rf build", "echo \"error: unknown command 'decide'\" >&2; exit 1", {}),
         "non-zero exit": ("rm -rf build", "exit 1", {}),
         "malformed JSON": ("rm -rf build", "cat >/dev/null; echo 'not json'", {}),
         "JSON without answers": ("rm -rf build", "cat >/dev/null; echo '{\"usage\": {}}'", {}),
@@ -360,6 +410,7 @@ def main() -> None:
         failures.append("non-Bash tool should defer")
 
     _context_tests(failures)
+    _client_tests(failures)
 
     if failures:
         print("FAILURES:")

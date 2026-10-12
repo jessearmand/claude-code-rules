@@ -13,7 +13,13 @@ the file name:
       package.json scripts[NAME] plus its pre/post hooks
   make [TARGET...]
       the recipe lines of those targets (or the default target) and, one
-      level down, their prerequisites
+      level down, their prerequisites, with Make variables expanded; plus the
+      commands Make itself runs while reading the Makefile (`$(shell …)`,
+      `VAR != …`), see make_expand.py
+  git ALIAS ...
+      what the alias expands to in the repository, global or system config:
+      the shell command of a `!` alias, or the git command line otherwise
+      (see git_aliases.py)
 
 Everything returned is marked `indirect` by the parser: the agent did not
 type it in this call, and the file may predate the session, so guards
@@ -29,6 +35,7 @@ import json
 import os
 import re
 
+import make_expand
 from shell_parse import SOURCE_TOO_LARGE, SimpleCommand, WrittenFile
 from shell_wrappers import CLI_OPTIONS_WITH_VALUE, SHELLS, shell_invocation
 
@@ -82,6 +89,11 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
         return _package_script(name, args, cwd, written)
     if name in ("make", "gmake"):
         return _make(args, cwd, written)
+    if name == "git":
+        # Imported here: git_aliases needs dangerous_git, which needs shell_parse.
+        import git_aliases
+
+        return git_aliases.resolve(command)
     return []
 
 
@@ -368,11 +380,19 @@ def _make(args: list[str], cwd: str, written: dict[str, WrittenFile]) -> list[tu
     else:
         text, typed = (_read_text(path) if path else None) or "", False
     statements = "\n".join(evaluated)
-    rules, default = _make_rules(text + "\n" + statements)
+    makefile_text = text + "\n" + statements
+    rules, default = _make_rules(makefile_text)
     typed_targets = set(_make_rules(statements)[0]) if statements else set()
     wanted = targets or ([default] if default else [])
-    return [(recipe, "written " + label if typed or label.split(" ", 1)[-1] in typed_targets else label)
-            for recipe, label in _make_recipes(rules, wanted)]
+    table = make_expand.variables(makefile_text)
+    found = [(recipe, "written " + label if typed or label.split(" ", 1)[-1] in typed_targets else label)
+             for recipe, label in _make_recipes(rules, wanted, table)]
+    # Make runs these before any recipe, whichever targets were asked for.
+    parse_time = make_expand.parse_time_commands(makefile_text)
+    typed_parse_time = set(make_expand.parse_time_commands(statements)) if statements else set()
+    found += [(command, ("written " if typed or command in typed_parse_time else "") + "make $(shell)")
+              for command in parse_time]
+    return found
 
 
 def _make_option(args: list[str], index: int) -> tuple[str, str, int]:
@@ -416,7 +436,8 @@ def _make_rules(text: str) -> tuple[dict[str, tuple[list[str], list[str]]], str 
     return rules, default
 
 
-def _make_recipes(rules: dict[str, tuple[list[str], list[str]]], wanted: list[str]) -> list[tuple[str, str]]:
+def _make_recipes(rules: dict[str, tuple[list[str], list[str]]], wanted: list[str],
+                  table: dict[str, str]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
     queue = list(wanted)
@@ -430,7 +451,8 @@ def _make_recipes(rules: dict[str, tuple[list[str], list[str]]], wanted: list[st
         seen.add(target)
         prerequisites, recipe = rules[target]
         if recipe:
-            found.append((_automatic_variables("\n".join(recipe), target, prerequisites), f"make {target}"))
+            expanded = make_expand.expand("\n".join(recipe), table)
+            found.append((_automatic_variables(expanded, target, prerequisites), f"make {target}"))
         queue.extend(p for p in prerequisites if p != "|")
     return found
 

@@ -533,6 +533,30 @@ def main() -> int:
         for command in ("bash run.sh echo", "make -C auto out/x"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)
+        # Make runs `$(shell …)` and `!=` while reading the Makefile, whatever the
+        # target, and recipes run what their variables hold (PR review).
+        expansions = {
+            "shell": "X := $(shell rm -rf victim)\nall:\n\t@echo hi\n",
+            "braces": "X = ${shell rm -rf victim}\nall:\n\t@echo hi\n",
+            "bang": "X != rm -rf victim\nall:\n\t@echo hi\n",
+            "conditional": "ifeq ($(shell rm -rf victim),)\nendif\nall:\n\t@echo hi\n",
+            "variable": "CLEAN = rm -rf\nTARGET := victim\nall:\n\t$(CLEAN) $(TARGET)\n",
+            "nested": "A = $(B)\nB = rm -rf victim\nall:\n\t$(A)\n",
+            "appended": "FLAGS = -r\nFLAGS += -f\nall:\n\trm ${FLAGS} victim\n",
+            "recipe-shell": "all:\n\techo $(shell rm -rf victim)\n",
+        }
+        for name, text in expansions.items():
+            os.makedirs(os.path.join(project, f"mk-{name}"))
+            _write(project, os.path.join(f"mk-{name}", "Makefile"), text)
+            decision = _decision(_run_hook(f"make -C mk-{name}", project))
+            _check(decision == "ask", f"make expansion '{name}' -> {decision}", failures)
+        # A `$$` is the shell's `$`, not a Make reference; unknown variables stay as written.
+        for name, text in {"escaped": "all:\n\techo $$(shell rm -rf victim) $(UNSET)\n",
+                           "safe-shell": "REV := $(shell git rev-parse HEAD)\nall:\n\techo $(REV)\n"}.items():
+            os.makedirs(os.path.join(project, f"mk-{name}"))
+            _write(project, os.path.join(f"mk-{name}", "Makefile"), text)
+            decision = _decision(_run_hook(f"make -C mk-{name}", project))
+            _check(decision is None, f"make expansion '{name}' -> {decision}", failures)
         decision = _decision(_run_hook("bash -n < clean.sh", project))
         _check(decision is None, f"bash -n < clean.sh only checks syntax -> {decision}", failures)
         # `source NAME` looks NAME up in PATH first (PR review).

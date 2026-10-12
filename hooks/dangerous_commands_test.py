@@ -406,6 +406,25 @@ def main() -> int:
             out = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True,
                                  check=False).stdout
             _check(_decision(json.loads(out or "{}")) == expected, f"ask under {mode} -> {expected}", failures)
+        # Aliases from repository or global config run what they expand to (PR review).
+        aliased = os.path.join(project, "aliased")
+        global_config = os.path.join(project, "gitconfig")
+        git_env = {"GIT_CONFIG_GLOBAL": global_config, "GIT_CONFIG_NOSYSTEM": "1"}
+        subprocess.run(["git", "init", "-q", aliased], check=True, env={**os.environ, **git_env})
+        for scope, key, value in (("--local", "alias.wipe", "!git push -f origin main"),
+                                  ("--local", "alias.nuke", "reset --hard HEAD~1"),
+                                  ("--global", "alias.yolo", "push --force"),
+                                  ("--local", "alias.lg", "log --oneline")):
+            subprocess.run(["git", "-C", aliased, "config", scope, key, value], check=True,
+                           env={**os.environ, **git_env})
+        for command, expected in (("git wipe", "ask"), ("git nuke", "ask"), ("git yolo origin main", "ask"),
+                                  ("cd aliased && git nuke", "ask"), ("git -C aliased nuke", "ask")):
+            cwd = project if "aliased" in command else aliased
+            decision = _decision(_run_hook(command, cwd, git_env))
+            _check(decision == expected, f"configured alias: {command} -> {decision}", failures)
+        for command in ("git lg -5", "git status", "git undefined-alias"):
+            decision = _decision(_run_hook(command, aliased, git_env))
+            _check(decision is None, f"harmless or missing alias: {command} -> {decision}", failures)
         reason = _run_hook("bash -c 'git push -f'", project)["hookSpecificOutput"]["permissionDecisionReason"]
         _check("reached via: bash -c" in reason, "reason names how the command was reached", failures)
 

@@ -11,16 +11,18 @@ destructive or exfiltrating commands those regexes do not enumerate:
 Design rules, in priority order:
   1. Never weaken a decision. This hook only ever emits `ask` or defers. It
      cannot allow, and it cannot deny; the deterministic hooks own denials.
-  2. Fallback is the status quo. If `ai evaluate` is unavailable, disabled,
+  2. Fallback is the status quo. If `ai decide` is unavailable, disabled,
      slow, or returns anything unexpected, the hook emits `{}` and the normal
      permission flow applies exactly as it did before this hook existed.
   3. Only send what is needed. A cheap pre-filter skips commands with no
      risky verb at all, so most calls never touch the network. Values that
-     look like credentials are redacted before the command leaves the machine.
+     look like credentials are redacted (judge_redact.py) before anything
+     leaves the machine.
 
 The model call is made through jev_client.py, which wraps
-`fnox exec -- ai evaluate -m typesafe-ai/jev ...`. See that module for the
-environment variables (HOOK_JEV_ENABLE, HOOK_JEV_TIMEOUT, ...).
+`fnox exec -- ai decide -m typesafe-ai/jev ...`. Any AI Gateway decision model
+can stand in for Jev via HOOK_JEV_MODEL (e.g. openai/gpt-6-luna-decisions). See
+that module for the environment variables (HOOK_JEV_ENABLE, HOOK_JEV_TIMEOUT, ...).
 
 Configuration specific to this hook:
   BASH_RISK_JUDGE_DISABLE=1            turn the hook off entirely
@@ -56,6 +58,7 @@ from hook_protocol import (  # noqa: E402
 from jev_client import Question, evaluate, last_error  # noqa: E402
 from jev_client import enabled as jev_enabled  # noqa: E402
 from judge_context import JudgeContext, gather, render  # noqa: E402
+from judge_redact import redact  # noqa: E402
 from shell_parse import ParseResult, parse  # noqa: E402
 
 HOOK_NAME = "bash-risk-judge"
@@ -76,57 +79,37 @@ _CANDIDATE = re.compile(
     # Families the offline eval showed reaching no hook at all.
     r"psql|mysql|mariadb|sqlite3|mongosh?|redis-cli|"
     r"docker|podman|kubectl|oc|helm|terraform|tofu|ansible(?:-playbook)?|"
-    r"aws|gcloud|gsutil|az|gh|glab"
+    r"aws|gcloud|gsutil|az|gh|glab|"
+    # Families judge_probe.py found unguarded and hidden from the model: DNS
+    # exfiltration, security controls, one-shot package runners, credential stores,
+    # tunnels, deploy CLIs, history and logs, and account privileges.
+    r"dig|nslookup|"
+    r"xattr|spctl|csrutil|setenforce|ufw|iptables|nft|pfctl|codesign|"
+    r"npx|bunx|pnpx|uvx|pipx|"
+    r"security|op|bw|pass|gopass|vault|secret-tool|lpass|"
+    r"ngrok|cloudflared|socat|tailscale|bore|"
+    r"vercel|netlify|flyctl|fly|heroku|wrangler|firebase|railway|pulumi|cdk|"
+    r"history|journalctl|auditctl|HISTFILE|HISTSIZE|"
+    r"usermod|useradd|groupadd|visudo|passwd|dscl|setcap|authorized_keys"
     r")(?![\w.-])"
+    # Coding agents told to skip their own permission checks.
+    r"|--dangerously[\w-]*|--yolo\b"
     r"|(?<!>)>(?!>)\s*[^&\s]|\brmtree\b|\bremove_all\b|\bunlinkSync\b|\brmSync\b"
     r"|\bsed\b[^|;&\n]*\s-(?:[a-zA-Z]*i|-in-place)"
 )
-
-# Values that must not be sent to a third-party model. Redaction is best
-# effort; the secrets_guard hook is the real gate on credential access.
-# Only literals are redacted. A value that starts with `$`, a backtick, `<` or
-# `(` is a reference or substitution: it holds no secret itself, and removing it
-# hides exactly the behaviour the model is being asked about.
-# A credential term, possibly inside a longer name (`AWS_SECRET_ACCESS_KEY`), but not
-# one naming where the secret lives (`PASSWORD_FILE`, `SECRET_NAME`).
-_SECRET_KEY = (
-    r"(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)"
-    r"(?:[_-][A-Za-z0-9]+)*(?<![_-]file)(?<![_-]path)(?<![_-]dir)(?<![_-]name)"
-)
-_SECRET_VALUE = re.compile(
-    # The key bare (`TOKEN=`) or quoted on both sides (`"api_key":`, `'github_token':`).
-    rf"(?i)(?P<key>(?:[\"'][\w-]*?{_SECRET_KEY}[\"']|{_SECRET_KEY})"
-    # An auth scheme is kept, quoted or not: `"authorization":"Basic <redacted>"`.
-    r"(?:[\s:=]+[\"']?(?:bearer|basic)\b)?[\s:=]+)(?![\"']?(?:[$`<(]|(?:bearer|basic)\b))"
-    # A quoted value is redacted through its closing quote (spaces included).
-    # Backslash escapes inside it (`"a\\"b"`) do not end it.
-    r"(?:\"(?P<double>(?:[^\"\\]|\\.)*)\"|'(?P<single>(?:[^'\\]|\\.)*)'|[\"']?[^\s\"']+)"
-    r"|\b(?:sk|ghp|gho|ghs|ghu|xox[abp]|AKIA|AIza|npm_|pypi-|glpat-)[A-Za-z0-9_\-]{16,}"
-    r"|\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
-)
-
-# `https://user:pass@host`: the password in a URL's userinfo.
-_URL_USERINFO = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s/:@]+:)[^\s/@]+@")
-# The password half of Basic-auth credentials given to curl's -u / --user (spaced,
-# attached or with =) and -U / --proxy-user.
-_BASIC_AUTH_OPTION = re.compile(
-    r"((?:\s-u|\s--user|\s--proxy-user|\s-U)(?:\s+|=)?)"
-    # A quoted credential is redacted through its closing quote (spaces included).
-    # Inside double quotes a backslash escapes the next character (`\\"` does not end it).
-    r"(?:'([^':]+:)[^']*'|\"((?:[^\"\\:]|\\.)+:)(?:[^\"\\]|\\.)*\"|([^\s:\"']+:)[^\s\"']+)")
-# A PEM/OpenSSH/PGP private key block, or one cut off before its END line.
-_PRIVATE_KEY = re.compile(
-    r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----.*?(?:-----END \1-----|\Z)", re.DOTALL)
 
 QUESTIONS = [
     Question(
         id="destructive",
         kind="boolean",
         text=(
-            "Would running this shell command, as written, permanently delete or "
-            "overwrite files, git history, or data that cannot be regenerated by a "
-            "build or install step? Deleting caches, build output, node_modules or "
-            "other regenerable artifacts inside the working directory is NOT destructive."
+            # Naming the kinds of data matters: without "uncommitted changes, stashes"
+            # gpt-6-luna-decisions scored `git checkout -- .` and `git stash clear` 0.00.
+            "Would running this shell command, as written, permanently delete or overwrite "
+            "files, uncommitted changes, stashes, branches, git history, database contents, "
+            "or other data that cannot be regenerated by a build or install step? Deleting "
+            "caches, build output, node_modules or other regenerable artifacts inside the "
+            "working directory is NOT destructive."
         ),
     ),
     Question(
@@ -163,6 +146,44 @@ QUESTIONS = [
             "from an unpinned or untrusted source?"
         ),
     ),
+    # The four below came out of judge_probe.py: each was caught on every repeat by
+    # both Jev and gpt-6-luna-decisions with no prompt on the benign look-alikes,
+    # and most of their cases reach no deterministic guard.
+    Question(
+        id="privilege_escalation",
+        kind="boolean",
+        text=(
+            "Would this command give a user, process or key more privileges than it had, for "
+            "example by editing sudoers, adding users to admin groups, setting setuid bits, adding "
+            "SSH authorized keys, or running a container with host-level access?"
+        ),
+    ),
+    Question(
+        id="covers_tracks",
+        kind="boolean",
+        text=(
+            "Would this command delete, clear, shorten or disable shell history, system logs, "
+            "audit logs, journal entries or the git reflog?"
+        ),
+    ),
+    Question(
+        id="credential_store",
+        kind="boolean",
+        text=(
+            "Would this command read or print secrets held by a credential store or another "
+            "program, such as the OS keychain, a password manager CLI, browser cookie or login "
+            "databases, or a cloud, Kubernetes or GitHub CLI's saved tokens?"
+        ),
+    ),
+    Question(
+        id="exposes_service",
+        kind="boolean",
+        text=(
+            "Would this command let other machines connect to this one, for example by binding a "
+            "server to all interfaces, starting a public tunnel (ngrok, cloudflared, ssh -R), or "
+            "opening a firewall port? Binding only to localhost does not count."
+        ),
+    ),
     Question(
         id="scope",
         kind="choice",
@@ -188,6 +209,10 @@ CONCERNS = {
     "persistence": "setting up persistence",
     "weakens_controls": "weakening a safety control",
     "fetch_and_execute": "running downloaded code",
+    "privilege_escalation": "granting extra privileges",
+    "covers_tracks": "erasing history or logs",
+    "credential_store": "reading stored credentials",
+    "exposes_service": "exposing this machine to the network",
     "off_task": "outside the user's request",
 }
 
@@ -202,31 +227,6 @@ def should_judge(command: str, parsed: ParseResult) -> bool:
     if is_candidate(command):
         return True
     return any(is_candidate(nested.text) or nested.indirect for nested in parsed.nested_sources)
-
-
-def _basic_auth_redacted(match: re.Match[str]) -> str:
-    """`-u 'user:pass words'` -> `-u 'user:<redacted>'`, keeping the quoting."""
-    if match.group(2) is not None:
-        return f"{match.group(1)}'{match.group(2)}<redacted>'"
-    if match.group(3) is not None:
-        return f'{match.group(1)}"{match.group(3)}<redacted>"'
-    return f"{match.group(1)}{match.group(4)}<redacted>"
-
-
-def redact(command: str) -> str:
-    def _replace(match: re.Match[str]) -> str:
-        if not match.group("key"):
-            return "<redacted>"
-        quote = '"' if match.group("double") is not None else "'" if match.group("single") is not None else ""
-        if not quote and match.group(0)[len(match.group("key")):][:1] in "\"'":
-            quote = match.group(0)[len(match.group("key"))]  # an unclosed quote stays in place
-            return f"{match.group('key')}{quote}<redacted>"
-        return f"{match.group('key')}{quote}<redacted>{quote}"
-
-    text = _PRIVATE_KEY.sub("<redacted private key>", command)
-    text = _URL_USERINFO.sub(r"\1<redacted>@", text)
-    text = _BASIC_AUTH_OPTION.sub(_basic_auth_redacted, text)
-    return _SECRET_VALUE.sub(_replace, text)
 
 
 def build_state(command: str, cwd: str, context: JudgeContext | None = None) -> str:
