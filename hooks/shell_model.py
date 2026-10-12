@@ -242,6 +242,9 @@ class _Context:
     returned: bool = False
     # An `exit` ran: the shell it ends stops there (its EXIT traps then run).
     exited: bool = False
+    # `set -x` is on: bash expands $PS4 (and any `$(...)` in it) before each command.
+    xtrace: bool = False
+    traced_prompts: set[str] = field(default_factory=set)  # PS4 values already parsed
     # Per shell, innermost last: the trap handlers it installed.
     trap_frames: list[list[_Trap]] = field(default_factory=lambda: [[]])
     trapping: bool = False  # a signal handler is being checked (no re-entry)

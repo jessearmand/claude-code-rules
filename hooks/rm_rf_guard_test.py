@@ -264,9 +264,17 @@ SHOULD_BLOCK = [
     "$(which rm) -rf build",
     "f(){ rm -rf ~; }; f",
     "$'\\x72m' -rf build",
+    # While `set -x` traces, bash expands $PS4 before each command (PR review).
+    "PS4='$(rm -rf victim)'; set -x; true",
+    "set -o xtrace; PS4='`rm -rf victim`'; ls",
+    "PS4='$(rm -rf victim)'; set -ex; set +x",  # `set +x` is itself traced
+    "PS4='$(rm -rf victim)' bash -xc true",
 ]
 
 SHOULD_ALLOW = [
+    "PS4='$(rm -rf victim)'; true",  # PS4 is only expanded while tracing
+    "PS4='$(rm -rf victim)' bash -c true",
+    "PS4='+ ${LINENO}: '; set -x; ls",
     "bash <<< 'rm -rf victim' <<< :",  # only the last stdin redirect is read (PR review)
     "read -r X <<<'r\\m'; \"$X\" -rf victim",
     "npm exec -- eslint .",

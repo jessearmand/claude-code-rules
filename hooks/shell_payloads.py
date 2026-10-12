@@ -1,7 +1,8 @@
 """
 Program text a command runs: `bash -c`, `eval`, `trap`, `mapfile -C`,
 `source <(...)`, `ssh host CMD`, interpreter one-liners, awk `system()`,
-string runners, and scripts read from disk through the source resolver.
+string runners, `$PS4` while `set -x` traces, and scripts read from disk
+through the source resolver.
 Each is parsed again as a nested command list. Part of shell_parse.
 """
 
@@ -65,6 +66,12 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
         # program, a string literal), so the guards ask about it instead of denying.
         _parse_into(text, ctx, (*nested_via, label), depth + 1, indirect or not_typed, shares_shell,
                     return_boundary)
+
+    if name == "set":
+        tracing = _xtrace_option(args)
+        ctx.xtrace = ctx.xtrace if tracing is None else tracing
+    if ctx.xtrace:
+        _trace_prompt(command, ctx, nested)
 
     if name in SHELLS:
         _shell_payload(command, args, ctx, nested)
@@ -171,6 +178,10 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
                 _run_file(path, command, ctx, nested)
     if command.name == "bash" and shell.interactive:
         _interactive_hooks(command, nested)
+    if _xtrace_option(_leading_options(args)):
+        # `bash -x`: the child traces from its first command, expanding $PS4.
+        for value in command.env_values("PS4"):
+            nested(_prompt_expansion(value), f"{command.name} -x PS4")
     if shell.interactive and _reads_env_file(command.name, args):
         # An interactive POSIX shell first runs the file $ENV names (PR review).
         for value in command.env_values("ENV"):
@@ -219,6 +230,50 @@ def _set_option(args: list[str], option: str) -> bool:
         if arg in ("-o", "+o") and args[index + 1] == option:
             state = arg == "-o"
     return state
+
+
+def _xtrace_option(args: list[str]) -> bool | None:
+    """What `set ARGS` does to xtrace: True for `-x`/`-o xtrace`, False for
+    `+x`/`+o xtrace`, None when it is not mentioned. The last mention wins."""
+    state: bool | None = None
+    for index, arg in enumerate(args):
+        if arg in ("--", "-"):
+            break
+        if arg in ("-o", "+o") and index + 1 < len(args) and args[index + 1] == "xtrace":
+            state = arg == "-o"
+        elif len(arg) > 1 and arg[0] in "-+" and arg[1] != "-" and "x" in arg[1:]:
+            state = arg[0] == "-"
+        elif not arg.startswith(("-", "+")) and (index == 0 or args[index - 1] not in ("-o", "+o")):
+            break  # the positional parameters start here
+    return state
+
+
+def _leading_options(args: list[str]) -> list[str]:
+    """A shell's own options: the words before its command string or script."""
+    options: list[str] = []
+    for index, arg in enumerate(args):
+        if arg.startswith(("-", "+")) or (index > 0 and args[index - 1] in ("-o", "+o")):
+            options.append(arg)
+            if "c" in arg.lstrip("-+") and not arg.startswith("--"):
+                break  # `-c` / `-xc`: the next word is the command string
+        else:
+            break
+    return options
+
+
+def _prompt_expansion(value: str) -> str:
+    """A command whose expansion runs what expanding prompt `value` runs."""
+    return ': "' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _trace_prompt(command: SimpleCommand, ctx: _Context, nested: Callable[..., None]) -> None:
+    """While `set -x` is on, bash expands $PS4 before each command it runs, so a
+    `$(...)` in it runs too (PR review). Each value is parsed once."""
+    for value in command.env_values("PS4"):
+        if value in ctx.traced_prompts or ("$(" not in value and "`" not in value and "$((" not in value):
+            continue
+        ctx.traced_prompts.add(value)
+        nested(_prompt_expansion(value), "set -x PS4")
 
 
 def _interactive_hooks(command: SimpleCommand, nested: Callable[..., None]) -> None:
