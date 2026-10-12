@@ -157,8 +157,10 @@ def _glob_word(word: Word, ctx: _Context, command_word: bool = False) -> list[Wo
     cwd = ctx.cwd or "/"
     if word.quoted or word.dynamic or not _GLOB_CHARS.search(word.text):
         return [word]
-    if ctx.created_unknown:
-        ctx.result.truncated = True  # a file made earlier under a computed name may match
+    if ctx.created_unknown and (command_word or word.text.startswith("-")):
+        # A file made earlier under a computed name may match: as the program run, or
+        # as an option. Other positions only gain an operand, which changes no verdict.
+        ctx.result.truncated = True
     try:
         on_disk = glob.glob(os.path.expanduser(word.text), root_dir=cwd)
     except (OSError, ValueError):

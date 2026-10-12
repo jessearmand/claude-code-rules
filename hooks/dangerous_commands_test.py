@@ -269,6 +269,14 @@ CASES = [
     ("X=(r m); i=0; \"${X[i=0]}${X[i=1]}\" -rf victim", "ask", "incomplete-analysis"),
     ("shopt -s extglob; X=rM; \"${X/!(r)/m}\" -rf victim", "ask", "incomplete-analysis"),  # !( ) not modelled
     ("\"$EDITOR\" notes.md", None, None),  # the environment's, not computed here
+    ("echo rm; \"$_\" -rf victim", "ask", "incomplete-analysis"),  # `$_` is set by the line (PR review)
+    ("mkdir -p build && cd \"$_\"", None, None),
+    ("ls \"$_\"", None, None),
+    # A file made under a computed name may match a later glob as the program or an option.
+    ("touch \"$X\"; rm -* victim", "ask", "incomplete-analysis"),
+    ("touch \"$X\"; ./x*", "ask", "incomplete-analysis"),
+    ("mkdir -p \"$OUT\" && cp *.txt \"$OUT\"/", None, None),  # an operand only: no change in verdict
+    ("touch \"$LOG\"; ls *.log", None, None),
     ("for r in /a/node /b/node; do \"$r\" -e 'console.log(1)'; done", None, None),
     ("printf '" + "echo ok\\n" * 70 + "' | xargs -I{} sh -c '{}'", "ask", "incomplete-analysis"),
     ("eval " * 1 + "'" + "eval " * 7 + "git status'", "ask", "incomplete-analysis"),

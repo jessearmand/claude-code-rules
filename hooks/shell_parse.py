@@ -160,6 +160,7 @@ def _parse_into(text: str, ctx: _Context, via: tuple[str, ...], depth: int, indi
     `shares_shell` (eval, source): then its `cd` and assignments persist.
     `return_boundary` (a sourced script): a `return` in it ends the script."""
     ctx.set_names.update(_bare_names(text))
+    ctx.set_names.add("_")  # `$_`, the last argument of the previous command
     if depth > MAX_DEPTH:
         ctx.result.truncated = True
         return
