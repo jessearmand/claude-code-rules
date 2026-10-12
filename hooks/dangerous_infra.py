@@ -351,11 +351,17 @@ def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
     return texts
 
 
+# PostgreSQL dollar quoting: `$$` or `$tag$`, where a tag cannot start with a digit (`$1` is a parameter).
+_DOLLAR_TAG = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
 def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: bool = False) -> str:
     """`sql` with `-- ...` and `/* ... */` comments blanked, outside quoted
     strings and identifiers ('', "", ``, []): in `SELECT '--'; DROP TABLE t`
     the `--` is data. `backslash_escapes`: inside a string `\\'` does not end it,
     as in MySQL; standard SQL (SQLite, PostgreSQL) treats the backslash as text.
+    The MySQL reading also ends a line at `#`; the standard one quotes
+    PostgreSQL's `$tag$ ... $tag$` (in `SELECT $$--$$; DROP TABLE t` the `--` is data).
     `blank_quoted`: quoted text is blanked too, keeping its quotes."""
     out: list[str] = []
     index, quote = 0, ""
@@ -374,7 +380,18 @@ def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: b
                 continue
         elif char in "'\"`[":
             quote = "]" if char == "[" else char  # `[name]` quotes an identifier (SQLite, SQL Server)
-        elif sql.startswith("--", index):
+        elif char == "$" and not backslash_escapes and (tag := _DOLLAR_TAG.match(sql, index)):
+            delimiter = tag.group(0)
+            close = sql.find(delimiter, tag.end())
+            end = len(sql) if close < 0 else close + len(delimiter)  # unterminated: quoted to the end
+            if blank_quoted:
+                closing = "" if close < 0 else delimiter
+                out.append(delimiter + " " * (end - tag.end() - len(closing)) + closing)
+            else:
+                out.append(sql[index:end])
+            index = end
+            continue
+        elif sql.startswith("--", index) or (char == "#" and backslash_escapes):
             end = sql.find("\n", index)
             index = len(sql) if end < 0 else end
             out.append(" ")

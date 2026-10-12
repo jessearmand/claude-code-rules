@@ -311,6 +311,9 @@ def _push_force(git: Git, ctx: RuleContext) -> str | None:
 def _push_delete(git: Git, ctx: RuleContext) -> str | None:
     if short_flag(git.args, "d") or long_flag(git.args, "--delete"):
         return "git push --delete"
+    if long_flag(git.args, "--prune"):
+        # Deletes remote branches the refspec matches but that have no local counterpart.
+        return "git push --prune"
     if any(r.startswith(":") and len(r) > 1 for r in _push_refspecs(git.args)):
         return "git push :ref (delete)"
     return None

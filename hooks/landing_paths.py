@@ -56,28 +56,57 @@ def _archive_members(contents: Contents, cwd: str, made_earlier: Callable[[str],
         return  # nothing to extract: the command fails
     if not os.path.isfile(path) or os.path.getsize(path) > MAX_ARCHIVE_BYTES:
         raise _Unknown(archive)
-    names = _zip_names(path) if contents.zip_archive else _tar_names(path)
-    for count, name in enumerate(names):
+    entries = _zip_entries(path) if contents.zip_archive else _tar_entries(path)
+    links: dict[str, str] = {}  # a symlink member -> where it points, both relative to the destination
+    for count, (name, symlink) in enumerate(entries):
         if count >= MAX_ENTRIES:
             raise _Unknown(archive)
         member = _stripped(name, contents.strip)
         if member is None:
             continue
         # tar drops a leading `/` unless -P; unzip always does.
-        yield member if contents.absolute_names and not contents.zip_archive else member.lstrip("/")
+        member = member if contents.absolute_names and not contents.zip_archive else member.lstrip("/")
+        landed = _through_links(member, links)
+        yield landed
+        if symlink is not None:
+            # Later members under this name land where it points (`link -> .claude`,
+            # then `link/settings.json`), as tar and unzip write through it.
+            links[member] = _through_links(os.path.normpath(os.path.join(os.path.dirname(landed), symlink)), links)
 
 
-def _zip_names(path: str) -> list[str]:
+def _through_links(member: str, links: dict[str, str]) -> str:
+    """`member` after the archive's own links: `link/x` with `link -> .claude` is `.claude/x`."""
+    for _ in range(16):
+        parts = os.path.normpath(member).split("/")
+        for length in range(len(parts), 0, -1):
+            prefix = "/".join(parts[:length])
+            if prefix in links:
+                member = "/".join([links[prefix], *parts[length:]])
+                break
+        else:
+            return member
+    raise _Unknown(member)  # a cycle of links
+
+
+def _zip_entries(path: str) -> Iterator[tuple[str, str | None]]:
+    """(name, symlink target or None) per member; unzip restores Unix symlinks."""
     with zipfile.ZipFile(path) as archive:
-        return archive.namelist()
+        for info in archive.infolist():
+            if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                target = archive.read(info).decode("utf-8", "replace")
+                if _escapes(info.filename, target):
+                    raise _Unknown(info.filename)
+                yield info.filename, target
+            else:
+                yield info.filename, None
 
 
-def _tar_names(path: str) -> Iterator[str]:
+def _tar_entries(path: str) -> Iterator[tuple[str, str | None]]:
     with tarfile.open(path, mode="r:*") as archive:
         for member in archive:
             if (member.issym() or member.islnk()) and _escapes(member.name, member.linkname):
                 raise _Unknown(member.name)  # later members may be written through it
-            yield member.name
+            yield member.name, member.linkname if member.issym() else None
 
 
 def _escapes(name: str, target: str) -> bool:

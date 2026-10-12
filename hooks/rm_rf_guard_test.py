@@ -193,6 +193,7 @@ SHOULD_BLOCK = [
     "f(){ false && exit; }; f; rm -rf victim",
     "sqlite3 :memory: '.read \"|rm -rf victim\"'",  # a `|CMD` file name runs CMD (PR review)
     "sqlite3 app.db '.once |rm -rf victim'",
+    "psql -c '\\! rm -rf victim'",  # psql's shell escape (PR review)
     "exec 3<<<'rm -rf victim'; bash <&3",  # a shell reading a descriptor exec opened
     "X=(r m); \"${X[0]}${X[1&1]}\" -rf victim",  # any bash arithmetic in a subscript (PR review)
     "printf -v X %q r''m; \"$X\" -rf victim",  # printf %q (PR review)

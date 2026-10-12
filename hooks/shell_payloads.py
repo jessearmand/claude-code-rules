@@ -71,6 +71,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     elif name in ("sqlite3", "sqlite"):
         for text in _sqlite_shell_commands(command):
             nested(text, f"{name} .shell")
+    elif name in _CLIENT_SHELL:
+        for text in _client_shell_commands(command):
+            nested(text, f"{name} shell escape")
     elif inline_programs(name, command.args, command.redirects):
         for program in inline_programs(name, command.args, command.redirects):
             direct = direct_shell_strings(program, interpreter_kind(name))
@@ -301,14 +304,43 @@ _SQLITE_PIPE = re.compile(r"""^\s*\.(?:read|import|output|once)\s+(?:"\|([^"]*)"
                           re.MULTILINE)
 
 
+def _client_texts(command: SimpleCommand) -> list[str]:
+    """What a database client reads as input: its arguments (`-c SQL`, `-cmd SQL`,
+    trailing statements), a heredoc or a here-string."""
+    texts = [a for a in command.args if not a.startswith("-") or a.startswith("-cmd")]
+    return texts + [r.body or "" for r in command.redirects if r.body] + [
+        r.target for r in command.redirects if r.op == "<<<"]
+
+
+def _first_group(match: re.Match[str]) -> str:
+    return next(g for g in match.groups() if g is not None)
+
+
 def _sqlite_shell_commands(command: SimpleCommand) -> list[str]:
     """Commands sqlite3 runs in a system shell (`.shell CMD`, `.system CMD`, and
     a `|CMD` file name), from its SQL arguments, `-cmd` options, a heredoc or
     here-string."""
-    texts = [a for a in command.args if not a.startswith("-") or a.startswith("-cmd")]
-    texts += [r.body or "" for r in command.redirects if r.body] + [r.target for r in command.redirects if r.op == "<<<"]
+    texts = _client_texts(command)
     found = [m.group(1) for text in texts for m in _SQLITE_SHELL.finditer(text)]
-    return found + [next(g for g in m.groups() if g is not None) for text in texts for m in _SQLITE_PIPE.finditer(text)]
+    return found + [_first_group(m) for text in texts for m in _SQLITE_PIPE.finditer(text)]
+
+
+# Shell escapes of other database clients (PR review):
+# psql `\! CMD`, output to a pipe (`\o |CMD`, `\g |CMD`, `\w |CMD`), and
+# `COPY`/`\copy ... PROGRAM 'CMD'`; mysql/mariadb `system CMD`, `\! CMD` and a `pager`.
+_PSQL_SHELL = re.compile(
+    r"\\!\s*(.+?)\s*$"
+    r"|\\(?:o|out|g|w|write)\s+(?:'\|([^']*)'|\|\s*(.+?)\s*$)"
+    r"|\bPROGRAM\s+(?:'([^']*)'|E'([^']*)')",
+    re.MULTILINE | re.IGNORECASE,
+)
+_MYSQL_SHELL = re.compile(r"^\s*(?:system|\\!|pager|\\P)\s+(.+?)\s*;?\s*$", re.MULTILINE)
+_CLIENT_SHELL = {"psql": _PSQL_SHELL, "mysql": _MYSQL_SHELL, "mariadb": _MYSQL_SHELL}
+
+
+def _client_shell_commands(command: SimpleCommand) -> list[str]:
+    pattern = _CLIENT_SHELL[command.name]
+    return [_first_group(m) for text in _client_texts(command) for m in pattern.finditer(text)]
 
 
 def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],

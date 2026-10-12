@@ -240,6 +240,18 @@ CASES = [
     ("sqlite3 db \"DELETE FROM users RETURNING 'WHERE';\"", "deny", "sql-destructive"),  # a literal (PR review)
     ("psql -c \"DELETE FROM t WHERE note = 'a;b'\"", None, None),
     ("psql -c 'DELETE FROM \"my t\" WHERE id = 1'", None, None),
+    # MySQL `#` comments and PostgreSQL dollar quotes (PR review).
+    ("mysql -e 'DELETE FROM users # WHERE id = 1'", "deny", "sql-destructive"),
+    ("mysql -e 'DELETE FROM users WHERE id = 1 # cleanup'", None, None),
+    ("psql -c 'SELECT $$--$$; DROP TABLE users;'", "deny", "sql-destructive"),
+    ("psql -c 'SELECT $1::int -- DROP TABLE x'", None, None),
+    # Database clients' own shell escapes (PR review).
+    ("psql -c '\\! git reset --hard'", "deny", "git-reset-hard"),
+    ("psql -c 'SELECT 1 \\g |git reset --hard'", "deny", "git-reset-hard"),
+    ("psql -c \"\\copy t to program 'git reset --hard'\"", "deny", "git-reset-hard"),
+    ("mysql -e 'system git reset --hard'", "deny", "git-reset-hard"),
+    ("psql -c '\\dt'", None, None),
+    ("psql -c '\\o out.txt'", None, None),
     ("sqlite3 :memory: \"CREATE TABLE users(x); SELECT '--'; DROP TABLE users;\"", "deny", "sql-destructive"),
     ("sqlite3 :memory: 'CREATE TABLE t(\"--\"); SELECT [--] FROM t; DROP TABLE t;'", "deny", "sql-destructive"),
     ("mysql -e \"SELECT '\\\\'--'; DROP TABLE users;\"", "deny", "sql-destructive"),  # MySQL \' escapes (PR review)
@@ -265,6 +277,9 @@ CASES = [
     ("git config --local core.fsmonitor /path/to/evil", "deny", "git-unsafe-override"),  # PR review
     ("git config core.fsmonitor true", None, None),
     ("git config core.editor vim", None, None),
+    ("git push --prune origin 'refs/heads/*:refs/heads/*'", "deny", "git-push-delete"),  # PR review
+    ("git push --no-prune origin main", None, None),
+    ("git fetch --prune", None, None),
     # Anything the parser had to stop analysing asks (PR review).
     ("env " * 17 + "true", "ask", "incomplete-analysis"),
     # A program computed from a variable the line sets, in a way not modelled (PR review).

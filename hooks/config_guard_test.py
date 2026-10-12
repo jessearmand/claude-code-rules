@@ -204,6 +204,21 @@ def _make_archives(project: str) -> None:
         link = tarfile.TarInfo("up")
         link.type, link.linkname = tarfile.SYMTYPE, "../.."
         archive.addfile(link)
+    with tarfile.open(os.path.join(project, "through.tar"), "w") as archive:
+        link = tarfile.TarInfo("link")
+        link.type, link.linkname = tarfile.SYMTYPE, ".claude"
+        archive.addfile(link)
+        add(archive, "link/settings.json", b"{}")
+    with tarfile.open(os.path.join(project, "library.tgz"), "w:gz") as archive:
+        link = tarfile.TarInfo("lib/libx.so")
+        link.type, link.linkname = tarfile.SYMTYPE, "libx.so.1"
+        archive.addfile(link)
+        add(archive, "lib/libx.so.1")
+    with zipfile.ZipFile(os.path.join(project, "zlink.zip"), "w") as archive:
+        info = zipfile.ZipInfo("link")
+        info.external_attr = 0o120777 << 16  # a Unix symlink, which unzip restores
+        archive.writestr(info, ".git/hooks")
+        archive.writestr("link/pre-commit", "x")
     with zipfile.ZipFile(os.path.join(project, "hook.zip"), "w") as archive:
         archive.writestr(".git/hooks/post-checkout", "x")
     with zipfile.ZipFile(os.path.join(project, "docs.zip"), "w") as archive:
@@ -228,6 +243,9 @@ LANDING_CASES = [
     ("cp -r assets dist", None, None),
     ("cp -r template backup", None, None),
     ("tar xf link.tar", "ask", "agent-config-dir"),  # a link out of the destination
+    ("tar xf through.tar", "deny", "claude-settings"),  # a member written through an earlier link
+    ("unzip zlink.zip", "deny", "git-hooks"),
+    ("tar xzf library.tgz", None, None),
     ("curl -sL https://example.com/x.tgz | tar xz", "ask", "agent-config-dir"),
     ("curl -sL https://example.com/x.tgz | tar xz -C vendor", None, None),
     ("curl -sLo x.tgz https://example.com/x.tgz && tar xzf x.tgz", "ask", "agent-config-dir"),
