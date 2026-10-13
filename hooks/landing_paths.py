@@ -136,6 +136,8 @@ def _copied(contents: Contents, cwd: str, descend: Callable[[str], bool]) -> Ite
             continue  # a single file under a name that cannot be known: no protected directory reached
         path = os.path.join(cwd, os.path.expanduser(source))
         name = os.path.basename(os.path.normpath(path))
+        if contents.keep_parents:
+            name = os.path.normpath(source).lstrip("/")  # cp --parents: the source's own path
         if not os.path.isdir(path):
             yield name
             continue

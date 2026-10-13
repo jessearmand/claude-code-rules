@@ -349,7 +349,7 @@ def check_command(command: str, cwd: str) -> Finding | None:
     softer: Finding | None = None
     made: set[str] = set()  # names of files written earlier on the line (`curl -o a.tgz URL`)
     for simple in parsed.commands:
-        writes = written_paths(simple)
+        writes = written_paths(simple, parsed.written_files)
         made_earlier = frozenset(made)
         made.update(os.path.basename(w.path.rstrip("/")) for w in writes)
         for write in writes:

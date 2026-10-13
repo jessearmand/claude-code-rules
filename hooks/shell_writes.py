@@ -10,15 +10,20 @@ as the plain command.
 Coverage is deliberately about the common spellings, not every program that
 can write a file. Interpreters (`python -c "open(p,'w')"`) are out of scope;
 the model judge sees those.
+
+`git apply` names its targets inside the patch, so `written_paths` takes the
+files the same line wrote and otherwise reads the patch from disk.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 
-from shell_parse import SimpleCommand
+from shell_parse import SimpleCommand, WrittenFile
 
 WRITE = "write"
 DELETE = "delete"
@@ -44,6 +49,7 @@ class Contents:
     # `src/` copies what src holds, not src itself: rsync, and BSD cp (macOS).
     slash_copies_contents: bool = False
     copies_contents: bool = False  # ditto: always what the source holds
+    keep_parents: bool = False  # cp --parents: a source lands under its own path, not its name
 
 
 @dataclass(frozen=True)
@@ -102,9 +108,13 @@ def _copy_like(args: tuple[str, ...], with_arg: frozenset[str], name: str = "cp"
         sources, destination = operands[:-1], operands[-1]
     else:
         return []
-    found = [] if directory else [PathWrite(destination, WRITE)]
+    # GNU `cp --parents a/b/c dest` writes dest/a/b/c, keeping the source's directory
+    # components, so `cd evil && cp --parents .claude/settings.json ..` lands in the
+    # parent project's `.claude/` (PR review). The destination must be a directory.
+    keep_parents = name in ("cp", "gcp") and "--parents" in args
+    found = [] if directory or keep_parents else [PathWrite(destination, WRITE)]
     for source in sources:
-        base = source.rstrip("/").rsplit("/", 1)[-1]
+        base = _parent_path(source) if keep_parents else source.rstrip("/").rsplit("/", 1)[-1]
         if base and not source.endswith("/"):
             found.append(PathWrite(f"{destination.rstrip('/')}/{base}", WRITE))
     contents = Contents(
@@ -112,9 +122,19 @@ def _copy_like(args: tuple[str, ...], with_arg: frozenset[str], name: str = "cp"
         recursive=name in ("mv", "ditto") or any(_RECURSIVE_COPY.fullmatch(a) for a in args),
         slash_copies_contents=name == "rsync" or (name == "cp" and sys.platform == "darwin"),
         copies_contents=name == "ditto",
+        keep_parents=keep_parents,
     )
     found.append(PathWrite(destination, INTO_DIR, contents=contents))
     return found
+
+
+def _parent_path(source: str) -> str:
+    """The path `cp --parents` appends to the destination: the source as written,
+    without a leading `/` or `./` (`/a/b` -> `a/b`, `./x/y` -> `x/y`)."""
+    path = source.rstrip("/")
+    while path.startswith(("./", "/")):
+        path = path[2:] if path.startswith("./") else path[1:]
+    return path
 
 
 def _sed_in_place(args: tuple[str, ...]) -> list[PathWrite]:
@@ -226,8 +246,11 @@ _COPY_WITH_ARG = {
 }
 
 
-def written_paths(command: SimpleCommand) -> list[PathWrite]:
-    """Every path `command` writes, deletes, moves away, links, or re-permissions."""
+def written_paths(command: SimpleCommand, written: dict[str, WrittenFile] | None = None) -> list[PathWrite]:
+    """Every path `command` writes, deletes, moves away, links, or re-permissions.
+
+    `written` holds the files the same command line wrote from literal text,
+    by absolute path; `git apply` reads its patch from there before disk."""
     found = [PathWrite(r.target, WRITE, r.dynamic) for r in command.redirects if r.op in _WRITE_REDIRECTS]
     if not command.argv or command.dynamic_head:
         return found
@@ -264,6 +287,8 @@ def written_paths(command: SimpleCommand) -> list[PathWrite]:
         found += _extract(name, args)
     elif name == "git":
         found += _git_checkout_dirs(args)
+        found += _git_config_file(args)
+        found += _git_apply(args, command, written or {})
     elif name in ("ed", "ex", "patch"):
         found += [PathWrite(path, WRITE) for path in _operands(args, frozenset({"-i", "-o", "-r", "-d",
                                                                               "-p", "-B", "-z", "-D"}))[:1]]
@@ -314,6 +339,128 @@ def _git_checkout_dirs(args: tuple[str, ...]) -> list[PathWrite]:
             directory = f"{base.rstrip('/')}/{directory}"
         return [PathWrite(directory, INTO_DIR, "$" in directory)]
     return []
+
+
+def _git_subcommand(args: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    """(subcommand, its arguments) after git's global options; ("", ()) if none."""
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 2 if args[index] in _GIT_GLOBAL_WITH_VALUE else 1
+    return (args[index], args[index + 1:]) if index < len(args) else ("", ())
+
+
+# `git config` forms that only read; anything else with a file writes it.
+_GIT_CONFIG_READS = frozenset({"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color",
+                               "--get-colorbool", "-l", "--list", "--show-origin", "--show-scope"})
+_GIT_CONFIG_WRITES = frozenset({"--unset", "--unset-all", "--add", "--replace-all", "--rename-section",
+                                "--remove-section", "-e", "--edit"})
+_GIT_CONFIG_WITH_VALUE = frozenset({"-f", "--file", "--blob", "--type", "--default", "--comment",
+                                    "--value", "--url"})
+
+
+def _git_config_file(args: tuple[str, ...]) -> list[PathWrite]:
+    """`git config -f FILE k v` writes FILE itself, wherever it is (PR review).
+    A lookup (`--get`, `--list`, one key operand) or `--blob` only reads."""
+    subcommand, rest = _git_subcommand(args)
+    if subcommand != "config":
+        return []
+    path = _option_value(rest, ("-f", "--file"))
+    if path is None or any(a in _GIT_CONFIG_READS for a in rest) or any(a.startswith("--blob") for a in rest):
+        return []
+    operands = _operands(rest, _GIT_CONFIG_WITH_VALUE)
+    if operands and operands[0] in ("get", "list"):
+        return []
+    writes = any(a in _GIT_CONFIG_WRITES for a in rest) or len(operands) >= 2 \
+        or (operands and operands[0] in ("set", "unset", "rename-section", "remove-section", "edit"))
+    return [PathWrite(path, WRITE, "$" in path or "`" in path)] if writes else []
+
+
+# `git apply` forms that touch no working-tree file.
+_GIT_APPLY_DRY = frozenset({"--check", "--stat", "--numstat", "--summary", "--cached"})
+_GIT_APPLY_WITH_VALUE = frozenset({"-p", "-C", "--whitespace", "--directory", "--exclude", "--include",
+                                   "--build-fake-ancestor"})
+_MAX_PATCH_BYTES = 1024 * 1024
+# `+++ b/path` and `--- a/path` carry -p's leading component; `rename to path` and
+# `copy to path` do not. A tab ends a traditional header's path (a timestamp follows).
+_PATCH_TARGET = re.compile(r"^(?P<header>\+\+\+ |--- |rename to |copy to )(?P<path>\"(?:[^\"\\]|\\.)*\"|[^\t\n]+)",
+                           re.MULTILINE)
+
+
+def _git_apply(args: tuple[str, ...], command: SimpleCommand, written: dict[str, WrittenFile]) -> list[PathWrite]:
+    """The files a patch given to `git apply` changes, from its headers, with
+    `-pN` stripped and `--directory=ROOT` prepended (PR review). When the patch
+    cannot be read (a pipe, a computed name) the target is unknown, which asks."""
+    subcommand, rest = _git_subcommand(args)
+    if subcommand != "apply" or any(a in _GIT_APPLY_DRY for a in rest):
+        return []
+    strip = _option_value(rest, ("-p",))
+    strip = int(strip) if strip is not None and strip.isdigit() else 1
+    root = (_option_value(rest, ("--directory",)) or "").strip("/")
+    texts: list[str] = []
+    unknown = False
+    sources = _operands(rest, _GIT_APPLY_WITH_VALUE)
+    for redirect in command.redirects:
+        if redirect.op in ("<<", "<<-") and redirect.body is not None:
+            texts.append(redirect.body)
+        elif redirect.op == "<<<":
+            texts.append(redirect.target)
+        elif redirect.op in ("<", "<>") and (redirect.fd is None or redirect.fd == 0):
+            if redirect.dynamic:
+                unknown = True
+            else:
+                sources.append(redirect.target)
+    if not sources and not texts:
+        unknown = True  # the patch arrives on a pipe, or there is none
+    for source in sources:
+        text = _patch_text(source, command, written)
+        if text is None:
+            unknown = True
+        else:
+            texts.append(text)
+    found = [PathWrite("$(patch)", WRITE, True)] if unknown else []
+    for text in texts:
+        for match in _PATCH_TARGET.finditer(text):
+            prefixed = match.group("header") in ("+++ ", "--- ")
+            target = _patch_path(match.group("path"), strip if prefixed else 0, root)
+            if target:
+                found.append(PathWrite(target, WRITE))
+    return list(dict.fromkeys(found))
+
+
+def _patch_text(source: str, command: SimpleCommand, written: dict[str, WrittenFile]) -> str | None:
+    """The patch `source` holds: written on this line, else read from disk."""
+    if source == "-" or "$" in source or "`" in source:
+        return None
+    for directory in command.possible_cwds:
+        if directory is None:
+            continue
+        absolute = os.path.normpath(os.path.join(directory, os.path.expanduser(source)))
+        entry = written.get(absolute)
+        if entry is not None:
+            return entry.text
+        try:
+            if os.path.isfile(absolute) and os.path.getsize(absolute) <= _MAX_PATCH_BYTES:
+                with open(absolute, encoding="utf-8", errors="replace") as handle:
+                    return handle.read()
+        except OSError:
+            continue
+    return None
+
+
+def _patch_path(name: str, strip: int, root: str) -> str | None:
+    if name.startswith('"'):
+        try:
+            name = shlex.split(name)[0]
+        except ValueError:
+            return None
+    name = name.strip()
+    if not name or name == "/dev/null":
+        return None
+    parts = [part for part in name.split("/") if part]
+    if len(parts) <= strip:
+        return None
+    path = "/".join(parts[strip:])
+    return f"{root}/{path}" if root else path
 
 
 def _repository_name(repository: str) -> str:

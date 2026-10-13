@@ -15,7 +15,7 @@ the file name:
       the recipe lines of those targets (or the default target) and, one
       level down, their prerequisites, with Make variables expanded; plus the
       commands Make itself runs while reading the Makefile (`$(shell …)`,
-      `VAR != …`), see make_expand.py
+      `VAR != …`) and the files `$(file >PATH,…)` writes, see make_expand.py
   git ALIAS ...
       what the alias expands to in the repository, global or system config:
       the shell command of a `!` alias, or the git command line otherwise
@@ -392,6 +392,10 @@ def _make(args: list[str], cwd: str, written: dict[str, WrittenFile]) -> list[tu
     typed_parse_time = set(make_expand.parse_time_commands(statements)) if statements else set()
     found += [(command, ("written " if typed or command in typed_parse_time else "") + "make $(shell)")
               for command in parse_time]
+    # `$(file >PATH,…)` writes PATH with no shell; surfaced as the equivalent redirect.
+    typed_writes = set(make_expand.parse_time_writes(statements)) if statements else set()
+    found += [(write, ("written " if typed or write in typed_writes else "") + "make $(file)")
+              for write in make_expand.parse_time_writes(makefile_text)]
     return found
 
 

