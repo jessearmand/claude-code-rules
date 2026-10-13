@@ -185,6 +185,9 @@ SHOULD_BLOCK = [
     "shopt -s xpg_echo; X=$(echo '\\0162\\0155'); $X -rf victim",
     "sh -c \"echo '\\0162\\0155 -rf victim' | sh\"",  # sh's echo expands escapes
     "sqlite3 db <<< '.system rm -rf victim'",  # sqlite3 .shell/.system (PR review)
+    "psql -c'\\! rm -rf victim'",  # attached option value (PR review)
+    "git clone 'ext::sh -c rm% -rf% victim' out",  # git-remote-ext runs the URL's command (PR review)
+    "printf '.shell rm -rf victim\\n' > i.sql; sqlite3 -init i.sql :memory:",  # written here, then run
     "shopt -s lastpipe; printf r | read X; \"${X}m\" -rf victim",  # lastpipe (PR review)
     "read X <<<echo <<< r''m; \"$X\" -rf victim",  # the last stdin redirect wins (PR review)
     "X=r''m; read -t0 X <<<echo; \"$X\" -rf victim",  # read -t 0 assigns nothing (PR review)
@@ -587,6 +590,17 @@ def main() -> int:
                                        project))
         _check(decision == "ask", f"a signal handler is checked in the directory it runs in (PR review) -> {decision}",
                failures)
+        # Database clients run shell escapes from command files too (PR review).
+        _write(project, "init.sql", ".shell rm -rf victim\n")
+        _write(project, "safe.sql", "SELECT 1;\n")
+        _write(project, "q.sql", "\\! rm -rf victim\n")
+        for command in ("sqlite3 -init init.sql :memory:", "sqlite3 --init init.sql :memory:", "sqlite3 :memory: < init.sql",
+                        "psql -f q.sql", "psql --file=q.sql", "psql -fq.sql", "psql < q.sql"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == "ask", f"shell escape in a command file: {command} -> {decision}", failures)
+        for command in ("sqlite3 -init safe.sql :memory:", "psql -f safe.sql", "sqlite3 -init missing.sql :memory:"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision is None, f"{command} -> {decision}", failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)

@@ -407,11 +407,18 @@ _PROGRAM_KEY_PATTERN = re.compile(r"filter\.[^=]+\.(?:clean|smudge|process)|diff
                                   r"|merge\.[^=]+\.driver|gpg(?:\.[^=]+)?\.program|core\.gitproxy")
 
 
+# `protocol.ext.allow=always` lets any URL run a program through git-remote-ext;
+# `protocol.allow=always` does the same for every transport (PR review).
+_PROTOCOL_KEYS = frozenset({"protocol.ext.allow", "protocol.allow"})
+
+
 def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
     git = git_invocation(command)
     for key, value in _config_assignments(command):
         if key == "http.sslverify" and value.lower() in ("false", "0", "no", "off"):
             return "git http.sslVerify=false"
+        if key in _PROTOCOL_KEYS and value.lower() == "always":
+            return f"git {key}=always"
         # `git config core.fsmonitor PROG` stores a program every later git status
         # runs silently. (Editor, pager, credential helper, sshCommand are routine
         # settings the user sees run; true/false selects the built-in fsmonitor.)
@@ -434,8 +441,19 @@ def _config_from_unknown_env(command: SimpleCommand, ctx: RuleContext) -> str | 
     git = git_invocation(command)
     for key in git.unresolved if git else ():
         if key.startswith("alias.") or key in _PROGRAM_KEYS or key in ("core.hookspath", "http.sslverify") \
+                or key in _PROTOCOL_KEYS \
                 or _PROGRAM_KEY_PATTERN.fullmatch(key.lower()):
             return f"git --config-env={key}=<unknown value>"
+    return None
+
+
+def _ext_transport(command: SimpleCommand, ctx: RuleContext) -> str | None:
+    """An `ext::CMD` URL makes git run CMD as the transport (git-remote-ext), on
+    clone, fetch, pull, push, ls-remote, remote add or submodule add (PR review)."""
+    git = git_invocation(command)
+    for arg in git.args if git else ():
+        if arg.startswith("ext::"):
+            return f"git {git.subcommand} ext::"
     return None
 
 
@@ -490,6 +508,8 @@ GIT_RULES: tuple[DangerRule, ...] = (
                "Hooks are a control point; leave hook configuration to the user.", _hooks_path),
     DangerRule("git-shell-alias", HIGH, "a `!` alias runs an arbitrary shell command under a git name",
                "Run the command directly so it can be checked.", _shell_alias),
+    DangerRule("git-ext-transport", HIGH, "an `ext::` URL runs an arbitrary command as git's transport",
+               "Use an https:// or ssh:// URL. git-remote-ext executes the command in the URL.", _ext_transport),
     DangerRule("git-unsafe-override", HIGH, "disables TLS verification or runs a program through git config",
                "Do not weaken transport security or inject programs via `-c`; fix the underlying issue.",
                _unsafe_override),

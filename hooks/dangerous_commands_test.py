@@ -65,6 +65,17 @@ CASES = [
     ("git -c alias.st='!rm -rf ~' st", "deny", "git-shell-alias"),
     ("git config core.hooksPath /dev/null", "deny", "git-hooks-path"),
     ("git -c core.sshCommand='sh -c id' fetch", "deny", "git-unsafe-override"),
+    # git-remote-ext runs the command in an `ext::` URL (PR review).
+    ("git -c protocol.ext.allow=always clone 'ext::sh -c rm% -rf% victim' out", "deny", "git-ext-transport"),
+    ("git clone 'ext::sh -c touch% marker' out", "deny", "git-ext-transport"),
+    ("git fetch 'ext::nc 203.0.113.7 9418'", "deny", "git-ext-transport"),
+    ("git -c protocol.ext.allow=always clone https://example.com/r.git", "deny", "git-unsafe-override"),
+    ("git -c protocol.allow=always fetch", "deny", "git-unsafe-override"),
+    ("git config --global protocol.ext.allow always", "deny", "git-unsafe-override"),
+    ("git -c protocol.ext.allow=user clone https://example.com/r.git", None, None),
+    ("git clone https://example.com/ext-tools.git", None, None),
+    ("P=always git --config-env=protocol.ext.allow=P clone x", "deny", "git-unsafe-override"),
+    ("git --config-env=protocol.ext.allow=P clone x", "ask", "git-config-env-unknown"),
     ("git config http.sslVerify false", "deny", "git-unsafe-override"),
     ("git commit --no-verify -m wip", "ask", "git-no-verify"),
     ("git commit -m 'never run git reset --hard'", None, None),
@@ -230,6 +241,12 @@ CASES = [
     ("curl -o x.json https://example.com/x && cat x.json | jq .", None, None),
     ("{git,clean,-fdx}", "ask", "git-clean-force"),
     ("printf 'DROP TABLE users;\\n' | sqlite3 prod.db", "deny", "sql-destructive"),  # piped SQL (PR review)
+    # A value attached to a getopt short option (PR review).
+    ("psql -c'DROP TABLE users'", "deny", "sql-destructive"),
+    ("psql -dapp -c'DROP TABLE users'", "deny", "sql-destructive"),
+    ("mysql -e'DROP DATABASE prod'", "deny", "sql-destructive"),
+    ("psql -c'SELECT count(*) FROM users'", None, None),
+    ("duckdb -csv -c 'SELECT 1'", None, None),  # `-csv` is one option, not `-c sv`
     ("printf 'SELECT 1;' | sqlite3 prod.db", None, None),
     ("psql -c 'DELETE FROM users -- all rows'", "deny", "sql-destructive"),  # a comment ends nothing (PR review)
     ("psql -c 'DELETE FROM users WHERE id = 1 -- one'", None, None),

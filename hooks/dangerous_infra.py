@@ -286,8 +286,9 @@ _SQL_FILE_OPTIONS = {"psql": ("-f", "--file"), "sqlcmd": ("-i",), "duckdb": ("-i
                      "clickhouse-client": ("--queries-file",), "cockroach": ("--file", "-f")}
 
 
-def _option_values(args: tuple[str, ...], flags: tuple[str, ...]) -> list[str]:
-    """Values given to `flags`, as `-f FILE`, `--file=FILE` or `-fFILE`."""
+def _option_values(args: tuple[str, ...], flags: tuple[str, ...], attached: bool = True) -> list[str]:
+    """Values given to `flags`, as `-f FILE`, `--file=FILE` or, for getopt-style
+    clients (`attached`), `-fFILE`. duckdb's `-csv` is one option, not `-c sv`."""
     values: list[str] = []
     for index, arg in enumerate(args):
         for flag in flags:
@@ -295,9 +296,14 @@ def _option_values(args: tuple[str, ...], flags: tuple[str, ...]) -> list[str]:
                 values.append(args[index + 1])
             elif flag.startswith("--") and arg.startswith(flag + "="):
                 values.append(arg[len(flag) + 1:])
-            elif not flag.startswith("--") and len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
+            elif attached and not flag.startswith("--") and len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
                 values.append(arg[2:])
     return values
+
+
+# Clients whose single-letter options take an attached value (`psql -c'DROP …'`),
+# as getopt allows (PR review). duckdb and clickhouse use `-csv`-style words.
+_GETOPT_CLIENTS = frozenset({"psql", "mysql", "mariadb", "cockroach", "sqlcmd"})
 # sqlite3 options that take a value (so it is not read as the database or SQL).
 _SQLITE_WITH_VALUE = frozenset({"-init", "--init", "-cmd", "--cmd", "-separator", "--separator",
                                 "-newline", "--newline", "-nullvalue", "--nullvalue", "-vfs", "--vfs",
@@ -312,8 +318,7 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
         if command.name == "redis-cli":
             return [" ".join(command.args)]
         return []
-    texts = [a.split("=", 1)[1] for a in command.args if any(a.startswith(f + "=") for f in flags if f.startswith("--"))]
-    texts += [command.args[i + 1] for i, a in enumerate(command.args[:-1]) if a in flags]
+    texts = _option_values(command.args, flags, attached=command.name in _GETOPT_CLIENTS)
     # `psql -f q.sql`, `sqlcmd -i q.sql`: a file of statements, as written on the line or on disk.
     file_flags = _SQL_FILE_OPTIONS.get(command.name, ())
     texts += [t for t in (_input_file(v, command, ctx) for v in _option_values(command.args, file_flags)) if t]

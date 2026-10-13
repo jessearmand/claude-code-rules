@@ -78,9 +78,18 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     elif name in ("sqlite3", "sqlite"):
         for text in _sqlite_shell_commands(command):
             nested(text, f"{name} .shell")
+        for text, typed in _sqlite_shell_commands_in_files(command, ctx):
+            nested(text, f"{name} -init .shell", not_typed=not typed)
     elif name in _CLIENT_SHELL:
         for text in _client_shell_commands(command):
             nested(text, f"{name} shell escape")
+        for text, typed in _client_shell_commands_in_files(command, ctx):
+            nested(text, f"{name} -f shell escape", not_typed=not typed)
+    elif name == "git":
+        for url in args:
+            if url.startswith("ext::"):
+                # `git clone 'ext::sh -c rm% -rf% x'`: git runs the command in the URL.
+                nested(shlex.join(_ext_argv(url[len("ext::"):])), "git ext::")
     elif inline_programs(name, command.args, command.redirects):
         for program in inline_programs(name, command.args, command.redirects):
             direct = direct_shell_strings(program, interpreter_kind(name))
@@ -361,10 +370,97 @@ _SQLITE_PIPE = re.compile(r"""^\s*\.(?:read|import|output|once)\s+(?:"\|([^"]*)"
 
 def _client_texts(command: SimpleCommand) -> list[str]:
     """What a database client reads as input: its arguments (`-c SQL`, `-cmd SQL`,
-    trailing statements), a heredoc or a here-string."""
+    trailing statements, and a value attached to a short option, `-c'SQL'`), a
+    heredoc or a here-string."""
     texts = [a for a in command.args if not a.startswith("-") or a.startswith("-cmd")]
+    if command.name in _GETOPT_CLIENTS:
+        texts += [a[2:] for a in command.args if len(a) > 2 and a[0] == "-" and a[1] != "-"]
     return texts + [r.body or "" for r in command.redirects if r.body] + [
         r.target for r in command.redirects if r.op == "<<<"]
+
+
+# Clients whose single-letter options take an attached value (`psql -c'\! rm -rf x'`).
+_GETOPT_CLIENTS = frozenset({"psql", "mysql", "mariadb"})
+# Options naming a file of statements the client runs: sqlite3 `-init`, psql `-f`.
+_CLIENT_FILE_OPTIONS = {"sqlite3": ("-init", "--init"), "sqlite": ("-init", "--init"),
+                        "psql": ("-f", "--file")}
+_MAX_CLIENT_FILE = 256 * 1024
+
+
+def _client_file_texts(command: SimpleCommand, ctx: _Context) -> list[tuple[str, bool]]:
+    """(text, typed) for each file of statements the client reads: a command
+    file option, or `< FILE` on stdin. Typed when the same line wrote the file
+    (`printf '.shell …' > i.sql; sqlite3 -init i.sql`), else read from disk
+    (PR review). A computed name leaves the analysis incomplete."""
+    options = _CLIENT_FILE_OPTIONS.get(command.name, ())
+    names = [command.args[i + 1] for i, a in enumerate(command.args[:-1]) if a in options]
+    names += [a.split("=", 1)[1] for a in command.args if a.startswith(tuple(o + "=" for o in options if o.startswith("--")))]
+    if command.name == "psql":
+        names += [a[2:] for a in command.args if a.startswith("-f") and len(a) > 2 and not a.startswith("-fi")]
+    for redirect in command.redirects:
+        if redirect.op == "<" and (redirect.fd is None or redirect.fd == 0):
+            if redirect.dynamic:
+                ctx.result.truncated = True
+                continue
+            names.append(redirect.target)
+    found: list[tuple[str, bool]] = []
+    for name in names:
+        if "$" in name or "`" in name:
+            ctx.result.truncated = True  # which file runs is not known
+            continue
+        for directory in command.possible_cwds:
+            if directory is None:
+                continue
+            absolute = os.path.normpath(os.path.join(directory, os.path.expanduser(name)))
+            entry = ctx.written_files.get(absolute)
+            if entry is not None:
+                found.append((entry.text, True))
+                break
+            try:
+                if os.path.isfile(absolute) and os.path.getsize(absolute) <= _MAX_CLIENT_FILE:
+                    with open(absolute, encoding="utf-8", errors="replace") as handle:
+                        found.append((handle.read(), False))
+                    break
+            except OSError:
+                continue
+    return found
+
+
+def _sqlite_shell_commands_in_files(command: SimpleCommand, ctx: _Context) -> list[tuple[str, bool]]:
+    return [(m.group(1), typed) for text, typed in _client_file_texts(command, ctx)
+            for m in _SQLITE_SHELL.finditer(text)] + [
+        (_first_group(m), typed) for text, typed in _client_file_texts(command, ctx)
+        for m in _SQLITE_PIPE.finditer(text)]
+
+
+def _client_shell_commands_in_files(command: SimpleCommand, ctx: _Context) -> list[tuple[str, bool]]:
+    pattern = _CLIENT_SHELL[command.name]
+    return [(_first_group(m), typed) for text, typed in _client_file_texts(command, ctx)
+            for m in pattern.finditer(text)]
+
+
+def _ext_argv(spec: str) -> list[str]:
+    """The argv git-remote-ext builds from `ext::CMD ARGS`: words split on single
+    spaces, `% ` a space inside a word, `%%` a `%`, `%s`/`%S` the service name,
+    `%G`/`%V` the repository and host (unknown here)."""
+    argv, word, index = [], "", 0
+    while index < len(spec):
+        char = spec[index]
+        if char == "%" and index + 1 < len(spec):
+            escape = spec[index + 1]
+            word += {" ": " ", "%": "%", "s": "git-upload-pack", "S": "git-upload-pack"}.get(escape, "")
+            index += 2
+            continue
+        if char == " ":
+            if word:
+                argv.append(word)
+            word = ""
+        else:
+            word += char
+        index += 1
+    if word:
+        argv.append(word)
+    return argv
 
 
 def _first_group(match: re.Match[str]) -> str:
