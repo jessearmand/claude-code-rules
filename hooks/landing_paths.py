@@ -16,7 +16,7 @@ import tarfile
 import zipfile
 from collections.abc import Callable, Iterator
 
-from shell_writes import Contents
+from shell_writes import Contents, kept_paths
 
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024  # listing a compressed tar reads all of it
 MAX_ENTRIES = 20_000
@@ -127,7 +127,8 @@ def _stripped(name: str, strip: int) -> str | None:
 def _copied(contents: Contents, cwd: str, descend: Callable[[str], bool]) -> Iterator[str]:
     """`cp a b dir/`: `a` and `b` under their own names. A directory copied
     recursively lands as `dir/NAME/...`, or as `dir/...` for `src/.`, for
-    `src/` where the tool reads it so (rsync, BSD cp), and for ditto."""
+    `src/` where the tool reads it so (rsync, BSD cp), and for ditto. A
+    path-keeping copy (`cp --parents`, `rsync -R`) lands it under its path."""
     for source in contents.sources:
         dynamic = "$" in source or "`" in source or ":" in source.split("/", 1)[0]
         if dynamic:
@@ -135,19 +136,21 @@ def _copied(contents: Contents, cwd: str, descend: Callable[[str], bool]) -> Ite
                 raise _Unknown(source)  # a computed or remote tree
             continue  # a single file under a name that cannot be known: no protected directory reached
         path = os.path.join(cwd, os.path.expanduser(source))
-        name = os.path.basename(os.path.normpath(path))
         if contents.keep_parents:
-            name = os.path.normpath(source).lstrip("/")  # cp --parents: the source's own path
+            names = kept_paths(source, contents.rsync_relative)
+        else:
+            names = [os.path.basename(os.path.normpath(path))]
         if not os.path.isdir(path):
-            yield name
+            yield from names
             continue
         if not contents.recursive:
             continue  # cp without -r skips directories
-        holds = contents.copies_contents or source.endswith("/.") or (
-            source.endswith("/") and contents.slash_copies_contents)
-        if not holds:
-            yield name
-        yield from _tree(path, "" if holds else name, descend)
+        holds = not contents.keep_parents and (contents.copies_contents or source.endswith("/.") or (
+            source.endswith("/") and contents.slash_copies_contents))
+        for name in names:
+            if not holds:
+                yield name
+            yield from _tree(path, "" if holds else name, descend)
 
 
 def _tree(root: str, prefix: str, descend: Callable[[str], bool]) -> Iterator[str]:

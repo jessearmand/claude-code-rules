@@ -49,7 +49,9 @@ class Contents:
     # `src/` copies what src holds, not src itself: rsync, and BSD cp (macOS).
     slash_copies_contents: bool = False
     copies_contents: bool = False  # ditto: always what the source holds
-    keep_parents: bool = False  # cp --parents: a source lands under its own path, not its name
+    # cp --parents, rsync -R: a source lands under its own path, not its name (kept_paths).
+    keep_parents: bool = False
+    rsync_relative: bool = False  # rsync's reading of that path (kept_paths)
 
 
 @dataclass(frozen=True)
@@ -108,33 +110,104 @@ def _copy_like(args: tuple[str, ...], with_arg: frozenset[str], name: str = "cp"
         sources, destination = operands[:-1], operands[-1]
     else:
         return []
-    # GNU `cp --parents a/b/c dest` writes dest/a/b/c, keeping the source's directory
-    # components, so `cd evil && cp --parents .claude/settings.json ..` lands in the
-    # parent project's `.claude/` (PR review). The destination must be a directory.
-    keep_parents = name in ("cp", "gcp") and "--parents" in args
+    keep_parents = _keeps_parents(name, args)
+    rsync_relative = keep_parents and name == "rsync"
     found = [] if directory or keep_parents else [PathWrite(destination, WRITE)]
     for source in sources:
-        base = _parent_path(source) if keep_parents else source.rstrip("/").rsplit("/", 1)[-1]
-        if base and not source.endswith("/"):
-            found.append(PathWrite(f"{destination.rstrip('/')}/{base}", WRITE))
+        if keep_parents:
+            names = kept_paths(source, rsync_relative)
+        else:
+            names = [] if source.endswith("/") else [source.rstrip("/").rsplit("/", 1)[-1]]
+        found += [PathWrite(f"{destination.rstrip('/')}/{base}", WRITE) for base in names if base]
     contents = Contents(
         sources=tuple(sources),
         recursive=name in ("mv", "ditto") or any(_RECURSIVE_COPY.fullmatch(a) for a in args),
         slash_copies_contents=name == "rsync" or (name == "cp" and sys.platform == "darwin"),
         copies_contents=name == "ditto",
         keep_parents=keep_parents,
+        rsync_relative=rsync_relative,
     )
     found.append(PathWrite(destination, INTO_DIR, contents=contents))
     return found
 
 
-def _parent_path(source: str) -> str:
-    """The path `cp --parents` appends to the destination: the source as written,
-    without a leading `/` or `./` (`/a/b` -> `a/b`, `./x/y` -> `x/y`)."""
+# rsync short options whose value is the rest of the cluster or the next word.
+_RSYNC_SHORT_WITH_VALUE = frozenset("BefMT@")
+
+
+def _keeps_parents(name: str, args: tuple[str, ...]) -> bool:
+    """Whether a copy writes each source under its own path rather than its name
+    (PR review): GNU `cp --parents a/b/c dest` writes dest/a/b/c, so
+    `cd evil && cp --parents .claude/settings.json ..` lands in the parent
+    project's `.claude/`; `rsync -R` / `--relative` does the same. The last of
+    rsync's `-R`, `--relative`, `--no-relative`, `--no-R` wins."""
+    if name in ("cp", "gcp"):
+        # getopt accepts an unambiguous prefix: `--pa` is `--parents` (`--p` could be `--preserve`).
+        return any(len(a) >= 4 and "--parents".startswith(a)
+                   for a in _options(args, frozenset({"-t", "--target-directory", "-S", "--suffix"})))
+    if name != "rsync":
+        return False
+    relative = False
+    for arg in _options(args, _COPY_WITH_ARG["rsync"], _RSYNC_SHORT_WITH_VALUE):
+        if arg.startswith("--"):
+            key = arg.split("=", 1)[0]
+            if key == "--relative":
+                relative = True
+            elif key in ("--no-relative", "--no-R"):
+                relative = False
+            continue
+        for letter in arg[1:]:
+            if letter == "R":
+                relative = True
+            if letter in _RSYNC_SHORT_WITH_VALUE:
+                break  # the rest of the cluster is that option's value
+    return relative
+
+
+def _options(args: tuple[str, ...], with_arg: frozenset[str],
+             short_with_value: frozenset[str] = frozenset()) -> list[str]:
+    """The option words before `--`, without the values of options that take
+    one: `with_arg` words (`--exclude -R` excludes a file named `-R`) and a
+    `short_with_value` letter ending a cluster (`-e ssh`)."""
+    found: list[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg == "--":
+            break
+        if arg.startswith("-") and arg != "-":
+            found.append(arg)
+            skip = arg in with_arg or (not arg.startswith("--") and arg[-1] in short_with_value)
+    return found
+
+
+_RSYNC_REMOTE = re.compile(r"^(?:rsync://[^/]*/[^/]*/?|[^/:]*::[^/]*/?|[^/:]*:)")
+
+
+def kept_paths(source: str, rsync_relative: bool = False) -> list[str]:
+    """Where a path-keeping copy puts `source` under its destination.
+
+    `cp --parents` appends the source as written, without a leading `/` or
+    `./` (`/a/b` -> `a/b`, `./x/y` -> `x/y`, `../x` stays `../x`). rsync -R
+    keeps only what follows a `/./` in the path (`/srv/./app/x` -> `app/x`);
+    a leading `../` is read both kept and dropped, covering either way rsync
+    treats a path that climbs out of the destination."""
     path = source.rstrip("/")
+    if rsync_relative and _RSYNC_REMOTE.match(path):
+        path = _RSYNC_REMOTE.sub("", path)  # `host:a/b`, `host::module/a/b`, `rsync://host/module/a/b`
+    if rsync_relative and "/./" in path:
+        path = path.split("/./", 1)[1]
     while path.startswith(("./", "/")):
         path = path[2:] if path.startswith("./") else path[1:]
-    return path
+    found = [path]
+    if rsync_relative:
+        inside = path
+        while inside.startswith("../"):
+            inside = inside[3:]
+        found.append(inside)
+    return [p for p in dict.fromkeys(found) if p and p not in (".", "..")]
 
 
 def _sed_in_place(args: tuple[str, ...]) -> list[PathWrite]:

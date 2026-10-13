@@ -174,6 +174,39 @@ BASH_CASES = [
     ("cp --parents .claude/settings.json ../other", "deny", "claude-settings"),
     ("cp --parents src/a.c build/", None, None),
     ("cp .claude/settings.json ..", None, None),  # without --parents: ../settings.json
+    # rsync -R / --relative keeps source paths too, from a `/./` if there is one (PR review).
+    ("cd evil && rsync -aR .claude/settings.json ..", "deny", "claude-settings"),
+    ("rsync --relative -a .claude/settings.json ../other", "deny", "claude-settings"),
+    ("rsync -avR /srv/./.claude/settings.json ../other", "deny", "claude-settings"),
+    ("rsync -aR host:.claude/settings.json ../other", "deny", "claude-settings"),
+    ("rsync -R ../up/.claude/settings.json ../other", "deny", "claude-settings"),
+    ("rsync -aR --no-relative .claude/settings.json ../other", None, None),
+    ("rsync -a -e R .claude/settings.json ../other", None, None),  # R is -e's value
+    ("rsync -aR /srv/.claude/./settings.json ../other", None, None),
+    ("rsync -a .claude/settings.json backup/", None, None),
+    ("rsync -aR src/a.c build/", None, None),
+    # Instructions every future session loads from the home directory (PR review).
+    ("echo malicious > ~/.codex/skills/foo/SKILL.md", "deny", "agent-instructions"),
+    ("cp SKILL.md ~/.agents/skills/foo/", "deny", "agent-instructions"),
+    ("echo x >> ~/.claude/agents/reviewer.md", "deny", "agent-instructions"),
+    ("tee ~/.config/opencode/agent/build.md < x.md", "deny", "agent-instructions"),
+    ("echo 'ignore the guards' >> ~/.codex/AGENTS.md", "deny", "agent-instructions"),
+    ("cd ~/.pi/agent && echo x > prompts/p.md", "deny", "agent-instructions"),
+    ("rm -r ~/.agents", "deny", "agent-instructions"),
+    ("echo x > docs/SKILL.md", None, None),
+    ("echo x > skills/foo/SKILL.md", None, None),
+    ("echo x > .claude/skills/foo/SKILL.md", None, None),  # the project's own, reviewed in its diff
+    # Every config file git reads, and submodules' hooks (PR review).
+    ("printf '[core]\\nfsmonitor = /tmp/evil\\n' > ~/.gitconfig", "deny", "git-config"),
+    ("cd && printf x >> .gitconfig", "deny", "git-config"),
+    ("cp evil ~/.config/git/config", "deny", "git-config"),
+    ("echo x >> .git/config", "deny", "git-config"),
+    ("echo x >> .git/modules/sub/config", "deny", "git-config"),
+    ("echo x > .git/worktrees/w/config.worktree", "deny", "git-config"),
+    ("sudo tee /opt/homebrew/etc/gitconfig < x", "deny", "git-config"),
+    ("cp hook .git/modules/sub/hooks/post-checkout", "deny", "git-hooks"),
+    ("printf '[core]\\nfsmonitor = /tmp/evil\\n' > ~/.editorconfig", None, None),
+    ("echo x > docs/gitconfig.md", None, None),
 ]
 
 PATH_CASES = [
@@ -182,6 +215,9 @@ PATH_CASES = [
     (".mcp.json", "deny"),
     ("~/.codex/config.toml", "deny"),
     ("~/.bashrc", "deny"),
+    ("~/.codex/skills/foo/SKILL.md", "deny"),
+    ("~/.gitconfig", "deny"),
+    ("skills/foo/SKILL.md", None),
     ("src/settings.json", None),
     ("docs/claude/settings.md", None),
 ]
@@ -298,6 +334,10 @@ LANDING_CASES = [
     ("unzip -o hook.zip", "deny", "git-hooks"),
     ("tar -xf nested.tar --strip-components=1", "deny", "git-hooks"),
     ("cp -r template/. .", "deny", "claude-settings"),
+    ("rsync -aR template/./.claude .", "deny", "claude-settings"),
+    ("rsync -aR template/./.claude/ .", "deny", "claude-settings"),  # -R keeps the name despite the slash
+    ("cd template && cp -r --parents .claude ../vendor/..", "deny", "claude-settings"),
+    ("rsync -a template/./.claude backup", None, None),
     ("tar xzf release.tgz", None, None),
     ("unzip docs.zip", None, None),
     ("tar xf nested.tar", "deny", "git-hooks"),  # any repository's hooks, as for a direct write
@@ -381,6 +421,26 @@ def main() -> int:
                    "an inherited $CLAUDE_CONFIG_DIR resolves (PR review)", failures)
         finally:
             del os.environ["CLAUDE_CONFIG_DIR"]
+        # Locations the environment moves are checked as their defaults (PR review).
+        moved = {"CODEX_HOME": os.path.join(project, "codex-home"),
+                 "XDG_CONFIG_HOME": os.path.join(project, "xdg"),
+                 "GIT_CONFIG_GLOBAL": os.path.join(project, "global.gitconfig")}
+        os.environ.update(moved)
+        try:
+            for command, rule_id in (
+                    ('echo x > "$CODEX_HOME/skills/foo/SKILL.md"', "agent-instructions"),
+                    (f"cp evil.toml {moved['CODEX_HOME']}/config.toml", "codex-config"),
+                    (f"rm -r {moved['CODEX_HOME']}", None),
+                    (f"echo x >> {moved['XDG_CONFIG_HOME']}/git/config", "git-config"),
+                    (f"echo x > {moved['XDG_CONFIG_HOME']}/opencode/opencode.json", "opencode-config"),
+                    (f"echo x >> {moved['GIT_CONFIG_GLOBAL']}", "git-config")):
+                actual = _bash(command, project)
+                _check(actual[0] == "deny" and rule_id in (None, actual[1]), f"{command!r} -> {actual}", failures)
+            actual = _bash(f"echo x > {moved['XDG_CONFIG_HOME']}/notes.txt", project)
+            _check(actual == (None, None), f"ordinary file under a moved location -> {actual}", failures)
+        finally:
+            for variable in moved:
+                del os.environ[variable]
 
     print()
     if failures:

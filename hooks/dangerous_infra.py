@@ -12,9 +12,9 @@ rulebooks (MIT, cc-safety-net/rulebooks).
 
 from __future__ import annotations
 
-import os
 import re
 
+import db_client_files
 from danger_rule import (
     HIGH,
     DangerRule,
@@ -242,10 +242,18 @@ def _compose_down_volumes(name: str, args: tuple[str, ...]) -> str | None:
 # A table name: plain, or quoted with "", `` or [] (which may hold spaces), schema-qualified.
 _SQL_PART = r'(?:"[^"]*"|`[^`]*`|\[[^\]]*\]|[^\s;."`\[]+)'
 _SQL_NAME = rf"{_SQL_PART}(?:\.{_SQL_PART})*"
+# What a DELETE removes rows from, before or instead of its FROM: MySQL's
+# multi-table `DELETE t1, t2.* FROM …` (PR review), after its modifiers.
+_DELETE_MODIFIERS = r"(?:(?:LOW_PRIORITY|QUICK|IGNORE)\s+)*"
+_DELETE_TARGETS = rf"{_SQL_NAME}(?:\.\*)?(?:\s*,\s*{_SQL_NAME}(?:\.\*)?)*"
+_NO_WHERE = r"(?![^;]*\bWHERE\b)"
 _SQL_DESTRUCTIVE = re.compile(
     # A DELETE is whole-table when no WHERE follows before the statement ends
-    # (`DELETE FROM t;`, `DELETE FROM t RETURNING id;`).
-    rf"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|USER|ROLE)|TRUNCATE\b|DELETE\s+FROM\s+{_SQL_NAME}(?![^;]*\bWHERE\b)"
+    # (`DELETE FROM t;`, `DELETE FROM t RETURNING id;`, `DELETE u FROM users AS u;`),
+    # and so is SQL Server's `DELETE t` without FROM, ending the statement.
+    rf"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|USER|ROLE)|TRUNCATE\b"
+    rf"|DELETE\s+{_DELETE_MODIFIERS}(?:{_DELETE_TARGETS}\s+)?FROM\s+{_SQL_NAME}{_NO_WHERE}"
+    rf"|DELETE\s+(?!(?:FROM|CASCADE|RESTRICT|NO|SET|ON|TO|AS|OR|USING|TOP)\b){_SQL_NAME}\s*(?:;|$)"
     rf"|ALTER\s+TABLE\s+{_SQL_NAME}\s+DROP\b)",
     re.IGNORECASE,
 )
@@ -264,46 +272,15 @@ _NOSQL = re.compile(r"\b(?:dropDatabase|\.drop\(\)|deleteMany\(\s*\{\s*\}\s*\)|F
 
 
 def _input_file(path: str, command: SimpleCommand, ctx: RuleContext) -> str | None:
-    for directory in command.possible_cwds:
-        if directory is None:
-            continue
-        absolute = os.path.normpath(os.path.join(directory, os.path.expanduser(path)))
-        entry = ctx.parsed.written_files.get(absolute)
-        if entry is not None:
-            return entry.text
-        try:
-            if os.path.isfile(absolute) and os.path.getsize(absolute) <= _MAX_SQL_FILE:
-                with open(absolute, encoding="utf-8", errors="replace") as handle:
-                    return handle.read()
-        except OSError:
-            continue
-    return None
+    entry = _command_file(path, command, ctx)
+    return entry.text if entry else None
 
 
-_MAX_SQL_FILE = 256 * 1024
-# Client options whose value is a file of SQL to run.
-_SQL_FILE_OPTIONS = {"psql": ("-f", "--file"), "sqlcmd": ("-i",), "duckdb": ("-init",),
-                     "clickhouse-client": ("--queries-file",), "cockroach": ("--file", "-f")}
+def _command_file(path: str, command: SimpleCommand, ctx: RuleContext) -> db_client_files.ClientInput | None:
+    """A file the client opens itself, as written on the line or on disk."""
+    return db_client_files.read_file(path, command.possible_cwds, ctx.parsed.written_files)
 
 
-def _option_values(args: tuple[str, ...], flags: tuple[str, ...], attached: bool = True) -> list[str]:
-    """Values given to `flags`, as `-f FILE`, `--file=FILE` or, for getopt-style
-    clients (`attached`), `-fFILE`. duckdb's `-csv` is one option, not `-c sv`."""
-    values: list[str] = []
-    for index, arg in enumerate(args):
-        for flag in flags:
-            if arg == flag and index + 1 < len(args):
-                values.append(args[index + 1])
-            elif flag.startswith("--") and arg.startswith(flag + "="):
-                values.append(arg[len(flag) + 1:])
-            elif attached and not flag.startswith("--") and len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
-                values.append(arg[2:])
-    return values
-
-
-# Clients whose single-letter options take an attached value (`psql -c'DROP …'`),
-# as getopt allows (PR review). duckdb and clickhouse use `-csv`-style words.
-_GETOPT_CLIENTS = frozenset({"psql", "mysql", "mariadb", "cockroach", "sqlcmd"})
 # sqlite3 options that take a value (so it is not read as the database or SQL).
 _SQLITE_WITH_VALUE = frozenset({"-init", "--init", "-cmd", "--cmd", "-separator", "--separator",
                                 "-newline", "--newline", "-nullvalue", "--nullvalue", "-vfs", "--vfs",
@@ -318,15 +295,14 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
         if command.name == "redis-cli":
             return [" ".join(command.args)]
         return []
-    texts = _option_values(command.args, flags, attached=command.name in _GETOPT_CLIENTS)
-    # `psql -f q.sql`, `sqlcmd -i q.sql`: a file of statements, as written on the line or on disk.
-    file_flags = _SQL_FILE_OPTIONS.get(command.name, ())
-    texts += [t for t in (_input_file(v, command, ctx) for v in _option_values(command.args, file_flags)) if t]
+    texts = db_client_files.option_values(command.args, flags,
+                                          attached=command.name in db_client_files.GETOPT_CLIENTS)
+    # `psql -f q.sql`, `sqlite3 -init q.sql`, `sqlcmd -i q.sql`: a file of statements,
+    # as written on the line or on disk.
+    files = [_command_file(v, command, ctx) for v in db_client_files.file_option_values(command.name, command.args)]
     if command.name == "sqlite3":
-        # `-init FILE` runs a script and `-cmd SQL` a statement before the rest.
+        # `-cmd SQL` runs a statement before the rest.
         texts += [command.args[i + 1] for i, a in enumerate(command.args[:-1]) if a in ("-cmd", "--cmd")]
-        texts += [t for t in (_input_file(command.args[i + 1], command, ctx)
-                              for i, a in enumerate(command.args[:-1]) if a in ("-init", "--init")) if t]
         texts += [a for a in operands(command.args, _SQLITE_WITH_VALUE)[1:]]
     texts += [r.body or r.target for r in command.redirects if r.op in ("<<", "<<-", "<<<")]
     # `sqlite3 db < q.sql`: the file, as written earlier on the line or as on disk.
@@ -339,7 +315,11 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
     feeder = ctx.parsed.previous_stage(command)
     if feeder is not None and not feeder.dynamic_head:
         texts += _piped_texts(feeder, ctx)
-    return texts
+    # `.read q.sql`, `\i q.sql`, `source q.sql`: files the statements include (PR review).
+    # Only a file the client opened itself has a directory for psql's `\ir`; on stdin it is the cwd's.
+    inputs = [db_client_files.ClientInput(text, True) for text in texts] + [f for f in files if f]
+    inputs += db_client_files.included(command.name, inputs, command.possible_cwds, ctx.parsed.written_files)
+    return [entry.text for entry in inputs]
 
 
 def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
@@ -356,6 +336,9 @@ def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
     return texts
 
 
+# MySQL `/*! … */` and `/*!80000 … */`, MariaDB `/*M! … */`: comments the server
+# executes (when it is at least that version) (PR review).
+_EXECUTABLE_COMMENT = re.compile(r"/\*M?!\d*")
 # PostgreSQL dollar quoting: `$$` or `$tag$`, where a tag cannot start with a digit (`$1` is a parameter).
 _DOLLAR_TAG = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
@@ -365,11 +348,13 @@ def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: b
     strings and identifiers ('', "", ``, []): in `SELECT '--'; DROP TABLE t`
     the `--` is data. `backslash_escapes`: inside a string `\\'` does not end it,
     as in MySQL; standard SQL (SQLite, PostgreSQL) treats the backslash as text.
-    The MySQL reading also ends a line at `#`; the standard one quotes
+    The MySQL reading also ends a line at `#` and keeps the body of an
+    executable comment (`/*! DROP TABLE t */`, `/*!50000 …*/`, MariaDB's
+    `/*M!100100 …*/`), which the server runs; the standard one quotes
     PostgreSQL's `$tag$ ... $tag$` (in `SELECT $$--$$; DROP TABLE t` the `--` is data).
     `blank_quoted`: quoted text is blanked too, keeping its quotes."""
     out: list[str] = []
-    index, quote = 0, ""
+    index, quote, executable = 0, "", False
     while index < len(sql):
         char = sql[index]
         if quote:
@@ -399,6 +384,16 @@ def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: b
         elif sql.startswith("--", index) or (char == "#" and backslash_escapes):
             end = sql.find("\n", index)
             index = len(sql) if end < 0 else end
+            out.append(" ")
+            continue
+        elif backslash_escapes and (opening := _EXECUTABLE_COMMENT.match(sql, index)):
+            executable = True  # its body is SQL: scanned as such, up to its `*/`
+            index = opening.end()
+            out.append(" ")
+            continue
+        elif executable and sql.startswith("*/", index):
+            executable = False
+            index += 2
             out.append(" ")
             continue
         elif sql.startswith("/*", index):

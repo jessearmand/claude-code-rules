@@ -188,6 +188,11 @@ SHOULD_BLOCK = [
     "psql -c'\\! rm -rf victim'",  # attached option value (PR review)
     "git clone 'ext::sh -c rm% -rf% victim' out",  # git-remote-ext runs the URL's command (PR review)
     "printf '.shell rm -rf victim\\n' > i.sql; sqlite3 -init i.sql :memory:",  # written here, then run
+    "printf '.shell rm -rf victim\\n' > r.sql; sqlite3 :memory: '.read r.sql'",  # an included file (PR review)
+    "printf '\\\\! rm -rf victim\\n' > r.sql; psql -c '\\i r.sql'",
+    "printf 'system rm -rf victim\\n' > r.sql; mysql -e 'source r.sql'",
+    "sqlcmd -Q '!! rm -rf victim'",  # sqlcmd and cockroach shell escapes
+    "cockroach sql -e '\\| rm -rf victim'",
     "shopt -s lastpipe; printf r | read X; \"${X}m\" -rf victim",  # lastpipe (PR review)
     "read X <<<echo <<< r''m; \"$X\" -rf victim",  # the last stdin redirect wins (PR review)
     "X=r''m; read -t0 X <<<echo; \"$X\" -rf victim",  # read -t 0 assigns nothing (PR review)
@@ -598,7 +603,15 @@ def main() -> int:
                         "psql -f q.sql", "psql --file=q.sql", "psql -fq.sql", "psql < q.sql"):
             decision = _decision(_run_hook(command, project))
             _check(decision == "ask", f"shell escape in a command file: {command} -> {decision}", failures)
-        for command in ("sqlite3 -init safe.sql :memory:", "psql -f safe.sql", "sqlite3 -init missing.sql :memory:"):
+        # ... and from the files those include, followed in turn (PR review).
+        _write(project, "outer.sql", ".read init.sql\n")
+        _write(project, "safe-outer.sql", ".read safe.sql\n")
+        for command in ("sqlite3 :memory: '.read init.sql'", "sqlite3 -init outer.sql :memory:",
+                        "duckdb -c '.read outer.sql'", "psql -c '\\i q.sql'", "psql -c '\\include q.sql'"):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == "ask", f"shell escape in an included file: {command} -> {decision}", failures)
+        for command in ("sqlite3 -init safe.sql :memory:", "psql -f safe.sql", "sqlite3 -init missing.sql :memory:",
+                        "sqlite3 :memory: '.read safe-outer.sql'", "psql -c '\\i safe.sql'"):
             decision = _decision(_run_hook(command, project))
             _check(decision is None, f"{command} -> {decision}", failures)
         for command in ("cat notes.txt", "./notes.txt", "npm run lint"):

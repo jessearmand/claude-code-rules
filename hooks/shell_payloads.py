@@ -13,6 +13,7 @@ import re
 import shlex
 from collections.abc import Callable
 
+import db_client_files
 from shell_expand import (
     _echoed_text,
 )
@@ -75,16 +76,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
 
     if name in SHELLS:
         _shell_payload(command, args, ctx, nested)
-    elif name in ("sqlite3", "sqlite"):
-        for text in _sqlite_shell_commands(command):
-            nested(text, f"{name} .shell")
-        for text, typed in _sqlite_shell_commands_in_files(command, ctx):
-            nested(text, f"{name} -init .shell", not_typed=not typed)
-    elif name in _CLIENT_SHELL:
-        for text in _client_shell_commands(command):
-            nested(text, f"{name} shell escape")
-        for text, typed in _client_shell_commands_in_files(command, ctx):
-            nested(text, f"{name} -f shell escape", not_typed=not typed)
+    elif name in db_client_files.DIALECTS:
+        for text, typed in _client_shell_commands(command, ctx):
+            nested(text, f"{name} shell escape", not_typed=not typed)
     elif name == "git":
         for url in args:
             if url.startswith("ext::"):
@@ -360,12 +354,41 @@ def _option_prelude(name: str, args: list[str]) -> str:
     return "shopt -s xpg_echo\n" if xpg else ""
 
 
-_SQLITE_SHELL = re.compile(r"^\s*\.(?:shell|system)\s+(.+)$", re.MULTILINE)
-# `.read "|CMD"`, `.import '|CMD' t`, `.output |CMD`, `.once |CMD`: a file name
-# starting with `|` is a command sqlite3 runs and reads from or writes to. Unquoted,
-# the rest of the line is the command (sqlite3 joins the remaining arguments).
-_SQLITE_PIPE = re.compile(r"""^\s*\.(?:read|import|output|once)\s+(?:"\|([^"]*)"|'\|([^']*)'|\|(.+?)\s*$)""",
-                          re.MULTILINE)
+# Shell escapes of database clients (PR review), by dialect (db_client_files.DIALECTS):
+# sqlite3/duckdb `.shell CMD`, `.system CMD`, and a file name starting with `|`,
+# which is a command it runs and reads from or writes to (`.read "|CMD"`,
+# `.import '|CMD' t`, `.output |CMD`, `.once |CMD`; unquoted, the rest of the
+# line is the command); psql `\! CMD`, output to a pipe (`\o |CMD`, `\g |CMD`,
+# `\w |CMD`), and `COPY`/`\copy ... PROGRAM 'CMD'`, to which cockroach adds
+# `\| CMD` (its output runs as SQL); mysql/mariadb `system CMD`, `\! CMD` and a
+# `pager`; sqlcmd `!! CMD`.
+_PSQL_SHELL = (r"\\!\s*(.+?)\s*$"
+               r"|\\(?:o|out|g|w|write)\s+(?:'\|([^']*)'|\|\s*(.+?)\s*$)"
+               r"|\bPROGRAM\s+(?:'([^']*)'|E'([^']*)')")
+_CLIENT_SHELL = {
+    "sqlite": re.compile(
+        r"""^\s*\.(?:shell|system)\s+(.+)$"""
+        r"""|^\s*\.(?:read|import|output|once)\s+(?:"\|([^"]*)"|'\|([^']*)'|\|(.+?)\s*$)""",
+        re.MULTILINE),
+    "psql": re.compile(_PSQL_SHELL, re.MULTILINE | re.IGNORECASE),
+    "cockroach": re.compile(_PSQL_SHELL + r"|\\\|\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE),
+    "mysql": re.compile(r"^\s*(?:system|\\!|pager|\\P)\s+(.+?)\s*;?\s*$", re.MULTILINE),
+    "sqlcmd": re.compile(r"^\s*:?!!\s*(.+?)\s*$", re.MULTILINE),
+}
+
+
+def _client_shell_commands(command: SimpleCommand, ctx: _Context) -> list[tuple[str, bool]]:
+    """(command, typed) for each shell escape in what a database client runs:
+    its arguments, its command files, and the files those include."""
+    pattern = _CLIENT_SHELL[db_client_files.DIALECTS[command.name]]
+    inputs = [db_client_files.ClientInput(text, True) for text in _client_texts(command)]
+    inputs += _client_file_texts(command, ctx)
+
+    def unknown(_name: str) -> None:
+        ctx.result.truncated = True  # an included file that cannot be followed
+
+    inputs += db_client_files.included(command.name, inputs, command.possible_cwds, ctx.written_files, unknown)
+    return [(_first_group(m), source.typed) for source in inputs for m in pattern.finditer(source.text)]
 
 
 def _client_texts(command: SimpleCommand) -> list[str]:
@@ -373,70 +396,34 @@ def _client_texts(command: SimpleCommand) -> list[str]:
     trailing statements, and a value attached to a short option, `-c'SQL'`), a
     heredoc or a here-string."""
     texts = [a for a in command.args if not a.startswith("-") or a.startswith("-cmd")]
-    if command.name in _GETOPT_CLIENTS:
+    if command.name in db_client_files.GETOPT_CLIENTS:
         texts += [a[2:] for a in command.args if len(a) > 2 and a[0] == "-" and a[1] != "-"]
     return texts + [r.body or "" for r in command.redirects if r.body] + [
         r.target for r in command.redirects if r.op == "<<<"]
 
 
-# Clients whose single-letter options take an attached value (`psql -c'\! rm -rf x'`).
-_GETOPT_CLIENTS = frozenset({"psql", "mysql", "mariadb"})
-# Options naming a file of statements the client runs: sqlite3 `-init`, psql `-f`.
-_CLIENT_FILE_OPTIONS = {"sqlite3": ("-init", "--init"), "sqlite": ("-init", "--init"),
-                        "psql": ("-f", "--file")}
-_MAX_CLIENT_FILE = 256 * 1024
-
-
-def _client_file_texts(command: SimpleCommand, ctx: _Context) -> list[tuple[str, bool]]:
-    """(text, typed) for each file of statements the client reads: a command
-    file option, or `< FILE` on stdin. Typed when the same line wrote the file
+def _client_file_texts(command: SimpleCommand, ctx: _Context) -> list[db_client_files.ClientInput]:
+    """Each file of statements the client reads: a command file option, or
+    `< FILE` on stdin, typed when the same line wrote the file
     (`printf '.shell …' > i.sql; sqlite3 -init i.sql`), else read from disk
     (PR review). A computed name leaves the analysis incomplete."""
-    options = _CLIENT_FILE_OPTIONS.get(command.name, ())
-    names = [command.args[i + 1] for i, a in enumerate(command.args[:-1]) if a in options]
-    names += [a.split("=", 1)[1] for a in command.args if a.startswith(tuple(o + "=" for o in options if o.startswith("--")))]
-    if command.name == "psql":
-        names += [a[2:] for a in command.args if a.startswith("-f") and len(a) > 2 and not a.startswith("-fi")]
+    # (name, whether the client opens it itself): on stdin, psql's `\ir` is relative to the cwd.
+    names = [(name, True) for name in db_client_files.file_option_values(command.name, command.args)]
     for redirect in command.redirects:
         if redirect.op == "<" and (redirect.fd is None or redirect.fd == 0):
             if redirect.dynamic:
                 ctx.result.truncated = True
                 continue
-            names.append(redirect.target)
-    found: list[tuple[str, bool]] = []
-    for name in names:
+            names.append((redirect.target, False))
+    found: list[db_client_files.ClientInput] = []
+    for name, opened in names:
         if "$" in name or "`" in name:
             ctx.result.truncated = True  # which file runs is not known
             continue
-        for directory in command.possible_cwds:
-            if directory is None:
-                continue
-            absolute = os.path.normpath(os.path.join(directory, os.path.expanduser(name)))
-            entry = ctx.written_files.get(absolute)
-            if entry is not None:
-                found.append((entry.text, True))
-                break
-            try:
-                if os.path.isfile(absolute) and os.path.getsize(absolute) <= _MAX_CLIENT_FILE:
-                    with open(absolute, encoding="utf-8", errors="replace") as handle:
-                        found.append((handle.read(), False))
-                    break
-            except OSError:
-                continue
+        entry = db_client_files.read_file(name, command.possible_cwds, ctx.written_files)
+        if entry is not None:
+            found.append(entry if opened else db_client_files.ClientInput(entry.text, entry.typed))
     return found
-
-
-def _sqlite_shell_commands_in_files(command: SimpleCommand, ctx: _Context) -> list[tuple[str, bool]]:
-    return [(m.group(1), typed) for text, typed in _client_file_texts(command, ctx)
-            for m in _SQLITE_SHELL.finditer(text)] + [
-        (_first_group(m), typed) for text, typed in _client_file_texts(command, ctx)
-        for m in _SQLITE_PIPE.finditer(text)]
-
-
-def _client_shell_commands_in_files(command: SimpleCommand, ctx: _Context) -> list[tuple[str, bool]]:
-    pattern = _CLIENT_SHELL[command.name]
-    return [(_first_group(m), typed) for text, typed in _client_file_texts(command, ctx)
-            for m in pattern.finditer(text)]
 
 
 def _ext_argv(spec: str) -> list[str]:
@@ -465,33 +452,6 @@ def _ext_argv(spec: str) -> list[str]:
 
 def _first_group(match: re.Match[str]) -> str:
     return next(g for g in match.groups() if g is not None)
-
-
-def _sqlite_shell_commands(command: SimpleCommand) -> list[str]:
-    """Commands sqlite3 runs in a system shell (`.shell CMD`, `.system CMD`, and
-    a `|CMD` file name), from its SQL arguments, `-cmd` options, a heredoc or
-    here-string."""
-    texts = _client_texts(command)
-    found = [m.group(1) for text in texts for m in _SQLITE_SHELL.finditer(text)]
-    return found + [_first_group(m) for text in texts for m in _SQLITE_PIPE.finditer(text)]
-
-
-# Shell escapes of other database clients (PR review):
-# psql `\! CMD`, output to a pipe (`\o |CMD`, `\g |CMD`, `\w |CMD`), and
-# `COPY`/`\copy ... PROGRAM 'CMD'`; mysql/mariadb `system CMD`, `\! CMD` and a `pager`.
-_PSQL_SHELL = re.compile(
-    r"\\!\s*(.+?)\s*$"
-    r"|\\(?:o|out|g|w|write)\s+(?:'\|([^']*)'|\|\s*(.+?)\s*$)"
-    r"|\bPROGRAM\s+(?:'([^']*)'|E'([^']*)')",
-    re.MULTILINE | re.IGNORECASE,
-)
-_MYSQL_SHELL = re.compile(r"^\s*(?:system|\\!|pager|\\P)\s+(.+?)\s*;?\s*$", re.MULTILINE)
-_CLIENT_SHELL = {"psql": _PSQL_SHELL, "mysql": _MYSQL_SHELL, "mariadb": _MYSQL_SHELL}
-
-
-def _client_shell_commands(command: SimpleCommand) -> list[str]:
-    pattern = _CLIENT_SHELL[command.name]
-    return [_first_group(m) for text in _client_texts(command) for m in pattern.finditer(text)]
 
 
 def _produced_script(operand: str, shell: SimpleCommand, ctx: _Context, nested: Callable[..., None],

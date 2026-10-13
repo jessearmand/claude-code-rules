@@ -280,6 +280,39 @@ CASES = [
     ("cat <<'SQL' | psql\nDROP TABLE users;\nSQL", "deny", "sql-destructive"),  # SQL piped through cat (PR review)
     ("cat <<'SQL' | psql\nSELECT 1;\nSQL", None, None),
     ("printf 'DROP TABLE users;' > q.sql; sqlite3 prod.db < q.sql", "deny", "sql-destructive"),
+    # Files the statements include run too (PR review).
+    ("printf 'DROP TABLE users;' > q.sql; sqlite3 db '.read q.sql'", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > q.sql; duckdb db -c '.read \"q.sql\"'", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > q.sql; psql -c '\\i q.sql'", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > q.sql; psql <<< 'SELECT 1; \\include q.sql'", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > q.sql; mysql -e 'source q.sql'", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > q.sql; mysql <<< '\\. q.sql'", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > b.sql; printf '.read b.sql\\n' > a.sql; sqlite3 db '.read a.sql'",
+     "deny", "sql-destructive"),  # an include of an include
+    ("printf 'DROP TABLE users;' > q.sql; sqlcmd -Q ':r q.sql'", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' > q.sql; cockroach sql -e '\\i q.sql'", "deny", "sql-destructive"),
+    ("printf 'SELECT 1;' > q.sql; sqlite3 db '.read q.sql'", None, None),
+    ("printf '.read q.sql\\n' > q.sql; sqlite3 db '.read q.sql'", None, None),  # a loop ends
+    ("sqlite3 db '.read missing.sql'", None, None),
+    # MySQL executable comments run their body; ordinary comments do not (PR review).
+    ("mysql -e '/*!50000 DROP TABLE users */;'", "deny", "sql-destructive"),
+    ("mysql -e '/*! DELETE FROM users */'", "deny", "sql-destructive"),
+    ("mariadb -e '/*M!100100 TRUNCATE users */'", "deny", "sql-destructive"),
+    ("mysql -e '/* DROP TABLE users */ SELECT 1'", None, None),
+    ("mysql -e '/*!40101 SET NAMES utf8 */; SELECT 1'", None, None),
+    # Whole-table DELETE in every grammar: MySQL multi-table and modifiers,
+    # SQL Server without FROM (PR review).
+    ("mysql -e 'DELETE u FROM users AS u'", "deny", "sql-destructive"),
+    ("mysql -e 'DELETE u, p FROM users u JOIN posts p ON u.id = p.user_id'", "deny", "sql-destructive"),
+    ("mysql -e 'DELETE t1.* FROM t1'", "deny", "sql-destructive"),
+    ("mysql -e 'DELETE LOW_PRIORITY QUICK IGNORE FROM users'", "deny", "sql-destructive"),
+    ("sqlcmd -Q 'DELETE users'", "deny", "sql-destructive"),
+    ("mysql -e 'DELETE u FROM users AS u WHERE u.id = 1'", None, None),
+    ("mysql -e 'DELETE IGNORE FROM users WHERE id = 1'", None, None),
+    ("sqlcmd -Q 'DELETE TOP (10) FROM users'", None, None),
+    ("sqlcmd -Q 'CREATE TRIGGER t ON users FOR DELETE AS SELECT 1'", None, None),
+    ("psql -c 'ALTER TABLE p ADD FOREIGN KEY (u) REFERENCES users ON DELETE CASCADE;'", None, None),
+    ("psql -c 'GRANT DELETE ON users TO app; REVOKE DELETE ON users FROM bob;'", None, None),
     ("$(printf git) reset --hard", "deny", "git-reset-hard"),
     ("cd /dev && sudo dd if=/dev/zero of=sda", "deny", "device-write"),  # relative dd output (PR review)
     ("sudo tee /dev/sda < image", "deny", "device-write"),  # any writer, not only dd (PR review)
@@ -442,6 +475,18 @@ def main() -> int:
         for command in ("git lg -5", "git status", "git undefined-alias"):
             decision = _decision(_run_hook(command, aliased, git_env))
             _check(decision is None, f"harmless or missing alias: {command} -> {decision}", failures)
+        # Included files are read from disk, relative to the including file for psql's \\ir (PR review).
+        os.makedirs(os.path.join(project, "sql"))
+        for name, text in (("drop.sql", "DROP TABLE users;\n"), ("sql/main.sql", "\\ir ../drop.sql\n"),
+                           ("select.sql", "SELECT 1;\n")):
+            with open(os.path.join(project, name), "w", encoding="utf-8") as handle:
+                handle.write(text)
+        for command, expected in (("sqlite3 db '.read drop.sql'", "deny"), ("psql -f sql/main.sql", "deny"),
+                                  ("psql -c '\\i sql/main.sql'", "deny"), ("mysql -e 'source drop.sql'", "deny"),
+                                  ("sqlite3 db '.read select.sql'", None), ("psql -c '\\ir drop.sql'", "deny"),
+                                  ("psql -c '\\ir ../drop.sql'", None), ("psql < sql/main.sql", None)):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == expected, f"included file: {command} -> {decision}", failures)
         reason = _run_hook("bash -c 'git push -f'", project)["hookSpecificOutput"]["permissionDecisionReason"]
         _check("reached via: bash -c" in reason, "reason names how the command was reached", failures)
 

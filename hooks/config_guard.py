@@ -4,9 +4,10 @@ Claude Code Hook: Config Guard
 ==============================
 PreToolUse hook for Write, Edit, MultiEdit, NotebookEdit and Bash. Stops the
 agent from changing its own configuration: settings and permissions, hook
-scripts, MCP servers, other harnesses' config (Codex, omp, pi, opencode), and
-places that make code run again later (shell rc files, git hooks, launchd,
-systemd, cron).
+scripts, MCP servers, other harnesses' config (Codex, omp, pi, opencode), the
+skills, subagents and global instructions loaded from the home directory, and
+places that make code run again later (shell rc files, git hooks and git
+config, launchd, systemd, cron).
 
 Without it, every other guard is one `sed -i` away from being switched off.
 
@@ -28,7 +29,9 @@ Configuration (environment variables, set in the hook command):
   CONFIG_GUARD_LIVE_DIRS=<dir>:<dir>
       extra directories that hold running guard code (e.g. the omp
       extension checkout). Writes there are asked about, not denied.
-  CLAUDE_CONFIG_DIR          honoured as an extra protected root
+  CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_CONFIG_HOME, GIT_CONFIG_GLOBAL,
+  GIT_CONFIG_SYSTEM          honoured where they move a protected location
+                             (config_guard_rules.HOME_ALIASES)
 
 Live guard sources. The guards usually run from a git checkout that
 ~/.claude/hooks links to, or (omp) straight from this repo. Editing that
@@ -59,6 +62,7 @@ import shell_sources  # noqa: E402
 import unknown_target
 from config_guard_rules import (  # noqa: E402
     CONFIG_RULES,
+    HOME_ALIASES,
     PROJECT_PROTECTED_ROOTS,
     PROTECTED_ROOTS,
     ConfigRule,
@@ -157,18 +161,50 @@ def candidate_paths(path: str, cwd: str) -> list[str]:
     resolved = [os.path.realpath(p) for p in found[1:]]
     unique: list[str] = []
     for value in (*found, *resolved):
-        normalized = value.replace(os.sep, "/")
-        if normalized and normalized not in unique:
-            unique.append(normalized)
+        for form in (value, *home_forms(value)):
+            normalized = form.replace(os.sep, "/")
+            if normalized and normalized not in unique:
+                unique.append(normalized)
     return unique
+
+
+def _directory_forms(path: str) -> list[str]:
+    """An absolute directory as written and with symlinks resolved."""
+    expanded = os.path.normpath(os.path.expanduser(path))
+    if not os.path.isabs(expanded):
+        return []
+    return list(dict.fromkeys((expanded, os.path.realpath(expanded))))
+
+
+def _aliases() -> list[tuple[str, str]]:
+    """(directory the environment set, the default it stands for)."""
+    return [(base, default) for variable, default in HOME_ALIASES
+            for base in _directory_forms(os.environ.get(variable) or "")]
+
+
+def home_forms(path: str) -> list[str]:
+    """An absolute `path` as the rules spell it: under a moved location's default
+    (`$CODEX_HOME/skills` -> `~/.codex/skills`), and relative to the home
+    directory (`/Users/me/.gitconfig` -> `~/.gitconfig`), which `^~/` rules need."""
+    if not path.startswith("/"):
+        return []
+    defaults = [default + path[len(base):] for base, default in _aliases() if _is_inside(path, base)]
+    forms = list(defaults)
+    for form in (path, *defaults):
+        if form.startswith("/"):
+            forms += ["~" + form[len(home):] for home in _directory_forms("~")
+                      if home != "/" and _is_inside(form, home)]
+    return [form for form in dict.fromkeys(forms) if form != path]
 
 
 def _protected_roots(cwd: str) -> list[str]:
     roots = [_expand(root, cwd) for root in PROTECTED_ROOTS]
     roots += [os.path.join(cwd, root) for root in PROJECT_PROTECTED_ROOTS]
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    if config_dir:
-        roots.append(_expand(config_dir, cwd))
+    # A root under a moved location's default is also under where it moved to.
+    for root in PROTECTED_ROOTS:
+        for base, default in _aliases():
+            if _is_inside(root, default):
+                roots.append(base + root[len(default):])
     resolved = [os.path.realpath(root) for root in roots]
     return list(dict.fromkeys(os.path.normpath(r) for r in (*roots, *resolved)))
 
@@ -226,8 +262,10 @@ def _check_tree(candidates: list[str], cwd: str) -> ConfigRule | None:
         prefix = candidate.rstrip("/") + "/"
         for root in _protected_roots(cwd):
             if root == candidate or root.startswith(prefix):
+                inside = root + "/x"
                 return next(
-                    (rule for rule in CONFIG_RULES if rule.pattern.search(root + "/x")),
+                    (rule for form in (inside, *home_forms(inside))
+                     for rule in CONFIG_RULES if rule.pattern.search(form)),
                     CONFIG_RULES[0],
                 )
     return None
