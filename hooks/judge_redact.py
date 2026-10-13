@@ -21,10 +21,14 @@ from collections.abc import Iterator
 
 REDACTED = "<redacted>"
 
-# A credential term, possibly inside a longer name (`AWS_SECRET_ACCESS_KEY`), but not
-# one naming where the secret lives (`PASSWORD_FILE`, `SECRET_NAME`).
+# A credential term, possibly inside a longer name (`AWS_SECRET_ACCESS_KEY`,
+# `GITHUB_PAT`, `SLACK_WEBHOOK_URL`), but not one naming where the secret lives
+# (`PASSWORD_FILE`, `SECRET_NAME`). `pat` must not start inside a word (`expat`)
+# or a file extension (`brush.pat`); `PATH` and `PATTERN` fail on the next letter.
 _SECRET_KEY = (
-    r"(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer|cookie)"
+    r"(?:token|secret|password|passwd|pwd|passphrase|api[_-]?key|authorization|bearer|cookie|"
+    r"(?<![A-Za-z.])pat|credentials?|webhook|"
+    r"(?:private|access|signing|license|encryption|master|session|ssh|gpg|deploy|service)[_-]?key)"
     r"(?:[_-][A-Za-z0-9]+)*(?<![_-]file)(?<![_-]path)(?<![_-]dir)(?<![_-]name)"
 )
 # HTTP auth schemes are kept so the model still sees what kind of credential it is.
@@ -40,7 +44,8 @@ _SECRET_VALUE = re.compile(
     # A quoted value is redacted through its closing quote (spaces included).
     # Backslash escapes inside it (`"a\\"b"`) do not end it; nor does `\ ` in a bare value.
     r"(?:\"(?P<double>(?:[^\"\\]|\\.)*)\"|'(?P<single>(?:[^'\\]|\\.)*)'|[\"']?(?:\\.|[^\s\"'\\])+)"
-    r"|\b(?:sk|ghp|gho|ghs|ghu|xox[abp]|AKIA|AIza|npm_|pypi-|glpat-)[A-Za-z0-9_\-]{16,}"
+    r"|\b(?:sk|ghp|gho|ghs|ghu|ghr|github_pat|xox[abpe]|xapp|AKIA|AIza|hf|npm_|pypi-|glpat-|dop_v1_)"
+    r"[A-Za-z0-9_\-]{16,}"
     r"|\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
 )
 
@@ -52,12 +57,18 @@ _SECRET_IN_QUOTED_WORD = re.compile(
     rf"(?is)(?P<key>{_SECRET_KEY}\s*[:=][\s:=]*(?:{_AUTH_SCHEME}\s+)?)(?![\s:=\"']|{_REFERENCE}|{REDACTED}|{_AUTH_SCHEME}\b).+"
 )
 
+# Incoming-webhook URLs: the path is the credential (PR review).
+_WEBHOOK_URL = re.compile(
+    r"(https?://(?:hooks\.slack\.com/services/|discord(?:app)?\.com/api/webhooks/|"
+    r"[\w.-]*webhook\.office\.com/webhookb2/|api\.telegram\.org/bot|hooks\.zapier\.com/hooks/catch/|"
+    r"events\.pagerduty\.com/))[^\s\"'<>]+"
+)
 # `https://user:pass@host`: the password in a URL's userinfo.
 _URL_USERINFO = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s/:@]+:)[^\s/@]+@")
 # The password half of Basic-auth credentials given to curl's -u / --user (spaced,
-# attached or with =) and -U / --proxy-user.
+# attached or with =), -U / --proxy-user, and httpie's -a / --auth.
 _BASIC_AUTH_OPTION = re.compile(
-    r"((?:\s-u|\s--user|\s--proxy-user|\s-U)(?:\s+|=)?)"
+    r"((?:\s-u|\s--user|\s--proxy-user|\s-U|\s--auth|\s-a)(?:\s+|=)?)"
     # A quoted credential is redacted through its closing quote (spaces included).
     # Inside double quotes a backslash escapes the next character (`\\"` does not end it).
     r"(?:'([^':]+:)[^']*'|\"((?:[^\"\\:]|\\.)+:)(?:[^\"\\]|\\.)*\"|([^\s:\"']+:)[^\s\"']+)")
@@ -127,6 +138,7 @@ def redact(text: str) -> str:
     """`text` with every recognisable credential literal replaced by `<redacted>`."""
     text = _PRIVATE_KEY.sub("<redacted private key>", text)
     text = _URL_USERINFO.sub(rf"\1{REDACTED}@", text)
+    text = _WEBHOOK_URL.sub(rf"\1{REDACTED}", text)
     text = _BASIC_AUTH_OPTION.sub(_basic_auth_redacted, text)
     text = _redact_quoted_words(text)
     return _SECRET_VALUE.sub(_secret_value_redacted, text)

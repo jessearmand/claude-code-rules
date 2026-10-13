@@ -91,6 +91,25 @@ REDACTIONS = [
     ('curl -H "Authorization: Bearer $GH_TOKEN" -H "X-Api-Key: ${KEY}" x',
      'curl -H "Authorization: Bearer $GH_TOKEN" -H "X-Api-Key: ${KEY}" x'),
     ("git commit -m 'rotate token handling'", "git commit -m 'rotate token <redacted>'"),  # bare rule, as before
+    # Credential names beyond token/secret/password, and webhook URLs (PR review).
+    (f"GITHUB_PAT={_PLACEHOLDER} gh auth status", "GITHUB_PAT=<redacted> gh auth status"),
+    (f"export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T0/B0/{_PLACEHOLDER}",
+     "export SLACK_WEBHOOK_URL=<redacted>"),
+    (f"curl -X POST https://hooks.slack.com/services/T0/B0/{_PLACEHOLDER} -d '{{}}'",
+     "curl -X POST https://hooks.slack.com/services/<redacted> -d '{}'"),
+    (f"curl https://discord.com/api/webhooks/1234/{_PLACEHOLDER}", "curl https://discord.com/api/webhooks/<redacted>"),
+    (f"AWS_ACCESS_KEY_ID=AKIA{_PLACEHOLDER.upper()}1234 aws sts get-caller-identity",
+     "AWS_ACCESS_KEY_ID=<redacted> aws sts get-caller-identity"),
+    (f"{{\"credentials\": \"{_PLACEHOLDER}\"}}", '{"credentials": "<redacted>"}'),
+    (f"http --auth user:{_PLACEHOLDER} :8000", "http --auth user:<redacted> :8000"),
+    ("gh auth login --web", "gh auth login --web"),
+    (f"SIGNING_KEY={_PLACEHOLDER} make release", "SIGNING_KEY=<redacted> make release"),
+    (f"gh auth login --with-token github_pat_{_PLACEHOLDER}AbCd", "gh auth login --with-token <redacted>"),
+    ("PATH=/usr/bin:$PATH make", "PATH=/usr/bin:$PATH make"),  # not a PAT
+    ("grep -r PATTERN=foo src/", "grep -r PATTERN=foo src/"),
+    ("python -c 'import expat'", "python -c 'import expat'"),
+    ("CREDENTIALS_FILE=/run/creds ./app", "CREDENTIALS_FILE=/run/creds ./app"),  # where, not what
+    ("git log --author=me", "git log --author=me"),
 ]
 
 # Answers that parse as JSON but must not be trusted. Each voids the whole
@@ -187,6 +206,21 @@ def _context_tests(failures: list[str]) -> None:
         _run("git clean -xdf", capture, cwd=work, extra_payload={"user_prompt": "token=hunter2hunter2 please"})
         if "hunter2" in sent()[0]:
             failures.append("the user prompt must be redacted like the command")
+
+        # The outbound payload: a PAT in the prompt and a webhook URL in an earlier
+        # command must not reach the model either (PR review).
+        leaky = os.path.join(work, "leaky.jsonl")
+        records = [
+            {"type": "user", "message": {"role": "user", "content": f"Use GITHUB_PAT={_PLACEHOLDER}pat1 for the API"}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {
+                "command": f"export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T0/B0/{_PLACEHOLDER}hook"}}]}},
+        ]
+        with open(leaky, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(json.dumps(r) for r in records) + "\n")
+        _run("git clean -xdf", capture, cwd=work, extra_payload={"transcript_path": leaky})
+        state, _ = sent()
+        if f"{_PLACEHOLDER}pat1" in state or f"{_PLACEHOLDER}hook" in state or state.count("<redacted>") < 2:
+            failures.append(f"PAT and webhook URL in the context must be redacted before sending: {state!r}")
 
         with open(os.path.join(work, "deploy.sh"), "w", encoding="utf-8") as handle:
             handle.write("#!/bin/sh\nrsync -a dist/ prod:/srv/app/\n")
