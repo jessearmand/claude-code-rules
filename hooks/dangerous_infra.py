@@ -343,7 +343,51 @@ _EXECUTABLE_COMMENT = re.compile(r"/\*M?!\d*")
 _DOLLAR_TAG = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
-def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: bool = False) -> str:
+# A string literal the database runs as SQL rather than keeps as data, by what
+# precedes it: PostgreSQL `DO 'code'` / `DO LANGUAGE l $$code$$`, a function or
+# procedure body (`CREATE FUNCTION … AS 'code'`), PL/pgSQL `EXECUTE 'code'` and
+# `EXECUTE format('code', …)`, `EXECUTE IMMEDIATE`, MySQL `PREPARE s FROM 'code'`,
+# SQL Server `EXEC('code')` and `sp_executesql N'code'` (PR review). An `N`/`E`
+# prefix belongs to the literal.
+_EXECUTED_STRING = re.compile(
+    r"(?:\bDO(?:\s+LANGUAGE\s+\w+)?"
+    r"|\bEXEC(?:UTE)?(?:\s+IMMEDIATE)?(?:\s*\(|\s+format\s*\()?"
+    r"|\bPREPARE\s+\S+\s+FROM"
+    r"|\bsp_executesql"
+    r"|\b(?:FUNCTION|PROCEDURE)\b[^;]*\bAS)\s*[NE]?$",
+    re.IGNORECASE,
+)
+_EXECUTED_LOOKBACK = 400  # characters of the statement so far that decide it
+_MAX_EXECUTED_DEPTH = 4  # code inside code inside code ...
+
+
+def _executes_next_string(out: list[str]) -> bool:
+    return bool(_EXECUTED_STRING.search("".join(out)[-_EXECUTED_LOOKBACK:]))
+
+
+def _quoted_body(sql: str, start: int, backslash_escapes: bool) -> tuple[str, int]:
+    """The text of the `'…'` literal opening at `start`, unescaped (`''` and,
+    for MySQL, `\\'`), and the index after it. Unterminated: to the end."""
+    body: list[str] = []
+    index = start + 1
+    while index < len(sql):
+        char = sql[index]
+        if backslash_escapes and char == "\\" and index + 1 < len(sql):
+            body.append(sql[index + 1])
+            index += 2
+        elif char == "'" and sql.startswith("''", index):
+            body.append("'")
+            index += 2
+        elif char == "'":
+            return "".join(body), index + 1
+        else:
+            body.append(char)
+            index += 1
+    return "".join(body), index
+
+
+def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: bool = False,
+                      depth: int = 0) -> str:
     """`sql` with `-- ...` and `/* ... */` comments blanked, outside quoted
     strings and identifiers ('', "", ``, []): in `SELECT '--'; DROP TABLE t`
     the `--` is data. `backslash_escapes`: inside a string `\\'` does not end it,
@@ -352,7 +396,9 @@ def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: b
     executable comment (`/*! DROP TABLE t */`, `/*!50000 …*/`, MariaDB's
     `/*M!100100 …*/`), which the server runs; the standard one quotes
     PostgreSQL's `$tag$ ... $tag$` (in `SELECT $$--$$; DROP TABLE t` the `--` is data).
-    `blank_quoted`: quoted text is blanked too, keeping its quotes."""
+    `blank_quoted`: quoted text is blanked too, keeping its quotes, except a
+    string the database runs as SQL (_EXECUTED_STRING), whose body is read as
+    statements in turn."""
     out: list[str] = []
     index, quote, executable = 0, "", False
     while index < len(sql):
@@ -368,13 +414,20 @@ def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: b
                 out.append(" ")
                 index += 1
                 continue
+        elif char == "'" and blank_quoted and depth < _MAX_EXECUTED_DEPTH and _executes_next_string(out):
+            body, index = _quoted_body(sql, index, backslash_escapes)
+            out.append(f" {_without_comments(body, backslash_escapes, True, depth + 1)} ")
+            continue
         elif char in "'\"`[":
             quote = "]" if char == "[" else char  # `[name]` quotes an identifier (SQLite, SQL Server)
         elif char == "$" and not backslash_escapes and (tag := _DOLLAR_TAG.match(sql, index)):
             delimiter = tag.group(0)
             close = sql.find(delimiter, tag.end())
             end = len(sql) if close < 0 else close + len(delimiter)  # unterminated: quoted to the end
-            if blank_quoted:
+            if blank_quoted and depth < _MAX_EXECUTED_DEPTH and _executes_next_string(out):
+                body = sql[tag.end():len(sql) if close < 0 else close]
+                out.append(f" {_without_comments(body, backslash_escapes, True, depth + 1)} ")
+            elif blank_quoted:
                 closing = "" if close < 0 else delimiter
                 out.append(delimiter + " " * (end - tag.end() - len(closing)) + closing)
             else:

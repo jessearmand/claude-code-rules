@@ -350,6 +350,14 @@ LANDING_CASES = [
     ("cp -rL cyclic-source/. .", "ask", "agent-config-dir"),
     ("cp -rLP linked-source/. .", None, None),
     ("rsync -rL --no-copy-links linked-source/ .", None, None),
+    # rsync's other link-following options (PR review).
+    ("rsync -rk linked-source/ .", "deny", "claude-settings"),
+    ("rsync -r --copy-dirlinks linked-source/ .", "deny", "claude-settings"),
+    ("rsync -r --copy-unsafe-links linked-source/ .", "deny", "claude-settings"),
+    ("rsync -rL --no-copy-links -k linked-source/ .", "deny", "claude-settings"),
+    ("rsync -rk --no-copy-dirlinks linked-source/ .", None, None),
+    ("rsync -rk --no-k linked-source/ .", None, None),
+    ("rsync -rk linked-source/ backup/", None, None),
     ("rsync -aR template/./.claude .", "deny", "claude-settings"),
     ("rsync -aR template/./.claude/ .", "deny", "claude-settings"),  # -R keeps the name despite the slash
     ("cd template && cp -r --parents .claude ../vendor/..", "deny", "claude-settings"),

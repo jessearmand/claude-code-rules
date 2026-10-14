@@ -137,28 +137,52 @@ def _copy_like(args: tuple[str, ...], with_arg: frozenset[str], name: str = "cp"
 _RSYNC_SHORT_WITH_VALUE = frozenset("BefMT@")
 
 
+# rsync options that copy what a symlink points to instead of the link, each with
+# its own `--no-` form: -L/--copy-links (every link), -k/--copy-dirlinks (links to
+# directories), --copy-unsafe-links (links leaving the tree) (PR review).
+_RSYNC_FOLLOW_LONG = {"--copy-links": "L", "--copy-dirlinks": "k", "--copy-unsafe-links": "unsafe"}
+_RSYNC_FOLLOW_SHORT = frozenset("Lk")
+
+
 def _follows_links(name: str, args: tuple[str, ...]) -> bool:
-    """Preserve dereferencing options, respecting option values and later overrides."""
-    if name not in ("cp", "rsync"):
+    """Whether a recursive copy materializes linked directories, respecting option
+    values and later overrides: cp -L/--dereference (undone by -P, -a, -d, -H and
+    --no-dereference), rsync -L, -k and --copy-unsafe-links (each undone by its `--no-` form)."""
+    if name == "cp":
+        follow = False
+        for arg in _options(args, _COPY_WITH_ARG[name] | {"-t", "--target-directory", "-S", "--suffix"}):
+            if arg.startswith("--"):
+                key = arg.split("=", 1)[0]
+                if key == "--dereference":
+                    follow = True
+                elif key in ("--no-dereference", "--archive"):
+                    follow = False
+            else:
+                for letter in arg[1:]:
+                    if letter == "L":
+                        follow = True
+                    elif letter in "PadH":
+                        follow = False
+        return follow
+    if name != "rsync":
         return False
-    follow = False
-    with_value = _RSYNC_SHORT_WITH_VALUE if name == "rsync" else frozenset()
-    for arg in _options(args, _COPY_WITH_ARG[name] | {"-t", "--target-directory", "-S", "--suffix"}, with_value):
+    enabled: set[str] = set()
+    for arg in _options(args, _COPY_WITH_ARG[name], _RSYNC_SHORT_WITH_VALUE):
         if arg.startswith("--"):
             key = arg.split("=", 1)[0]
-            if key in ("--dereference", "--copy-links"):
-                follow = True
-            elif key in ("--no-dereference", "--no-copy-links") or (name == "cp" and key == "--archive"):
-                follow = False
-        else:
-            for letter in arg[1:]:
-                if letter == "L":
-                    follow = True
-                elif name == "cp" and letter in "PadH":
-                    follow = False
-                if letter in with_value:
-                    break
-    return follow
+            if key in _RSYNC_FOLLOW_LONG:
+                enabled.add(_RSYNC_FOLLOW_LONG[key])
+            elif key.startswith("--no-") and "--" + key[5:] in _RSYNC_FOLLOW_LONG:
+                enabled.discard(_RSYNC_FOLLOW_LONG["--" + key[5:]])
+            elif key.startswith("--no-") and key[5:] in _RSYNC_FOLLOW_SHORT:
+                enabled.discard(key[5:])  # `--no-L`, `--no-k`
+            continue
+        for letter in arg[1:]:
+            if letter in _RSYNC_FOLLOW_SHORT:
+                enabled.add(letter)
+            if letter in _RSYNC_SHORT_WITH_VALUE:
+                break  # the rest of the cluster is that option's value
+    return bool(enabled)
 
 
 def _keeps_parents(name: str, args: tuple[str, ...]) -> bool:
