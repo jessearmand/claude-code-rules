@@ -37,12 +37,12 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 import shell_sources  # noqa: E402
-from danger_rule import LEVEL_ORDER, DangerRule, RuleContext  # noqa: E402
+from danger_rule import LEVEL_ORDER, DangerRule, MatchDetail, RuleContext  # noqa: E402
 from dangerous_git import GIT_RULES  # noqa: E402
 from dangerous_infra import INFRA_RULES  # noqa: E402
 from dangerous_system import SYSTEM_RULES  # noqa: E402
@@ -104,7 +104,12 @@ def find_dangers(command: str, cwd: str, level: str = DEFAULT_LEVEL) -> list[Fin
             except (IndexError, ValueError, AttributeError):
                 detail = None  # a rule bug must not break the hook
             if detail:
-                findings.append(Finding(rule, simple, detail, _decision_for(rule, simple)))
+                matched = simple
+                if isinstance(detail, MatchDetail):
+                    if detail.indirect:
+                        matched = replace(simple, indirect=True, via=(*simple.via, "SQL command file"))
+                    detail = detail.text
+                findings.append(Finding(rule, matched, detail, _decision_for(rule, matched)))
     findings.sort(key=lambda f: (f.decision != "deny", LEVEL_ORDER[f.rule.level]))
     return findings
 

@@ -46,6 +46,7 @@ class Contents:
     absolute_names: bool = False  # tar -P: members keep a leading /
     sources: tuple[str, ...] = ()  # copied paths: a file under its own name, a directory with its tree
     recursive: bool = False  # directories among the sources are copied with what they hold
+    follow_links: bool = False  # cp -L / rsync --copy-links materializes linked directories
     # `src/` copies what src holds, not src itself: rsync, and BSD cp (macOS).
     slash_copies_contents: bool = False
     copies_contents: bool = False  # ditto: always what the source holds
@@ -122,6 +123,7 @@ def _copy_like(args: tuple[str, ...], with_arg: frozenset[str], name: str = "cp"
     contents = Contents(
         sources=tuple(sources),
         recursive=name in ("mv", "ditto") or any(_RECURSIVE_COPY.fullmatch(a) for a in args),
+        follow_links=_follows_links(name, args),
         slash_copies_contents=name == "rsync" or (name == "cp" and sys.platform == "darwin"),
         copies_contents=name == "ditto",
         keep_parents=keep_parents,
@@ -133,6 +135,30 @@ def _copy_like(args: tuple[str, ...], with_arg: frozenset[str], name: str = "cp"
 
 # rsync short options whose value is the rest of the cluster or the next word.
 _RSYNC_SHORT_WITH_VALUE = frozenset("BefMT@")
+
+
+def _follows_links(name: str, args: tuple[str, ...]) -> bool:
+    """Preserve dereferencing options, respecting option values and later overrides."""
+    if name not in ("cp", "rsync"):
+        return False
+    follow = False
+    with_value = _RSYNC_SHORT_WITH_VALUE if name == "rsync" else frozenset()
+    for arg in _options(args, _COPY_WITH_ARG[name] | {"-t", "--target-directory", "-S", "--suffix"}, with_value):
+        if arg.startswith("--"):
+            key = arg.split("=", 1)[0]
+            if key in ("--dereference", "--copy-links"):
+                follow = True
+            elif key in ("--no-dereference", "--no-copy-links") or (name == "cp" and key == "--archive"):
+                follow = False
+        else:
+            for letter in arg[1:]:
+                if letter == "L":
+                    follow = True
+                elif name == "cp" and letter in "PadH":
+                    follow = False
+                if letter in with_value:
+                    break
+    return follow
 
 
 def _keeps_parents(name: str, args: tuple[str, ...]) -> bool:

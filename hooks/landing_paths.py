@@ -150,19 +150,26 @@ def _copied(contents: Contents, cwd: str, descend: Callable[[str], bool]) -> Ite
         for name in names:
             if not holds:
                 yield name
-            yield from _tree(path, "" if holds else name, descend)
+            yield from _tree(path, "" if holds else name, descend, contents.follow_links)
 
 
-def _tree(root: str, prefix: str, descend: Callable[[str], bool]) -> Iterator[str]:
-    stack, seen = [("", root)], 0
+def _tree(root: str, prefix: str, descend: Callable[[str], bool], follow_links: bool = False) -> Iterator[str]:
+    info = os.stat(root)
+    ancestors = frozenset({(info.st_dev, info.st_ino)})
+    stack, seen = [("", root, ancestors)], 0
     while stack:
-        relative, directory = stack.pop()
-        for entry in os.scandir(directory):
-            seen += 1
-            if seen > MAX_ENTRIES:
-                raise _Unknown(root)
-            child = f"{relative}/{entry.name}" if relative else entry.name
-            landed = f"{prefix}/{child}" if prefix else child
-            yield landed
-            if entry.is_dir(follow_symlinks=False) and descend(landed):
-                stack.append((child, entry.path))
+        relative, directory, ancestors = stack.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                seen += 1
+                if seen > MAX_ENTRIES:
+                    raise _Unknown(root)
+                child = f"{relative}/{entry.name}" if relative else entry.name
+                landed = f"{prefix}/{child}" if prefix else child
+                yield landed
+                if entry.is_dir(follow_symlinks=follow_links) and descend(landed):
+                    info = entry.stat(follow_symlinks=follow_links)
+                    identity = (info.st_dev, info.st_ino)
+                    if identity in ancestors:
+                        raise _Unknown(entry.path)
+                    stack.append((child, entry.path, ancestors | {identity}))

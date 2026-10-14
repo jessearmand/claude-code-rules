@@ -27,7 +27,15 @@ class RuleContext:
     cwd: str
 
 
-Matcher = Callable[[SimpleCommand, RuleContext], "str | None"]
+@dataclass(frozen=True)
+class MatchDetail:
+    """A match whose evidence came from a file rather than the typed command."""
+
+    text: str
+    indirect: bool = False
+
+
+Matcher = Callable[[SimpleCommand, RuleContext], "str | MatchDetail | None"]
 
 
 @dataclass(frozen=True)

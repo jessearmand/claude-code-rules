@@ -18,6 +18,7 @@ import db_client_files
 from danger_rule import (
     HIGH,
     DangerRule,
+    MatchDetail,
     RuleContext,
     has,
     long_flag,
@@ -259,8 +260,8 @@ _SQL_DESTRUCTIVE = re.compile(
 )
 _SQL_CLIENTS = {
     "psql": ("-c", "--command"),
-    "mysql": ("-e", "--execute"),
-    "mariadb": ("-e", "--execute"),
+    "mysql": ("-e", "--execute", "--init-command", "--init-command-add"),
+    "mariadb": ("-e", "--execute", "--init-command"),
     "sqlite3": (),
     "duckdb": ("-c",),
     "clickhouse-client": ("-q", "--query"),
@@ -269,11 +270,6 @@ _SQL_CLIENTS = {
 }
 _NOSQL = re.compile(r"\b(?:dropDatabase|\.drop\(\)|deleteMany\(\s*\{\s*\}\s*\)|FLUSHALL|FLUSHDB)\b",
                     re.IGNORECASE)
-
-
-def _input_file(path: str, command: SimpleCommand, ctx: RuleContext) -> str | None:
-    entry = _command_file(path, command, ctx)
-    return entry.text if entry else None
 
 
 def _command_file(path: str, command: SimpleCommand, ctx: RuleContext) -> db_client_files.ClientInput | None:
@@ -287,13 +283,14 @@ _SQLITE_WITH_VALUE = frozenset({"-init", "--init", "-cmd", "--cmd", "-separator"
                                 "-maxsize", "--maxsize", "-mmap", "--mmap", "-pagecache", "-lookaside"})
 
 
-def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
+def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[db_client_files.ClientInput]:
     flags = _SQL_CLIENTS.get(command.name)
     if flags is None:
         if command.name in ("mongosh", "mongo"):
-            return [a for i, a in enumerate(command.args) if i and command.args[i - 1] == "--eval"]
+            return [db_client_files.ClientInput(a, True) for i, a in enumerate(command.args)
+                    if i and command.args[i - 1] == "--eval"]
         if command.name == "redis-cli":
-            return [" ".join(command.args)]
+            return [db_client_files.ClientInput(" ".join(command.args), True)]
         return []
     texts = db_client_files.option_values(command.args, flags,
                                           attached=command.name in db_client_files.GETOPT_CLIENTS)
@@ -305,35 +302,38 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[str]:
         texts += [command.args[i + 1] for i, a in enumerate(command.args[:-1]) if a in ("-cmd", "--cmd")]
         texts += [a for a in operands(command.args, _SQLITE_WITH_VALUE)[1:]]
     texts += [r.body or r.target for r in command.redirects if r.op in ("<<", "<<-", "<<<")]
+    inputs = [db_client_files.ClientInput(text, True) for text in texts] + [f for f in files if f]
     # `sqlite3 db < q.sql`: the file, as written earlier on the line or as on disk.
     for redirect in command.redirects:
         if redirect.op == "<" and not redirect.dynamic:
-            text = _input_file(redirect.target, command, ctx)
-            if text:
-                texts.append(text)
+            entry = _command_file(redirect.target, command, ctx)
+            if entry:
+                # The client sees stdin, not the filename: psql's \ir uses its cwd.
+                inputs.append(db_client_files.ClientInput(entry.text, entry.typed))
     # `printf 'DROP TABLE t;' | sqlite3 db`, `cat <<SQL | psql`: statements piped in.
     feeder = ctx.parsed.previous_stage(command)
     if feeder is not None and not feeder.dynamic_head:
-        texts += _piped_texts(feeder, ctx)
+        inputs += _piped_texts(feeder, ctx)
     # `.read q.sql`, `\i q.sql`, `source q.sql`: files the statements include (PR review).
     # Only a file the client opened itself has a directory for psql's `\ir`; on stdin it is the cwd's.
-    inputs = [db_client_files.ClientInput(text, True) for text in texts] + [f for f in files if f]
     inputs += db_client_files.included(command.name, inputs, command.possible_cwds, ctx.parsed.written_files)
-    return [entry.text for entry in inputs]
+    return inputs
 
 
-def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[str]:
+def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[db_client_files.ClientInput]:
     """What a pipeline stage prints when it is literal: echo/printf text, or
     `cat` of its heredoc, here-string or files."""
     if feeder.name in ("echo", "printf"):
-        return [echoed_text(feeder)]
+        return [db_client_files.ClientInput(echoed_text(feeder), not feeder.indirect)]
     if feeder.name != "cat":
         return []
-    texts = [r.body or r.target for r in feeder.redirects if r.op in ("<<", "<<-", "<<<")]
-    texts += [r for r in (_input_file(r.target, feeder, ctx) for r in feeder.redirects
+    inputs = [db_client_files.ClientInput(r.body or r.target, not feeder.indirect)
+              for r in feeder.redirects if r.op in ("<<", "<<-", "<<<")]
+    inputs += [r for r in (_command_file(r.target, feeder, ctx) for r in feeder.redirects
                           if r.op == "<" and not r.dynamic) if r]
-    texts += [t for t in (_input_file(a, feeder, ctx) for a in operands(feeder.args) if a != "-") if t]
-    return texts
+    inputs += [t for t in (_command_file(a, feeder, ctx) for a in operands(feeder.args) if a != "-") if t]
+    return [db_client_files.ClientInput(entry.text, entry.typed and not feeder.indirect)
+            for entry in inputs]
 
 
 # MySQL `/*! … */` and `/*!80000 … */`, MariaDB `/*M! … */`: comments the server
@@ -406,22 +406,24 @@ def _without_comments(sql: str, backslash_escapes: bool = False, blank_quoted: b
     return "".join(out)
 
 
-def _destructive_sql(command: SimpleCommand, ctx: RuleContext) -> str | None:
-    for text in _sql_texts(command, ctx):
+def _destructive_sql(command: SimpleCommand, ctx: RuleContext) -> MatchDetail | None:
+    # A directly typed destructive statement takes precedence over an indirect file match.
+    for entry in sorted(_sql_texts(command, ctx), key=lambda entry: not entry.typed):
         # `DELETE FROM users -- all rows` still deletes every row: match without comments,
-        # reading backslashes both as MySQL does and as standard SQL does.
+        # reading MySQL strings both with and without NO_BACKSLASH_ESCAPES.
         match = None
-        for backslash_escapes in (False, True):
-            uncommented = _without_comments(text, backslash_escapes)
+        readings = (False, True) if command.name in ("mysql", "mariadb") else (False,)
+        for backslash_escapes in readings:
             # A `WHERE` inside a literal (`DELETE FROM t RETURNING 'WHERE'`) is data:
-            # also match with quoted text blanked, keeping it for the keywords above.
-            unquoted = _without_comments(text, backslash_escapes, blank_quoted=True)
-            match = _SQL_DESTRUCTIVE.search(uncommented) or _SQL_DESTRUCTIVE.search(unquoted) \
-                or _NOSQL.search(uncommented)
+            # Blank quoted contents so data such as SELECT 'DROP TABLE users' is harmless.
+            unquoted = _without_comments(entry.text, backslash_escapes, blank_quoted=True)
+            match = _SQL_DESTRUCTIVE.search(unquoted)
+            if command.name in ("mongo", "mongosh", "redis-cli"):
+                match = match or _NOSQL.search(_without_comments(entry.text, backslash_escapes))
             if match:
                 break
         if match:
-            return f"{command.name}: {match.group(0).strip()}"
+            return MatchDetail(f"{command.name}: {match.group(0).strip()}", indirect=not entry.typed)
     return None
 
 

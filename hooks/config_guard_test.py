@@ -302,6 +302,13 @@ def _make_archives(project: str) -> None:
         with open(os.path.join(project, name, "Makefile"), "w", encoding="utf-8") as handle:
             handle.write(text)
     os.makedirs(os.path.join(project, "evil", ".claude"))
+    source = os.path.join(project, "linked-source")
+    os.makedirs(os.path.join(source, "actual"))
+    open(os.path.join(source, "actual", "settings.json"), "w").close()
+    os.symlink("actual", os.path.join(source, ".claude"))
+    loop = os.path.join(project, "cyclic-source")
+    os.makedirs(loop)
+    os.symlink(".", os.path.join(loop, ".claude"))
 
 
 # Extracting or copying into a directory that holds protected config: the files
@@ -334,6 +341,15 @@ LANDING_CASES = [
     ("unzip -o hook.zip", "deny", "git-hooks"),
     ("tar -xf nested.tar --strip-components=1", "deny", "git-hooks"),
     ("cp -r template/. .", "deny", "claude-settings"),
+    ("cp -rL linked-source/. .", "deny", "claude-settings"),
+    ("cp -r --dereference linked-source/. .", "deny", "claude-settings"),
+    ("rsync -rL linked-source/ .", "deny", "claude-settings"),
+    ("rsync -r --copy-links linked-source/ .", "deny", "claude-settings"),
+    ("cp -rL linked-source/. backup/", None, None),
+    ("rsync -rL linked-source/ backup/", None, None),
+    ("cp -rL cyclic-source/. .", "ask", "agent-config-dir"),
+    ("cp -rLP linked-source/. .", None, None),
+    ("rsync -rL --no-copy-links linked-source/ .", None, None),
     ("rsync -aR template/./.claude .", "deny", "claude-settings"),
     ("rsync -aR template/./.claude/ .", "deny", "claude-settings"),  # -R keeps the name despite the slash
     ("cd template && cp -r --parents .claude ../vendor/..", "deny", "claude-settings"),

@@ -151,6 +151,17 @@ CASES = [
     ("psql -c 'DROP DATABASE prod'", "deny", "sql-destructive"),
     ("psql postgres://db <<'SQL'\nTRUNCATE users;\nSQL", "deny", "sql-destructive"),
     ("mysql -e 'select * from users'", None, None),
+    ("mysql --init-command='DROP DATABASE prod'", "deny", "sql-destructive"),
+    ("mariadb --init-command 'DROP DATABASE prod'", "deny", "sql-destructive"),
+    ("mysql --init-command-add='DROP TABLE users'", "deny", "sql-destructive"),
+    ("mysql --init-command='SELECT 1' --init-command-add 'DROP TABLE users'", "deny", "sql-destructive"),
+    ("mysql --init-command='SELECT 1'", None, None),
+    ("mariadb --init-command 'SELECT 1'", None, None),
+    ("psql -c \"SELECT 'DROP TABLE users'\"", None, None),
+    ("sqlite3 db \"INSERT INTO audit VALUES ('DROP TABLE users')\"", None, None),
+    ("psql -c \"SELECT 'it''s a DROP TABLE users'\"", None, None),
+    ("psql -c 'SELECT $$DROP TABLE users$$'", None, None),
+    ("psql -c \"SELECT 'DROP TABLE harmless'; DROP TABLE users\"", "deny", "sql-destructive"),
     ("redis-cli -h cache FLUSHALL", "deny", "sql-destructive"),
     ("dropdb staging", "deny", "db-drop-tool"),
     # ---- system and security ----
@@ -481,12 +492,24 @@ def main() -> int:
                            ("select.sql", "SELECT 1;\n")):
             with open(os.path.join(project, name), "w", encoding="utf-8") as handle:
                 handle.write(text)
-        for command, expected in (("sqlite3 db '.read drop.sql'", "deny"), ("psql -f sql/main.sql", "deny"),
-                                  ("psql -c '\\i sql/main.sql'", "deny"), ("mysql -e 'source drop.sql'", "deny"),
-                                  ("sqlite3 db '.read select.sql'", None), ("psql -c '\\ir drop.sql'", "deny"),
+        for command, expected in (("sqlite3 db '.read drop.sql'", "ask"), ("psql -f sql/main.sql", "ask"),
+                                  ("psql -c '\\i sql/main.sql'", "ask"), ("mysql -e 'source drop.sql'", "ask"),
+                                  ("sqlite3 db '.read select.sql'", None), ("psql -c '\\ir drop.sql'", "ask"),
                                   ("psql -c '\\ir ../drop.sql'", None), ("psql < sql/main.sql", None)):
             decision = _decision(_run_hook(command, project))
             _check(decision == expected, f"included file: {command} -> {decision}", failures)
+        for command, expected in (
+            ("psql -f drop.sql", "ask"),
+            ("psql < drop.sql", "ask"),
+            ("cat drop.sql | psql", "ask"),
+            ("cat < drop.sql | psql", "ask"),
+            ("psql -c 'DROP TABLE users' -f drop.sql", "deny"),
+            ("psql -f select.sql", None),
+            ("printf 'DROP TABLE users;' > typed.sql; psql -f typed.sql", "deny"),
+            ("printf 'DROP TABLE users;' > typed.sql; cat typed.sql | psql", "deny"),
+        ):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == expected, f"SQL provenance: {command} -> {decision}", failures)
         reason = _run_hook("bash -c 'git push -f'", project)["hookSpecificOutput"]["permissionDecisionReason"]
         _check("reached via: bash -c" in reason, "reason names how the command was reached", failures)
 
