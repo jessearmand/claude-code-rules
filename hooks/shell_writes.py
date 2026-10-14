@@ -357,6 +357,29 @@ _TARGET_ONLY = {
 # Mode/owner is the first operand; the rest are targets.
 _LEADING_SPEC = {"chmod": PERMISSIONS, "chown": PERMISSIONS, "chgrp": PERMISSIONS,
                  "chflags": PERMISSIONS}
+# `chmod -x FILE`, `chmod -rw,g+x FILE`, `chmod -w+s FILE`: a mode that starts
+# with a dash. GNU chmod reads an argument as a mode when the letter after the
+# dash is one of these (no chmod option uses them); BSD chmod, for r s t u w x X g o.
+_CHMOD_DASH_MODE = re.compile(r"-[rwxXstugoa0-7,+=][rwxXstugoa0-7,+=-]*")
+
+
+def chmod_dash_mode(args: tuple[str, ...], anywhere: bool = False) -> str | None:
+    """The mode of `chmod -x FILE`, which reads as an option; None when the
+    mode is an ordinary operand.
+
+    Before the first operand, GNU and BSD chmod both read a dash mode as the
+    mode. After it (`chmod 4755 FILE -s`) GNU still does, while BSD reads a
+    file; `anywhere=True` takes the GNU reading."""
+    for arg in args:
+        if arg == "--":
+            return None
+        if _CHMOD_DASH_MODE.fullmatch(arg):
+            return arg
+        if not anywhere and not arg.startswith("-"):
+            return None
+    return None
+
+
 _COPY_WITH_ARG = {
     "cp": frozenset(),
     "mv": frozenset(),
@@ -386,9 +409,11 @@ def written_paths(command: SimpleCommand, written: dict[str, WrittenFile] | None
         found += [PathWrite(path, action) for path in _operands(args, with_arg)]
     elif name in _LEADING_SPEC:
         operands = _operands(args, frozenset({"--reference", "--from"}))
-        # `chmod --reference=RFILE FILE...`: no mode operand, every operand is a target.
+        # `chmod --reference=RFILE FILE...`, `chmod -x FILE...`: no mode operand,
+        # every operand is a target (under either chmod's reading of a dash mode).
         by_reference = any(a == "--reference" or a.startswith("--reference=") for a in args)
-        found += [PathWrite(path, _LEADING_SPEC[name]) for path in operands[0 if by_reference else 1:]]
+        all_targets = by_reference or (name == "chmod" and chmod_dash_mode(args, anywhere=True) is not None)
+        found += [PathWrite(path, _LEADING_SPEC[name]) for path in operands[0 if all_targets else 1:]]
     elif name in _COPY_WITH_ARG:
         found += _copy_like(args, _COPY_WITH_ARG[name], name)
         if name == "ln":

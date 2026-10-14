@@ -268,7 +268,7 @@ _SQL_CLIENTS = {
     "cockroach": ("-e", "--execute"),
     "sqlcmd": ("-Q", "-q"),
 }
-_NOSQL = re.compile(r"\b(?:dropDatabase|\.drop\(\)|deleteMany\(\s*\{\s*\}\s*\)|FLUSHALL|FLUSHDB)\b",
+_NOSQL = re.compile(r"\b(?:dropDatabase|FLUSHALL|FLUSHDB)\b|\.drop\(\s*\)|\bdeleteMany\(\s*\{\s*\}\s*\)",
                     re.IGNORECASE)
 
 

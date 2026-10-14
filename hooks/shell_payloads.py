@@ -49,6 +49,7 @@ from shell_unwrap import (
 from shell_wrappers import (
     SHELLS,
     SSH_OPTIONS_WITH_ARG,
+    STDIN_PATHS,
     STRING_RUNNERS,
     WrapperSpec,
     shell_invocation,
@@ -216,9 +217,27 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
         text = _echoed_text(feeder)
         if text:
             nested(text, f"{feeder.name} | {command.name}")
-    elif feeder.name == "cat" and len(feeder.args) == 1:
-        # `cat script.sh | bash` runs the file just like `bash script.sh`.
-        _run_file(feeder.args[0], command, ctx, nested)
+    elif feeder.name == "cat":
+        # `cat a.sh b.sh | bash` runs each file just like `bash a.sh`; `cat <<EOF | bash`
+        # (or `cat -u - <<EOF`) passes cat's own stdin on unchanged.
+        passed = [r for r in feeder.redirects if r.op in _STDIN_OPERATORS and (r.fd is None or r.fd == 0)]
+        for operand in _cat_operands(feeder.args) or ["-"]:
+            if operand not in STDIN_PATHS:
+                _run_file(operand, command, ctx, nested)
+            elif passed:
+                _stdin_script(passed[-1], command, ctx, nested)
+
+
+def _cat_operands(args: tuple[str, ...]) -> list[str]:
+    """cat's files; its options (`-u`, `-v`, `--show-all`) take no value."""
+    found: list[str] = []
+    ended = False
+    for arg in args:
+        if ended or arg == "-" or not arg.startswith("-"):
+            found.append(arg)
+        elif arg == "--":
+            ended = True
+    return found
 
 
 # Shells whose interactive startup runs $ENV. bash does so only in POSIX mode;

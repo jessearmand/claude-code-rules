@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import NamedTuple
 
 from danger_rule import (
     CRITICAL,
@@ -31,7 +32,7 @@ from danger_rule import (
 from shell_interpreters import interpreter_kind
 from shell_parse import SimpleCommand, parse
 from shell_wrappers import SHELLS, STDIN_PATHS, shell_invocation
-from shell_writes import WRITE, written_paths
+from shell_writes import WRITE, chmod_dash_mode, written_paths
 
 # --------------------------------------------------------------------------- #
 # Disks and devices
@@ -130,10 +131,67 @@ def _executes_stdin(command: SimpleCommand) -> bool:
     if name in SHELLS:
         shell = shell_invocation(name, args)
         return shell.reads_stdin and not shell.syntax_only
+    if interpreter_kind(name) == "python":
+        python = _python_options(args)
+        if _inspects(command, python.flags):
+            return True
+        if python.command:
+            return False
+        # `python3 -m code` and `python3 -` run stdin; `python3 x.py` runs x.py.
+        rest = operands(python.rest) if python.module else list(python.rest)
+        return not rest or rest[0] in STDIN_PATHS
     if interpreter_kind(name):
         script_args = operands(args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M"}))
         return not script_args or script_args[0] in STDIN_PATHS
     return name in ("eval", "source", ".")
+
+
+def _inspects(command: SimpleCommand, flags: str) -> bool:
+    """`python3 -i` (or PYTHONINSPECT) reads stdin as code once the script or module is done."""
+    inspect = dict(command.environment).get("PYTHONINSPECT", ())
+    return "i" in flags or any(inspect)
+
+
+class _PythonOptions(NamedTuple):
+    flags: str  # short flags before the program (`-i`, `-u`, ...)
+    command: bool  # `-c CODE`
+    module: str | None  # `-m NAME`
+    rest: tuple[str, ...]  # the module's arguments, or the script and its arguments
+
+
+# Python's options that take a value: `-W arg`, `-Warg`, `--check-hash-based-pycs mode`.
+_PYTHON_VALUE_LETTERS = "WX"
+_PYTHON_VALUE_LONG = frozenset({"--check-hash-based-pycs"})
+
+
+def _python_options(args: tuple[str, ...]) -> _PythonOptions:
+    """Python's command line, read the way Python reads it: options end at
+    `-c`, `-m NAME` (also `-mNAME`, `-Im NAME`), `-`, `--` or the script."""
+    index, flags = 0, ""
+    while index < len(args):
+        arg = args[index]
+        if arg == "-" or not arg.startswith("-"):
+            return _PythonOptions(flags, False, None, args[index:])
+        index += 1
+        if arg == "--":
+            return _PythonOptions(flags, False, None, args[index:])
+        if arg.startswith("--"):
+            index += arg in _PYTHON_VALUE_LONG
+            continue
+        for offset, letter in enumerate(arg[1:], start=2):
+            if letter == "c":
+                return _PythonOptions(flags, True, None, ())
+            if letter == "m":
+                if arg[offset:]:
+                    return _PythonOptions(flags, False, arg[offset:], args[index:])
+                if index < len(args):
+                    return _PythonOptions(flags, False, args[index], args[index + 1:])
+                return _PythonOptions(flags, False, None, ())
+            if letter in _PYTHON_VALUE_LETTERS:
+                index += not arg[offset:]
+                break
+            flags += letter
+    return _PythonOptions(flags, False, None, ())
 
 
 def _pipeline_sources(command: SimpleCommand, ctx: RuleContext) -> list[SimpleCommand]:
@@ -170,6 +228,11 @@ def _executed_files(command: SimpleCommand, ctx: RuleContext) -> list[str]:
         shell = shell_invocation(command.name, command.args)
         if shell.script and not shell.syntax_only:
             files.append(shell.script)
+    elif interpreter_kind(command.name) == "python":
+        python = _python_options(command.args)
+        # `python3 -m pdb x.py` runs x.py as well as the module.
+        script = operands(python.rest)[:1] if python.module else list(python.rest[:1])
+        files += [s for s in script if s not in STDIN_PATHS]
     elif interpreter_kind(command.name):
         script = operands(command.args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M", "-c", "-e"}))[:1]
         files += [s for s in script if s not in STDIN_PATHS]
@@ -185,6 +248,23 @@ def _executed_files(command: SimpleCommand, ctx: RuleContext) -> list[str]:
     return files
 
 
+def _module_roots(command: SimpleCommand) -> list[str]:
+    """`python3 -m a.b` imports `a` from the directory it runs in first (sys.path[0]).
+    Any file there named `a.<suffix>` (.py, .pyc, .so, ...) or under `a/` may load."""
+    if interpreter_kind(command.name) != "python":
+        return []
+    module = _python_options(command.args).module
+    top = module.split(".")[0] if module else ""
+    return [root for d in command.possible_cwds if top and (root := _absolute(top, d))]
+
+
+def _loads_from(path: str, roots: list[str]) -> bool:
+    return any(path.startswith(root + "/") or (
+        os.path.dirname(path) == os.path.dirname(root)
+        and os.path.basename(path).split(".")[0] == os.path.basename(root)
+        and os.path.basename(path) != os.path.basename(root)) for root in roots)
+
+
 def _absolute(path: str, directory: str | None) -> str | None:
     expanded = os.path.expanduser(path)
     if os.path.isabs(expanded):
@@ -196,7 +276,8 @@ def _run_downloaded(command: SimpleCommand, ctx: RuleContext) -> str | None:
     """`curl -o x.sh URL && bash x.sh`: running a file this same line downloaded."""
     executed = {a for f in _executed_files(command, ctx) for d in command.possible_cwds
                 if (a := _absolute(f, d))}
-    if not executed:
+    roots = _module_roots(command)
+    if not executed and not roots:
         return None
     for earlier in ctx.parsed.commands:
         if earlier is command:
@@ -205,7 +286,8 @@ def _run_downloaded(command: SimpleCommand, ctx: RuleContext) -> str | None:
             continue
         for write in written_paths(earlier):
             for directory in earlier.possible_cwds:
-                if _absolute(write.path, directory) in executed:
+                landed = _absolute(write.path, directory)
+                if landed in executed or (landed and _loads_from(landed, roots)):
                     return f"{earlier.name} downloads {write.path}, then {command.name} runs it"
     return None
 
@@ -253,8 +335,35 @@ def _decodes(source: SimpleCommand) -> bool:
 # Permissions
 # --------------------------------------------------------------------------- #
 
-_WORLD_WRITABLE = re.compile(r"^(?:[0-7]?[0-7][0-7][2367]|(?:[ugoa]*[ao][ugoa]*|)\+[rwxXst]*w)")
-_SETUID = re.compile(r"^(?:[4267][0-7]{3}|[ugoa]*\+[rwxX]*s)")
+_NUMERIC_WORLD_WRITABLE = re.compile(r"0*[0-7]?[0-7][0-7][2367]")
+_NUMERIC_SETUID = re.compile(r"0*[4267][0-7]{3}")
+# One clause of a symbolic mode: who, then one or more operations
+# (`u+x`, `-x`, `go-w+s`, `a=rwx`, `o=u`).
+_CLAUSE = re.compile(r"([ugoa]*)((?:[-+=][rwxXstugo]*)+)")
+_OPERATION = re.compile(r"([-+=])([rwxXstugo]*)")
+
+
+def _grants(mode: str, permission: str, world_only: bool) -> bool:
+    """Some clause of a symbolic mode adds `permission`. Copying another
+    class's bits (`o=u`) may add `w`. With `world_only`, only a clause for
+    others counts: `o`, `a`, or no who (umask may not mask it)."""
+    for clause in mode.split(","):
+        match = _CLAUSE.fullmatch(clause)
+        if not match or (world_only and match.group(1) and not set(match.group(1)) & {"o", "a"}):
+            continue
+        for op, perms in _OPERATION.findall(match.group(2)):
+            copies = permission == "w" and bool(set(perms) & {"u", "g", "o"})
+            if op != "-" and (permission in perms or copies):
+                return True
+    return False
+
+
+def _world_writable(mode: str) -> bool:
+    return bool(_NUMERIC_WORLD_WRITABLE.fullmatch(mode)) or _grants(mode, "w", world_only=True)
+
+
+def _setuid(mode: str) -> bool:
+    return bool(_NUMERIC_SETUID.fullmatch(mode)) or _grants(mode, "s", world_only=False)
 
 
 def _chmod_dangerous(command: SimpleCommand, ctx: RuleContext) -> str | None:
@@ -264,6 +373,11 @@ def _chmod_dangerous(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if any(a == "--reference" or a.startswith("--reference=") for a in command.args):
         # `chmod --reference=RFILE FILE...`: the mode comes from RFILE; every operand is a target.
         mode, targets = "", words
+    elif dash_mode := chmod_dash_mode(command.args):
+        # `chmod -R -w DIR`: the mode reads as an option; every operand is a target.
+        # A dash mode after the first operand is a file to BSD chmod; the first
+        # operand stays the mode (below), the stricter of the two readings.
+        mode, targets = dash_mode, words
     elif len(words) < 2:
         return None
     else:
@@ -271,9 +385,9 @@ def _chmod_dangerous(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if not targets:
         return None
     recursive = short_flag(command.args, "R") or long_flag(command.args, "--recursive")
-    if mode and _SETUID.match(mode):
+    if mode and _setuid(mode):
         return f"chmod {mode} (setuid/setgid)"
-    if mode and _WORLD_WRITABLE.match(mode) and (recursive or any(is_broad_target(t, ctx.cwd) for t in targets)):
+    if mode and _world_writable(mode) and (recursive or any(is_broad_target(t, ctx.cwd) for t in targets)):
         return f"chmod {'-R ' if recursive else ''}{mode}"
     if recursive and any(is_broad_target(t, ctx.cwd) for t in targets):
         return f"chmod -R on {targets[0]}"
@@ -284,7 +398,7 @@ def _chmod_world_single(command: SimpleCommand, ctx: RuleContext) -> str | None:
     if command.name != "chmod":
         return None
     words = operands(command.args)
-    return f"chmod {words[0]}" if len(words) >= 2 and _WORLD_WRITABLE.match(words[0]) else None
+    return f"chmod {words[0]}" if len(words) >= 2 and _world_writable(words[0]) else None
 
 
 def _chown_broad(command: SimpleCommand, ctx: RuleContext) -> str | None:

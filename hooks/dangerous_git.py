@@ -280,8 +280,10 @@ def _forces(args: tuple[str, ...]) -> bool:
             continue
         if key.startswith("--") and len(key) >= 6 and "--force".startswith(key):
             return True
-        if arg.startswith("-") and not arg.startswith("--") and "f" in arg[1:]:
-            return True
+        if arg.startswith("-") and not arg.startswith("--"):
+            # In `-oci.skip-fast` the rest of the word is the push option's value.
+            if "f" in arg[1:].split("o", 1)[0]:
+                return True
     return False
 
 
