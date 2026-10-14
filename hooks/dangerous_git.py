@@ -17,10 +17,12 @@ import os
 import re
 from dataclasses import dataclass
 
+from command_stdin import known_stdin
 from danger_rule import (
     HIGH,
     STRICT,
     DangerRule,
+    MatchDetail,
     RuleContext,
     has,
     long_flag,
@@ -185,6 +187,8 @@ def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
     # In `-bfeature` the rest of the cluster is the branch name, not flags.
     if short_flag(args, "f", with_value="UbB") or long_flag(args, "--force"):
         return "git checkout --force"  # discards local changes, new branch or not
+    if short_flag(args, "B", with_value="Ub"):
+        return "git checkout -B (force branch reset)"
     if short_flag(args, "bB", with_value="U") or long_flag(args, "--orphan"):
         return None  # creates a branch: nothing is discarded
     if long_flag(args, "--pathspec-from-file"):
@@ -205,6 +209,8 @@ def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
 
 @_git("switch")
 def _switch_discard(git: Git, ctx: RuleContext) -> str | None:
+    if short_flag(git.args, "C", with_value="c") or long_flag(git.args, "--force-create"):
+        return "git switch --force-create (branch reset)"
     if long_flag(git.args, "--discard-changes"):
         return "git switch --discard-changes"
     if short_flag(git.args, "f", with_value="cC") or long_flag(git.args, "--force"):
@@ -324,15 +330,25 @@ def _push_delete(git: Git, ctx: RuleContext) -> str | None:
 @_git("branch")
 def _branch_force_delete(git: Git, ctx: RuleContext) -> str | None:
     args = git.args
+    if has(args, "--list", "--show-current", "--help"):
+        return None
     if short_flag(args, "D"):
         return "git branch -D"
     deleting = short_flag(args, "d") or long_flag(args, "--delete")
     forcing = short_flag(args, "f") or long_flag(args, "--force")
-    return "git branch --delete --force" if deleting and forcing else None
+    if forcing:
+        return "git branch --delete --force" if deleting else "git branch --force (reset or overwrite)"
+    if short_flag(args, "MC"):
+        return "git branch forced move/copy (overwrite)"
+    return None
 
 
 @_git("tag")
 def _tag_delete(git: Git, ctx: RuleContext) -> str | None:
+    if short_flag(git.args, "lv", with_value="mFu") or has(git.args, "--list", "--verify", "--help"):
+        return None
+    if short_flag(git.args, "f", with_value="mFu") or long_flag(git.args, "--force"):
+        return "git tag --force (replace release marker)"
     return "git tag -d" if short_flag(git.args, "d") or long_flag(git.args, "--delete") else None
 
 
@@ -350,9 +366,22 @@ def _filter_history(git: Git, ctx: RuleContext) -> str | None:
     return f"git {git.subcommand}"
 
 
-@_git("update-ref")
-def _update_ref_delete(git: Git, ctx: RuleContext) -> str | None:
-    return "git update-ref -d" if short_flag(git.args, "d") or long_flag(git.args, "--delete") else None
+def _update_ref_delete(command: SimpleCommand, ctx: RuleContext) -> str | MatchDetail | None:
+    git = git_invocation(command)
+    if git is None or git.subcommand != "update-ref":
+        return None
+    if short_flag(git.args, "d") or long_flag(git.args, "--delete"):
+        return "git update-ref -d"
+    if "--stdin" not in git.args:
+        return None
+    source = known_stdin(command, ctx)
+    if source is None:
+        return MatchDetail("git update-ref --stdin (unresolved transaction)", indirect=True,
+                           origin="unresolved git update-ref stdin")
+    if re.search(r"(?:^|[\n\r\x00])\s*(?:delete|symref-delete|update|symref-update)\s", source.text):
+        return MatchDetail("git update-ref --stdin (delete or replace refs)", indirect=not source.typed,
+                           origin="git update-ref input file")
+    return None
 
 
 @_git(("rebase", "merge", "cherry-pick", "revert", "am"))
@@ -479,9 +508,9 @@ _HISTORY_HINT = (
 GIT_RULES: tuple[DangerRule, ...] = (
     DangerRule("git-reset-hard", HIGH, "git reset --hard/--merge discards uncommitted changes",
                _DISCARD_HINT, _reset_hard),
-    DangerRule("git-checkout-discard", HIGH, "git checkout of paths or --force discards uncommitted changes",
+    DangerRule("git-checkout-discard", HIGH, "git checkout can discard changes or force-reset a branch",
                _DISCARD_HINT, _checkout_discard),
-    DangerRule("git-switch-discard", HIGH, "git switch --force/--discard-changes discards local changes",
+    DangerRule("git-switch-discard", HIGH, "git switch can discard changes or force-reset a branch",
                _DISCARD_HINT, _switch_discard),
     DangerRule("git-restore-worktree", HIGH, "git restore of the working tree discards uncommitted changes",
                _DISCARD_HINT, _restore_worktree),
@@ -497,9 +526,9 @@ GIT_RULES: tuple[DangerRule, ...] = (
                _HISTORY_HINT, _push_force),
     DangerRule("git-push-delete", HIGH, "git push --delete removes a remote branch or tag",
                _HISTORY_HINT, _push_delete),
-    DangerRule("git-branch-force-delete", HIGH, "git branch -D deletes unmerged commits",
+    DangerRule("git-branch-force-delete", HIGH, "git branch force operations delete or overwrite history",
                _HISTORY_HINT, _branch_force_delete),
-    DangerRule("git-tag-delete", HIGH, "deleting tags loses release markers", _HISTORY_HINT, _tag_delete),
+    DangerRule("git-tag-delete", HIGH, "deleting or replacing tags loses release markers", _HISTORY_HINT, _tag_delete),
     DangerRule("git-reflog-delete", HIGH, "deleting reflog entries removes the last way to recover commits",
                _HISTORY_HINT, _reflog_delete),
     DangerRule("git-filter-history", HIGH, "history rewriting tools rewrite every commit", _HISTORY_HINT,

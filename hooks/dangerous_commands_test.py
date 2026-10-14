@@ -19,6 +19,34 @@ _CWD = os.path.dirname(_HOOKS_DIR)
 
 # (command, expected decision or None, expected rule id or None)
 CASES = [
+    ("aws s3 sync empty/ s3://prod --delete", "deny", "aws-delete"),
+    ("aws s3 sync empty/ s3://prod --delete --dryrun", None, None),
+    ("aws s3 sync empty/ s3://prod", None, None),
+    ("git checkout -B victim HEAD~5", "deny", "git-checkout-discard"),
+    ("git checkout -Bvictim HEAD~5", "deny", "git-checkout-discard"),
+    ("git checkout -b new", None, None),
+    ("git switch -C victim HEAD~5", "deny", "git-switch-discard"),
+    ("git switch --force-create victim HEAD~5", "deny", "git-switch-discard"),
+    ("git switch -c new", None, None),
+    ("git branch -f victim HEAD~5", "deny", "git-branch-force-delete"),
+    ("git branch -fl victim HEAD~5", "deny", "git-branch-force-delete"),
+    ("git branch -M old victim", "deny", "git-branch-force-delete"),
+    ("git branch -C old victim", "deny", "git-branch-force-delete"),
+    ("git branch new", None, None),
+    ("git branch -f --list", None, None),
+    ("git tag -f v1 HEAD~5", "deny", "git-tag-delete"),
+    ("git tag --force v1 HEAD~5", "deny", "git-tag-delete"),
+    ("git tag v2", None, None),
+    ("git tag -mforce v2", None, None),
+    ("git tag -f --list", None, None),
+    ("printf 'delete refs/heads/victim\\n' | git update-ref --stdin", "deny", "git-update-ref-delete"),
+    ("git update-ref --stdin <<'EOF'\ndelete refs/heads/victim\nEOF", "deny", "git-update-ref-delete"),
+    ("printf 'symref-delete refs/heads/victim\\n' | git update-ref --stdin", "deny", "git-update-ref-delete"),
+    ("printf 'delete refs/heads/victim\\0\\0' | git update-ref -z --stdin", "deny", "git-update-ref-delete"),
+    ("printf 'verify refs/heads/victim\\n' | git update-ref --stdin", None, None),
+    ("git update-ref --stdin", "ask", "git-update-ref-delete"),
+    ("generator | git update-ref --stdin", "ask", "git-update-ref-delete"),
+    ("echo $TRANSACTION | git update-ref --stdin", "ask", "git-update-ref-delete"),
     # ---- git: discarding work ----
     ("git reset --hard HEAD~3", "deny", "git-reset-hard"),
     ("git reset --merge", "deny", "git-reset-hard"),
@@ -561,6 +589,21 @@ def main() -> int:
             decision = _decision(_run_hook(command, aliased, git_env))
             _check(decision is None, f"harmless or missing alias: {command} -> {decision}", failures)
         # Included files are read from disk, relative to the including file for psql's \\ir (PR review).
+        for name, text in (("delete.refs", "delete refs/heads/victim\n"),
+                           ("verify.refs", "verify refs/heads/victim\n")):
+            with open(os.path.join(project, name), "w", encoding="utf-8") as handle:
+                handle.write(text)
+        for command, expected in (
+            ("git update-ref --stdin < delete.refs", "ask"),
+            ("cat delete.refs | git update-ref --stdin", "ask"),
+            ("cat delete.refs < verify.refs | git update-ref --stdin", "ask"),
+            ("cat verify.refs < delete.refs | git update-ref --stdin", None),
+            ("cat - < delete.refs | git update-ref --stdin", "ask"),
+            ("git update-ref --stdin < verify.refs", None),
+            ("printf 'delete refs/heads/victim\\n' > typed.refs; git update-ref --stdin < typed.refs", "deny"),
+        ):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == expected, f"ref transaction provenance: {command} -> {decision}", failures)
         os.makedirs(os.path.join(project, "sql"))
         for name, text in (("drop.sql", "DROP TABLE users;\n"), ("sql/main.sql", "\\ir ../drop.sql\n"),
                            ("select.sql", "SELECT 1;\n")):

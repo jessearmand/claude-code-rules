@@ -40,7 +40,7 @@ _SECRET_VALUE = re.compile(
     # The key bare (`TOKEN=`) or quoted on both sides (`"api_key":`, `'github_token':`).
     rf"(?i)(?P<key>(?:[\"'][\w-]*?{_SECRET_KEY}[\"']|{_SECRET_KEY})"
     # An auth scheme is kept, quoted or not: `"authorization":"Basic <redacted>"`.
-    rf"(?:[\s:=]+[\"']?{_AUTH_SCHEME}\b)?[\s:=]+)(?![\"']?(?:{_REFERENCE}|{_AUTH_SCHEME}\b|{REDACTED}))"
+    rf"(?:[\s:=]+[\"']?{_AUTH_SCHEME}\b)?[\s:=]+)(?![\s:=]|[\"']?(?:{_REFERENCE}|{_AUTH_SCHEME}\b|{REDACTED}))"
     # A quoted value is redacted through its closing quote (spaces included).
     # Backslash escapes inside it (`"a\\"b"`) do not end it; nor does `\ ` in a bare value.
     r"(?:\"(?P<double>(?:[^\"\\]|\\.)*)\"|'(?P<single>(?:[^'\\]|\\.)*)'|[\"']?(?:\\.|[^\s\"'\\])+)"
@@ -55,6 +55,14 @@ _SECRET_VALUE = re.compile(
 # words nested inside it are redacted first, so their result is not swallowed.
 _SECRET_IN_QUOTED_WORD = re.compile(
     rf"(?is)(?P<key>{_SECRET_KEY}\s*[:=][\s:=]*(?:{_AUTH_SCHEME}\s+)?)(?![\s:=\"']|{_REFERENCE}|{REDACTED}|{_AUTH_SCHEME}\b).+"
+)
+
+# Prose labels have no shell-word boundary: a passphrase may contain spaces.
+# Consume the rest of that line rather than leaking all but its first word.
+# Shell assignments (TOKEN=value cmd) retain the existing token-aware handling.
+_PROSE_SECRET_VALUE = re.compile(
+    rf"(?im)(?P<key>(?<![\w=.-])[\w-]*?{_SECRET_KEY}(?:[ \t]*:[ \t]*|[ \t]+=[ \t]*))"
+    rf"(?![ \t\"']|{_REFERENCE}|{REDACTED}|{_AUTH_SCHEME}\b)[^\r\n]+"
 )
 
 # Incoming-webhook URLs: the path is the credential (PR review).
@@ -141,4 +149,5 @@ def redact(text: str) -> str:
     text = _WEBHOOK_URL.sub(rf"\1{REDACTED}", text)
     text = _BASIC_AUTH_OPTION.sub(_basic_auth_redacted, text)
     text = _redact_quoted_words(text)
+    text = _PROSE_SECRET_VALUE.sub(lambda m: m.group("key") + REDACTED, text)
     return _SECRET_VALUE.sub(_secret_value_redacted, text)

@@ -42,6 +42,11 @@ NON_CANDIDATES = [
 ]
 
 REDACTIONS = [
+    ("password: correct horse battery staple", "password: <redacted>"),
+    ("password = correct horse battery staple", "password = <redacted>"),
+    ("passphrase: several secret words\nnext line", "passphrase: <redacted>\nnext line"),
+    ("PASSWORD_FILE=/path", "PASSWORD_FILE=/path"),
+    ("password: $PASSWORD", "password: $PASSWORD"),
     ("curl -H 'Authorization: Bearer abc.def-123' x", "curl -H 'Authorization: Bearer <redacted>' x"),
     ("export API_KEY=supersecretvalue123", "export API_KEY=<redacted>"),
     # Private key blocks, whole or cut off by the source budget (PR review).

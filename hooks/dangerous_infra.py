@@ -85,6 +85,8 @@ def _aws(command: SimpleCommand, ctx: RuleContext) -> str | None:
         return None
     if service == "s3" and action == "rm":
         return None if has(command.args, "--dryrun") else "aws s3 rm"
+    if service == "s3" and action == "sync" and has(command.args, "--delete"):
+        return None if has(command.args, "--dryrun") else "aws s3 sync --delete"
     if (service, action) in _AWS_DENY:
         return f"aws {service} {action}"
     return None

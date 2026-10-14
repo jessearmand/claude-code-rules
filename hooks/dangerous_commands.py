@@ -107,7 +107,7 @@ def find_dangers(command: str, cwd: str, level: str = DEFAULT_LEVEL) -> list[Fin
                 matched = simple
                 if isinstance(detail, MatchDetail):
                     if detail.indirect:
-                        matched = replace(simple, indirect=True, via=(*simple.via, "SQL command file"))
+                        matched = replace(simple, indirect=True, via=(*simple.via, detail.origin))
                     detail = detail.text
                 findings.append(Finding(rule, matched, detail, _decision_for(rule, matched)))
     findings.sort(key=lambda f: (f.decision != "deny", LEVEL_ORDER[f.rule.level]))

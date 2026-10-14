@@ -33,6 +33,7 @@ class MatchDetail:
 
     text: str
     indirect: bool = False
+    origin: str = "SQL command file"
 
 
 Matcher = Callable[[SimpleCommand, RuleContext], "str | MatchDetail | None"]
