@@ -59,11 +59,25 @@ _SECRET_IN_QUOTED_WORD = re.compile(
 
 # Prose labels have no shell-word boundary: a passphrase may contain spaces.
 # Consume the rest of that line rather than leaking all but its first word.
-# Shell assignments (TOKEN=value cmd) retain the existing token-aware handling.
+# Colon and spaced-`=` are always prose. No-space `password=correct horse …`
+# is prose too. Env-style assignments (`TOKEN=value cmd`) and option flags
+# (`--password=value host`) stay token-scoped so a following command remains visible.
 _PROSE_SECRET_VALUE = re.compile(
     rf"(?im)(?P<key>(?<![\w=.-])[\w-]*?{_SECRET_KEY}(?:[ \t]*:[ \t]*|[ \t]+=[ \t]*))"
     rf"(?![ \t\"']|{_REFERENCE}|{REDACTED}|{_AUTH_SCHEME}\b)[^\r\n]+"
 )
+# The name and the `=` only. Whether the rest of the line is the value is
+# decided per match, so a shell assignment does not swallow a later label.
+_PROSE_NO_SPACE = re.compile(
+    rf"(?im)(?P<key>(?<![\w=.-])(?P<name>[\w-]*?{_SECRET_KEY})=[ \t]*)"
+    rf"(?![\"']|{_REFERENCE}|{REDACTED}|{_AUTH_SCHEME}\b)(?=\S)"
+)
+_ENV_ASSIGNMENT = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
+_ASSIGN_INTRODUCER = re.compile(
+    r"\b(?:export|declare|local|readonly|typeset|env|command|sudo|nice|nohup|builtin|time)\s+$",
+    re.IGNORECASE,
+)
+_PRIOR_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*=(?:\\.|[^\s\"'\\])+)\s+$")
 
 # Incoming-webhook URLs: the path is the credential (PR review).
 _WEBHOOK_URL = re.compile(
@@ -131,6 +145,81 @@ def _basic_auth_redacted(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(4)}{REDACTED}"
 
 
+def _leading_plain_count(value: str) -> int:
+    """How many leading words are alphabetic, ignoring one punctuation mark each."""
+    count = 0
+    for word in value.split():
+        cleaned = word.strip(".,;:!?")
+        if not cleaned or not re.fullmatch(r"[A-Za-z]+", cleaned):
+            break
+        count += 1
+    return count
+
+
+def _shell_assignment_site(text: str, name_start: int, depth: int = 0) -> bool:
+    """True where bash would accept `NAME=value` as a prefix assignment."""
+    if depth > 6:
+        return False
+    prefix = text[:name_start]
+    if re.search(r"(?:^|[\n;&|({]|&&|\|\|)\s*$", prefix):
+        return True
+    introducer = _ASSIGN_INTRODUCER.search(prefix)
+    if introducer and _shell_assignment_site(text, introducer.start(), depth + 1):
+        return True
+    prior = _PRIOR_ASSIGNMENT.search(prefix)
+    return bool(prior and _shell_assignment_site(text, prior.start(1), depth + 1))
+
+
+def _preceded_by_option(text: str, name_start: int) -> bool:
+    prefix = text[:name_start].rstrip(" \t")
+    token = prefix.split()[-1] if prefix else ""
+    return token.startswith("-") and token != "-"
+
+
+def _keep_shell_token(text: str, name_start: int, name: str, value: str) -> bool:
+    """Leave one shell word for `_SECRET_VALUE` instead of consuming the line.
+
+    `TOKEN=value cmd` and `--password=value host` are one token plus a command.
+    `password=correct horse battery staple` is a passphrase, including when it
+    sits where an assignment could: three or more plain words are the value.
+    A single trailing word (`password=secret cmd`) stays the command.
+    """
+    if name.startswith("-"):
+        return True
+    plain = _leading_plain_count(value)
+    # Three plain words are a passphrase even when the line continues (`… staple for user42`).
+    passphrase = plain >= 3
+    assignment = _shell_assignment_site(text, name_start)
+    if _ENV_ASSIGNMENT.fullmatch(name):
+        # An all-caps name in a sentence can still introduce a passphrase.
+        # `TOKEN=value cmd` at an assignment site stays one token.
+        return not (passphrase and not assignment)
+    if passphrase:
+        return False
+    if assignment or _preceded_by_option(text, name_start):
+        return True
+    return len(value.split()) < 2
+
+
+def _redact_nospace_prose(text: str) -> str:
+    pieces: list[str] = []
+    last = 0
+    for match in _PROSE_NO_SPACE.finditer(text):
+        if match.start() < last:
+            continue
+        line_end = text.find("\n", match.end())
+        if line_end == -1:
+            line_end = len(text)
+        value = text[match.end():line_end]
+        if _keep_shell_token(text, match.start("name"), match.group("name"), value):
+            continue
+        pieces.append(text[last:match.start()])
+        pieces.append(match.group("key") + REDACTED)
+        last = line_end
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
 def _secret_value_redacted(match: re.Match[str]) -> str:
     key = match.group("key")
     if not key:
@@ -150,4 +239,5 @@ def redact(text: str) -> str:
     text = _BASIC_AUTH_OPTION.sub(_basic_auth_redacted, text)
     text = _redact_quoted_words(text)
     text = _PROSE_SECRET_VALUE.sub(lambda m: m.group("key") + REDACTED, text)
+    text = _redact_nospace_prose(text)
     return _SECRET_VALUE.sub(_secret_value_redacted, text)

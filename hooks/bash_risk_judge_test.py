@@ -45,6 +45,15 @@ REDACTIONS = [
     ("password: correct horse battery staple", "password: <redacted>"),
     ("password = correct horse battery staple", "password = <redacted>"),
     ("passphrase: several secret words\nnext line", "passphrase: <redacted>\nnext line"),
+    # No-space `=` is the same prose when the value is a multi-word passphrase.
+    # An env-style assignment keeps the command after its single token, and a
+    # single trailing word stays that command. PASSWORD_FILE is where, not what.
+    ("password=correct horse battery staple", "password=<redacted>"),
+    ("password=correct horse battery staple for user42", "password=<redacted>"),
+    ("Here is my password=correct horse battery staple", "Here is my password=<redacted>"),
+    ("Here is my password=correct horse battery staple\nnext line",
+     "Here is my password=<redacted>\nnext line"),
+    ("password=secret cmd", "password=<redacted> cmd"),
     ("PASSWORD_FILE=/path", "PASSWORD_FILE=/path"),
     ("password: $PASSWORD", "password: $PASSWORD"),
     ("curl -H 'Authorization: Bearer abc.def-123' x", "curl -H 'Authorization: Bearer <redacted>' x"),
