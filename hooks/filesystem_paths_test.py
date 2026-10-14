@@ -71,7 +71,9 @@ class CaseSemanticsTests(unittest.TestCase):
             )
 
     def test_mixed_volumes_and_symlink_targets(self) -> None:
-        with tempfile.TemporaryDirectory() as cwd:
+        with tempfile.TemporaryDirectory() as temp:
+            # The volume stub compares real paths; macOS's temp dir is behind /var -> /private/var.
+            cwd = os.path.realpath(temp)
             sensitive, insensitive = (
                 os.path.join(cwd, name) for name in ("sensitive", "insensitive")
             )
