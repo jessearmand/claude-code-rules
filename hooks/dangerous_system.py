@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import re
-from typing import NamedTuple
 
 from danger_rule import (
     CRITICAL,
@@ -29,6 +28,7 @@ from danger_rule import (
     positional_words,
     short_flag,
 )
+from python_argv import PythonProgram, python_program
 from shell_interpreters import interpreter_kind
 from shell_parse import SimpleCommand, parse
 from shell_wrappers import SHELLS, STDIN_PATHS, shell_invocation
@@ -132,66 +132,25 @@ def _executes_stdin(command: SimpleCommand) -> bool:
         shell = shell_invocation(name, args)
         return shell.reads_stdin and not shell.syntax_only
     if interpreter_kind(name) == "python":
-        python = _python_options(args)
-        if _inspects(command, python.flags):
-            return True
-        if python.command:
-            return False
-        # `python3 -m code` and `python3 -` run stdin; `python3 x.py` runs x.py.
-        rest = operands(python.rest) if python.module else list(python.rest)
-        return not rest or rest[0] in STDIN_PATHS
+        return _python_runs_stdin(python_program(args, dict(command.environment)))
     if interpreter_kind(name):
         script_args = operands(args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M"}))
         return not script_args or script_args[0] in STDIN_PATHS
     return name in ("eval", "source", ".")
 
 
-def _inspects(command: SimpleCommand, flags: str) -> bool:
-    """`python3 -i` (or PYTHONINSPECT) reads stdin as code once the script or module is done."""
-    inspect = dict(command.environment).get("PYTHONINSPECT", ())
-    return "i" in flags or any(inspect)
+# Modules that read stdin only as data. Others, such as `code`, `asyncio` or
+# `pdb`, run what arrives on stdin, so a module is only trusted by name.
+_STDIN_DATA_MODULES = frozenset({"json.tool", "json", "base64", "gzip", "quopri", "tokenize", "ast"})
 
 
-class _PythonOptions(NamedTuple):
-    flags: str  # short flags before the program (`-i`, `-u`, ...)
-    command: bool  # `-c CODE`
-    module: str | None  # `-m NAME`
-    rest: tuple[str, ...]  # the module's arguments, or the script and its arguments
-
-
-# Python's options that take a value: `-W arg`, `-Warg`, `--check-hash-based-pycs mode`.
-_PYTHON_VALUE_LETTERS = "WX"
-_PYTHON_VALUE_LONG = frozenset({"--check-hash-based-pycs"})
-
-
-def _python_options(args: tuple[str, ...]) -> _PythonOptions:
-    """Python's command line, read the way Python reads it: options end at
-    `-c`, `-m NAME` (also `-mNAME`, `-Im NAME`), `-`, `--` or the script."""
-    index, flags = 0, ""
-    while index < len(args):
-        arg = args[index]
-        if arg == "-" or not arg.startswith("-"):
-            return _PythonOptions(flags, False, None, args[index:])
-        index += 1
-        if arg == "--":
-            return _PythonOptions(flags, False, None, args[index:])
-        if arg.startswith("--"):
-            index += arg in _PYTHON_VALUE_LONG
-            continue
-        for offset, letter in enumerate(arg[1:], start=2):
-            if letter == "c":
-                return _PythonOptions(flags, True, None, ())
-            if letter == "m":
-                if arg[offset:]:
-                    return _PythonOptions(flags, False, arg[offset:], args[index:])
-                if index < len(args):
-                    return _PythonOptions(flags, False, args[index], args[index + 1:])
-                return _PythonOptions(flags, False, None, ())
-            if letter in _PYTHON_VALUE_LETTERS:
-                index += not arg[offset:]
-                break
-            flags += letter
-    return _PythonOptions(flags, False, None, ())
+def _python_runs_stdin(program: PythonProgram) -> bool:
+    """`-i` (or PYTHONINSPECT) runs what remains on stdin once the program ends."""
+    if program.inspect or program.kind == "stdin":
+        return True
+    if program.kind == "module":
+        return program.target not in _STDIN_DATA_MODULES
+    return program.kind == "script" and program.target in STDIN_PATHS
 
 
 def _pipeline_sources(command: SimpleCommand, ctx: RuleContext) -> list[SimpleCommand]:
@@ -228,11 +187,6 @@ def _executed_files(command: SimpleCommand, ctx: RuleContext) -> list[str]:
         shell = shell_invocation(command.name, command.args)
         if shell.script and not shell.syntax_only:
             files.append(shell.script)
-    elif interpreter_kind(command.name) == "python":
-        python = _python_options(command.args)
-        # `python3 -m pdb x.py` runs x.py as well as the module.
-        script = operands(python.rest)[:1] if python.module else list(python.rest[:1])
-        files += [s for s in script if s not in STDIN_PATHS]
     elif interpreter_kind(command.name):
         script = operands(command.args, frozenset({"-W", "-X", "-m", "-r", "-I", "-M", "-c", "-e"}))[:1]
         files += [s for s in script if s not in STDIN_PATHS]
@@ -253,8 +207,8 @@ def _module_roots(command: SimpleCommand) -> list[str]:
     Any file there named `a.<suffix>` (.py, .pyc, .so, ...) or under `a/` may load."""
     if interpreter_kind(command.name) != "python":
         return []
-    module = _python_options(command.args).module
-    top = module.split(".")[0] if module else ""
+    program = python_program(command.args, dict(command.environment))
+    top = program.target.split(".")[0] if program.kind == "module" and program.target else ""
     return [root for d in command.possible_cwds if top and (root := _absolute(top, d))]
 
 
