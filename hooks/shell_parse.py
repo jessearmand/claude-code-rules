@@ -143,6 +143,11 @@ _AND_OR = frozenset({"&&", "||"})
 _BLOCK_OPENERS = frozenset({"if", "while", "until", "for", "select", "case", "{"})
 _BLOCK_CLOSERS = frozenset({"fi", "done", "esac", "}"})
 _MAX_VARIANTS = 64
+# Values one variable may hold, and their total size, before the oldest are
+# dropped. `X="$X a"` in a function called from several branches doubles X's
+# values at each call, and `X="$X$X"` doubles their length.
+_MAX_VALUES = 64
+_MAX_VALUE_CHARS = 1024 * 1024
 
 
 def parse(command: str, cwd: str = "", sources: SourceResolver | None = None) -> ParseResult:
@@ -421,7 +426,25 @@ def _segment(tokens: list, ctx: _Context, via: tuple[str, ...], depth: int, indi
     the signal handlers that may run after it."""
     _run_debug_traps(ctx)
     _segment_variants(tokens, ctx, via, depth, indirect, pipeline, stage)
+    _bound_values(ctx)
     _run_signal_traps(ctx)
+
+
+def _bound_values(ctx: _Context) -> None:
+    """Keep the latest values of each variable, within _MAX_VALUES and
+    _MAX_VALUE_CHARS. Dropping the rest leaves the parse incomplete, so it is
+    marked truncated; a variable with no value left is unknown from here on."""
+    for key, values in list(ctx.variables.items()):
+        kept = values[:_MAX_VALUES]
+        while kept and sum(map(len, kept)) > _MAX_VALUE_CHARS:
+            kept = kept[:-1]
+        if len(kept) == len(values):
+            continue
+        ctx.result.truncated = True
+        if kept:
+            ctx.variables[key] = kept
+        else:
+            del ctx.variables[key]
 
 
 def _run_debug_traps(ctx: _Context) -> None:

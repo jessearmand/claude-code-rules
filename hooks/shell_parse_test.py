@@ -222,6 +222,13 @@ def main() -> int:
         deep = f"bash -c {shlex.quote(deep)}"
     _check(parse(deep, "/").truncated, "deep nesting is bounded", failures)
     _check(parse("", "/").commands == [], "empty command", failures)
+    # A variable's possible values are bounded in number and in size (live-session review).
+    doubling_values = parse('f(){ X="$X a"; }; ' + "f || f; " * 40 + '"$X" -rf v', "/")
+    _check(doubling_values.truncated, "values that double at each call are bounded", failures)
+    doubling_length = parse("X=a; " + 'true && X="$X$X"; ' * 60 + "echo done", "/")
+    _check(doubling_length.truncated, "a value that doubles in length is bounded", failures)
+    _check(not parse('X=a; X="$X b"; Y=1 || Y=2; echo "$X" $Y', "/").truncated,
+           "ordinary assignments are not truncated", failures)
 
     print()
     if failures:

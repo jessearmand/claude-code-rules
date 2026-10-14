@@ -73,8 +73,10 @@ ALLOWLIST = _rx(
 
 # Same idea, but usable mid-command so `cat .env.example; cat .env` still trips
 # the second half instead of the whole command being waved through.
+# Anchored at the start of a word: tried from every position, `\S*` takes
+# quadratic time on a long word (an inline base64 blob).
 ALLOWLIST_IN_COMMAND = _rx(
-    r"\S*(?:\.env\.(?:example|sample|template|schema|defaults|dist)|env\.example|example\.env)\b"
+    r"(?<!\S)\S*(?:\.env\.(?:example|sample|template|schema|defaults|dist)|env\.example|example\.env)\b"
 )
 
 # Commands that can only ever mention a secret path as literal text.

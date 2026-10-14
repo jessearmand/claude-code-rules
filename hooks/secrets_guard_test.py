@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -387,6 +388,12 @@ def main() -> int:
         [sys.executable, _GUARD], input="not json", capture_output=True, text=True, check=False
     )
     _check(result.returncode == 1 and "invalid JSON" in result.stderr, "bad stdin -> exit 1", failures)
+
+    # A long word (an inline base64 blob) is checked well inside the hook timeout (live-session review).
+    started = time.perf_counter()
+    code, out, _ = _run({"tool_name": "Bash", "tool_input": {"command": "echo " + "QUJD" * 20_000 + " | wc -c"}},
+                        base_env)
+    _check(code == 0 and out == {} and time.perf_counter() - started < 5, "a 80 kB word is checked quickly", failures)
 
     logged = os.path.isdir(log_dir) and any(n.endswith(".jsonl") for n in os.listdir(log_dir))
     _check(logged, "writes a JSONL audit log", failures)
