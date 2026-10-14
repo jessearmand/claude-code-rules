@@ -61,6 +61,23 @@ CASES = [
     ("git -c diff.x.textconv=evil diff", "deny", "git-unsafe-override"),
     ("git --config-env=filter.wipe.clean=FILTERCMD add file", "ask", "git-config-env-unknown"),
     ("git checkout -f -b next", "deny", "git-checkout-discard"),  # force with a new branch (PR review)
+    ("git checkout-index -f -a", "deny", "git-checkout-index-force"),
+    ("git checkout-index --force --all", "deny", "git-checkout-index-force"),
+    ("git checkout-index -fa", "deny", "git-checkout-index-force"),
+    ("git checkout-index -f -- path", "deny", "git-checkout-index-force"),
+    ("git checkout-index -f -- file1 file2", "deny", "git-checkout-index-force"),
+    ("git checkout-index -f path", "deny", "git-checkout-index-force"),
+    ("git checkout-index --stdin -f", "deny", "git-checkout-index-force"),
+    ("git checkout-index -f --stage=2 -- path", "deny", "git-checkout-index-force"),
+    ("git checkout-index -a", None, None),
+    ("git checkout-index -- path", None, None),
+    ("git checkout-index --temp", None, None),
+    ("git checkout-index -f --temp -a", None, None),
+    ("git checkout-index -f --temp -- path", None, None),
+    ("git checkout-index -f --stage=all", None, None),
+    ("git checkout-index --stage all -f -- path", None, None),
+    ("git checkout-index -f", None, None),  # no path and no -a: git checks nothing out
+    ("git checkout-index --no-force -a", None, None),
     ("git checkout -b next", None, None),
     ("git checkout -bfeature", None, None),  # the rest of the cluster is the branch name
     ("git checkout main", None, None),

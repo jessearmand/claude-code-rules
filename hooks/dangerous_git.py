@@ -8,7 +8,8 @@ dropping stashes, rewriting history, plus config that hides commands (`!`
 aliases) or moves hooks (`core.hooksPath`).
 
 The safe spellings stay allowed: `push --force-with-lease`, `branch -d`,
-`clean -n`, `restore --staged`, `checkout -b`, `stash pop`, `rm --cached`.
+`clean -n`, `restore --staged`, `checkout -b`, `checkout-index` without
+`--force` (and `--temp`, which writes temporary files), `stash pop`, `rm --cached`.
 """
 
 from __future__ import annotations
@@ -204,6 +205,49 @@ def _checkout_discard(git: Git, ctx: RuleContext) -> str | None:
     if len(positionals) == 1 and _looks_like_path(positionals[0], directories) \
             and not _is_ref(positionals[0], directories):
         return f"git checkout {positionals[0]} (a path)"
+    return None
+
+
+# `--prefix` and `--stage` take a value. `--stage=all` writes temp files.
+_CHECKOUT_INDEX_WITH_VALUE = frozenset({"--prefix", "--stage"})
+
+
+def _stage_all(args: tuple[str, ...]) -> bool:
+    """`--stage=all` copies conflict stages to temp names, not the worktree."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return False
+        if arg == "--stage" and index + 1 < len(args) and args[index + 1] == "all":
+            return True
+        if arg.startswith("--") and "=" in arg:
+            key, value = arg.split("=", 1)
+            if len(key) >= 5 and "--stage".startswith(key) and value == "all":
+                return True
+        index += 1
+    return False
+
+
+@_git("checkout-index")
+def _checkout_index_force(git: Git, ctx: RuleContext) -> str | None:
+    """`git checkout-index -f` overwrites existing worktree files.
+
+    `--temp` and `--stage=all` write temporary files instead, and without `-a`,
+    `--stdin`, or a path git checks nothing out. Non-forced use refuses to
+    overwrite, so it stays allowed.
+    """
+    args = git.args
+    if has(args, "-h", "--help", "--version"):
+        return None
+    if long_flag(args, "--temp") or _stage_all(args):
+        return None
+    if not (short_flag(args, "f") or long_flag(args, "--force")):
+        return None
+    if short_flag(args, "a") or long_flag(args, "--all") or long_flag(args, "--stdin"):
+        return "git checkout-index --force"
+    if operands(args, _CHECKOUT_INDEX_WITH_VALUE):
+        return "git checkout-index --force"
     return None
 
 
@@ -510,6 +554,8 @@ GIT_RULES: tuple[DangerRule, ...] = (
                _DISCARD_HINT, _reset_hard),
     DangerRule("git-checkout-discard", HIGH, "git checkout can discard changes or force-reset a branch",
                _DISCARD_HINT, _checkout_discard),
+    DangerRule("git-checkout-index-force", HIGH, "git checkout-index --force overwrites existing files",
+               _DISCARD_HINT, _checkout_index_force),
     DangerRule("git-switch-discard", HIGH, "git switch can discard changes or force-reset a branch",
                _DISCARD_HINT, _switch_discard),
     DangerRule("git-restore-worktree", HIGH, "git restore of the working tree discards uncommitted changes",
