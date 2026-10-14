@@ -180,6 +180,12 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
             for path in _startup_paths(value, command, ctx):
                 _run_file(path, command, ctx, nested)
     if command.name == "bash" and shell.interactive:
+        if shell.startup_file:
+            if "$" in shell.startup_file or "`" in shell.startup_file:
+                ctx.result.truncated = True
+                ctx.result.skipped_sources.append((command, "bash rc file"))
+            else:
+                _run_file(shell.startup_file, command, ctx, nested)
         _interactive_hooks(command, nested)
     if _xtrace_option(_leading_options(args)):
         # `bash -x`: the child traces from its first command, expanding $PS4.
@@ -546,6 +552,10 @@ def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[.
     as_script = SimpleCommand((shell.argv[0], path), indirect=shell.indirect, cwd=shell.cwd,
                               cwd_options=shell.cwd_options)
     for text, label in _sources_for(as_script, ctx):
+        if text == SOURCE_TOO_LARGE:
+            ctx.result.truncated = True
+            ctx.result.skipped_sources.append((shell, label))
+            continue
         nested(text, label, not_typed=not label.startswith("written "))
 
 

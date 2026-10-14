@@ -361,6 +361,8 @@ CASES = [
     ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh sh -i <<<'exit'", "deny", "git-reset-hard"),
     ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh bash --posix -i <<<'exit'", "deny", "git-reset-hard"),
     ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh bash -i <<<'exit'", None, None),
+    ("printf 'git reset --hard' > evilrc; bash --rcfile evilrc -i <<<'exit'", "deny", "git-reset-hard"),
+    ("printf 'git reset --hard' > evilrc; bash --init-file evilrc -ic ':'", "deny", "git-reset-hard"),
     ("printf 'git reset --hard' > env.sh; ENV=$PWD/env.sh sh -c :", None, None),
     ("touch \"$X\"; ./x*", "ask", "incomplete-analysis"),
     ("mkdir -p \"$OUT\" && cp *.txt \"$OUT\"/", None, None),  # an operand only: no change in verdict

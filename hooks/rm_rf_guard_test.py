@@ -587,6 +587,31 @@ def main() -> int:
         decision = _decision(_run_hook("printf %b '\\162\\155 -rf victim\\n' > env.sh; "
                                        "BASH_ENV='$PWD/env.sh' bash -c :", project))
         _check(decision == "ask", f"bash expands BASH_ENV itself (PR review) -> {decision}", failures)
+        _write(project, "evilrc", "rm -rf victim\n")
+        _write(project, "saferc", "echo ok\n")
+        for command, expected in (
+            ("bash --rcfile evilrc -i <<<'exit'", "ask"),
+            ("bash --init-file evilrc -ic ':'", "ask"),
+            ("printf 'rm -rf victim' > typedrc; bash --rcfile typedrc -i <<<'exit'", "ask"),
+            ("bash --rcfile saferc -i <<<'exit'", None),
+            ("bash --rcfile evilrc --init-file saferc -i <<<'exit'", None),
+            ("bash --rcfile evilrc --norc -i <<<'exit'", None),
+            ("bash --rcfile evilrc -c ':'", None),
+            ("bash --rcfile evilrc --posix -i <<<'exit'", None),
+            ("bash --rcfile evilrc -li <<<'exit'", None),
+        ):
+            decision = _decision(_run_hook(command, project))
+            _check(decision == expected, f"explicit Bash rc: {command} -> {decision}", failures)
+        for option in ("--rcfile", "--init-file"):
+            invocations, _ = find_recursive_force_invocations(
+                f"printf 'rm -rf victim' > typedrc; bash {option} typedrc -i <<<'exit'",
+                project, shell_sources.resolve)
+            _check(bool(invocations) and not invocations[0].indirect,
+                   f"{option} uses the same-line file snapshot as typed code", failures)
+        _write(project, "largerc", "#" + "x" * (256 * 1024) + "\nrm -rf victim\n")
+        from shell_parse import parse
+        parsed = parse("bash --rcfile largerc -i <<<'exit'", project, shell_sources.resolve)
+        _check(parsed.truncated, "oversized explicit rc file marks analysis incomplete", failures)
         os.makedirs(os.path.join(project, "safe"))
         _write(os.path.join(project, "safe"), "cleanup_guard_test", "echo ok\n")
         decision = _decision(_run_hook("PATH=bin; false && PATH=safe; source cleanup_guard_test", project))

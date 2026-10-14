@@ -126,6 +126,7 @@ class ShellInvocation:
     reads_stdin: bool = False  # `bash`, `bash -s args`, `bash -`
     syntax_only: bool = False  # `-n`: parse and check, run nothing
     interactive: bool = False  # `-i`: prompts, and PROMPT_COMMAND, are shown and run
+    startup_file: str | None = None  # explicit Bash rc file executed before interactive input
 
 
 def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvocation:
@@ -135,6 +136,8 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
     commands: list[str] = []
     dash_c = reads_stdin = syntax_only = interactive = False
     command_given = False  # fish `-c CMD`: the string came with the option
+    rcfile = None
+    no_rc = login = posix = False
     index = 0
     while index < len(args):
         arg = args[index]
@@ -142,6 +145,12 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
             index += 1
             break
         key = arg.split("=", 1)[0] if arg.startswith("--") else arg
+        if key == "--norc":
+            no_rc = True
+        elif key == "--login":
+            login = True
+        elif key == "--posix":
+            posix = True
         if key in command_options:
             # `-c`/`--command` replace the script; `-C`/`--init-command` run before it.
             if key in ("-c", "--command"):
@@ -155,6 +164,11 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
                 index += 2
             continue
         if key in with_arg:
+            value = arg.split("=", 1)[1] if "=" in arg else args[index + 1] if index + 1 < len(args) else None
+            if key in ("--rcfile", "--init-file"):
+                rcfile = value
+            elif key in ("-o", "+o") and value == "posix":
+                posix = key == "-o"
             index += 1 if "=" in arg else 2
             continue
         if arg.startswith("-") and not arg.startswith("--") and len(arg) > 1:
@@ -163,6 +177,7 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
             dash_c = dash_c or "c" in letters
             reads_stdin = reads_stdin or "s" in letters
             interactive = interactive or "i" in letters
+            login = login or "l" in letters
             index += 1
             continue
         if arg.startswith(("+", "--")) and arg not in ("+", "--"):
@@ -181,7 +196,9 @@ def shell_invocation(name: str, args: list[str] | tuple[str, ...]) -> ShellInvoc
     elif not reads_stdin and positionals and positionals[0] not in STDIN_PATHS:
         script, script_args = positionals[0], tuple(positionals[1:])
     stdin = reads_stdin or (not dash_c and script is None)
-    return ShellInvocation(tuple(commands), command_args, script, script_args, stdin, syntax_only, interactive)
+    startup_file = rcfile if name == "bash" and interactive and not (no_rc or login or posix) else None
+    return ShellInvocation(tuple(commands), command_args, script, script_args, stdin, syntax_only, interactive,
+                           startup_file)
 
 # Wrappers whose command is a string the shell parses again.
 STRING_RUNNERS: dict[str, WrapperSpec] = {

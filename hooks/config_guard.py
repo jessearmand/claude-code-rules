@@ -80,6 +80,7 @@ from hook_protocol import (  # noqa: E402
     tool_input,
     truncate,
 )
+from filesystem_paths import case_insensitive, is_inside, pattern_matches
 from landing_paths import landing_paths
 from shell_parse import SimpleCommand, parse  # noqa: E402
 from shell_writes import (  # noqa: E402
@@ -210,7 +211,7 @@ def _protected_roots(cwd: str) -> list[str]:
 
 
 def _is_inside(path: str, root: str) -> bool:
-    return path == root or path.startswith(root.rstrip("/") + "/")
+    return is_inside(path, root)
 
 
 def _is_inside_config_dir(path: str) -> bool:
@@ -234,9 +235,10 @@ def live_source_dirs() -> list[str]:
 def check_path(path: str, cwd: str, action: str = "write") -> ConfigRule | None:
     """The rule that protects `path` from `action`, if any."""
     candidates = candidate_paths(path, cwd)
+    insensitive = case_insensitive(_expand(path, cwd))
     for candidate in candidates:
         for rule in CONFIG_RULES:
-            if rule.pattern.search(candidate):
+            if pattern_matches(rule.pattern, candidate, insensitive):
                 return rule
         if _is_inside_config_dir(candidate):
             return CONFIG_RULES[0]
@@ -259,13 +261,12 @@ def _check_tree(candidates: list[str], cwd: str) -> ConfigRule | None:
     for candidate in candidates:
         if not candidate.startswith("/"):
             continue
-        prefix = candidate.rstrip("/") + "/"
         for root in _protected_roots(cwd):
-            if root == candidate or root.startswith(prefix):
+            if _is_inside(root, candidate):
                 inside = root + "/x"
                 return next(
                     (rule for form in (inside, *home_forms(inside))
-                     for rule in CONFIG_RULES if rule.pattern.search(form)),
+                     for rule in CONFIG_RULES if pattern_matches(rule.pattern, form)),
                     CONFIG_RULES[0],
                 )
     return None
