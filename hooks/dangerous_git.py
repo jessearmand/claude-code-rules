@@ -86,7 +86,9 @@ def git_invocation(command: SimpleCommand) -> Git | None:
         break
     else:
         arg = ""
-    unresolved: list[str] = []
+    environment_config, unresolved = _numbered_config(command)
+    # Git applies numbered environment config before command-line overrides.
+    config = environment_config + config
     for item in from_env:
         # `--config-env=key=VAR`: git reads the value from $VAR.
         key, _, variable = item.partition("=")
@@ -99,6 +101,43 @@ def git_invocation(command: SimpleCommand) -> Git | None:
     rest = tuple(args[index + 1:]) if arg else ()
     return Git(arg, rest, tuple(_normalize_config(c) for c in config), tuple(unresolved),
                tuple(dict.fromkeys(os.path.normpath(d) for d in directories)), tuple(repository_options))
+
+
+_MAX_ENV_CONFIG = 64
+
+
+def _numbered_config(command: SimpleCommand) -> tuple[list[str], list[str]]:
+    """Bounded GIT_CONFIG_COUNT/KEY_n/VALUE_n input, in Git's precedence order.
+
+    `*` records an unknown key or count, so the existing environment-config
+    rule can ask without guessing which program-bearing key it might become.
+    """
+    config: list[str] = []
+    unresolved: list[str] = []
+    counts = command.env_values("GIT_CONFIG_COUNT")
+    indices: set[int] = set()
+    for count in counts:
+        if not re.fullmatch(r"[+]?[0-9]{1,3}", count) or int(count) > _MAX_ENV_CONFIG:
+            unresolved.append("*")
+            continue
+        indices.update(range(int(count)))
+    for index in sorted(indices):
+        keys = command.env_values(f"GIT_CONFIG_KEY_{index}")
+        values = command.env_values(f"GIT_CONFIG_VALUE_{index}")
+        if not keys:
+            unresolved.append("*")
+        for key in keys:
+            if re.search(r"[$`]", key):
+                unresolved.append("*")
+                continue
+            if not values:
+                unresolved.append(key.lower())
+            for value in values:
+                if value.startswith(("$", "`")):
+                    unresolved.append(key.lower())
+                else:
+                    config.append(f"{key}={value}")
+    return config, list(dict.fromkeys(unresolved))
 
 
 def _normalize_config(item: str) -> str:
@@ -555,7 +594,7 @@ def _unsafe_override(command: SimpleCommand, ctx: RuleContext) -> str | None:
 def _config_from_unknown_env(command: SimpleCommand, ctx: RuleContext) -> str | None:
     git = git_invocation(command)
     for key in git.unresolved if git else ():
-        if key.startswith("alias.") or key in _PROGRAM_KEYS or key in ("core.hookspath", "http.sslverify") \
+        if key == "*" or key.startswith("alias.") or key in _PROGRAM_KEYS or key in ("core.hookspath", "http.sslverify") \
                 or key in _PROTOCOL_KEYS \
                 or _PROGRAM_KEY_PATTERN.fullmatch(key.lower()):
             return f"git --config-env={key}=<unknown value>"

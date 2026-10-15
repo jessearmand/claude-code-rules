@@ -42,6 +42,11 @@ def _opts(*names: str) -> frozenset[str]:
     return frozenset(names)
 
 
+def source_arguments(args: tuple[str, ...]) -> tuple[str, ...]:
+    """The filename and positionals after source's optional option terminator."""
+    return args[1:] if args[:1] == ("--",) else args
+
+
 PREFIX_WRAPPERS: dict[str, WrapperSpec] = {
     "sudo": WrapperSpec(
         _opts("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T", "--user", "--group",

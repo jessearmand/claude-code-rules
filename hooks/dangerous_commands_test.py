@@ -19,6 +19,32 @@ _CWD = os.path.dirname(_HOOKS_DIR)
 
 # (command, expected decision or None, expected rule id or None)
 CASES = [
+    # Follow-up review: alternate spellings of existing nested-execution paths.
+    ("BASH_ENV=<(printf 'git reset --hard') bash -c :", "deny", "git-reset-hard"),
+    ("BASH_ENV=<(printf ':') bash -c :", None, None),
+    ("BASH_ENV=<(printf 'git reset --hard') printf ok", None, None),
+    ("ruby -e '%x(git reset --hard)'", "deny", "git-reset-hard"),
+    ("ruby -e '%x(echo ok)'", None, None),
+    ("ruby -e 'puts \"git reset --hard\"'", None, None),
+    ("node --eval='require(\"child_process\").execSync(\"git reset --hard\")'", "deny", "git-reset-hard"),
+    ("node --eval='console.log(1)'", None, None),
+    ("node --print='require(\"child_process\").execSync(\"git reset --hard\")'", "deny", "git-reset-hard"),
+    ("node --print='1+1'", None, None),
+    ("bun --eval='console.log(1)'", None, None),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.wipe GIT_CONFIG_VALUE_0='!git reset --hard' git wipe", "deny", "git-shell-alias"),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.wipe GIT_CONFIG_VALUE_0='reset --hard' git wipe", "deny", "git-reset-hard"),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=Alice git status", None, None),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.review GIT_CONFIG_VALUE_0='reset --hard' git -c alias.review=status review", None, None),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.review GIT_CONFIG_VALUE_0=status git -c 'alias.review=reset --hard' review", "deny", "git-reset-hard"),
+    ("GIT_CONFIG_COUNT=0 GIT_CONFIG_KEY_0=alias.wipe GIT_CONFIG_VALUE_0='!git reset --hard' git status", None, None),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='!echo ok' git log", "deny", "git-unsafe-override"),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.wipe git wipe", "ask", "git-config-env-unknown"),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name git status", None, None),
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_VALUE_0=anything git status", "ask", "git-config-env-unknown"),
+    ("GIT_CONFIG_COUNT=$COUNT git status", "ask", "git-config-env-unknown"),
+    ("GIT_CONFIG_COUNT=9999999999999999999999 git status", "ask", "git-config-env-unknown"),
+    ("printf 'git reset --hard' > source-review.sh; source -- ./source-review.sh", "deny", "git-reset-hard"),
+    ("printf 'git reset --hard' > source-review.sh; . -- ./source-review.sh", "deny", "git-reset-hard"),
     # Follow-up review: existing rule families, with risky and read-only controls.
     ("git -c 'credential.https://example.com.helper=!touch marker' credential fill", "deny", "git-unsafe-override"),
     ("git -c 'credential.https://example.com.username=alice' credential fill", None, None),
@@ -583,6 +609,17 @@ def main() -> int:
 
     print("\nEnd-to-end and configuration:")
     with tempfile.TemporaryDirectory() as project:
+        for name, text in (("source-review.sh", "git reset --hard\n"),
+                           ("source-safe.sh", "echo ok\n"),
+                           ("source-args.sh", '"$1" reset --hard\n')):
+            with open(os.path.join(project, name), "w", encoding="utf-8") as handle:
+                handle.write(text)
+        for builtin in ("source", "."):
+            for tail, expected in (("source-review.sh", "ask"), ("source-safe.sh", None),
+                                   ("source-args.sh git", "ask"), ("source-args.sh echo", None)):
+                command = f"{builtin} -- ./{tail}"
+                decision = _decision(_run_hook(command, project))
+                _check(decision == expected, f"source terminator: {command} -> {decision}", failures)
         # Real refs, including packed refs and a linked worktree; no risky command is run.
         repo = os.path.join(project, "refsrepo")
         subprocess.run(["git", "init", "-q", repo], check=True)

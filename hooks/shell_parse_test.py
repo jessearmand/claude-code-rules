@@ -13,6 +13,8 @@ from shell_parse import parse  # noqa: E402
 
 # (command, expected argv of every simple command, in order)
 ARGV_CASES = [
+    ("printf %s prefix<(echo hi)suffix", [("echo", "hi"), ("printf", "%s", "prefix<(echo hi)suffix")]),
+    ("OUT=>(echo hi) env", [("echo", "hi"), ("env",)]),
     ("ls -la", [("ls", "-la")]),
     ("a && b || c; d & e", [("a",), ("b",), ("c",), ("d",), ("e",)]),
     ("echo hi\nrm x", [("echo", "hi"), ("rm", "x")]),

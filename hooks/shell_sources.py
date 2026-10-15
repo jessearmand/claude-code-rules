@@ -37,7 +37,12 @@ import re
 
 import make_expand
 from shell_parse import SOURCE_TOO_LARGE, SimpleCommand, WrittenFile
-from shell_wrappers import CLI_OPTIONS_WITH_VALUE, SHELLS, shell_invocation
+from shell_wrappers import (
+    CLI_OPTIONS_WITH_VALUE,
+    SHELLS,
+    shell_invocation,
+    source_arguments,
+)
 
 MAX_SOURCE_BYTES = 256 * 1024
 _SHEBANG_SHELL = re.compile(r"^#!\s*\S*?(?:/env\s+(?:-S\s+)?)?\S*?\b(?:ba|z|da|k|mk|a)?sh\b")
@@ -78,6 +83,7 @@ def _resolve(command: SimpleCommand, cwd: str, written: dict[str, WrittenFile]) 
             return []  # command strings and stdin are parsed by the parser itself
         return _script(shell.script, cwd, written, require_shebang=False)
     if name in ("source", "."):
+        args = list(source_arguments(command.args))
         if not args:
             return []
         # Each PATH the line may have gives the file `source` may read.

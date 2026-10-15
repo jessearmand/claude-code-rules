@@ -54,6 +54,7 @@ from shell_wrappers import (
     STRING_RUNNERS,
     WrapperSpec,
     shell_invocation,
+    source_arguments,
 )
 
 
@@ -89,7 +90,7 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
     elif inline_programs(name, command.args, command.redirects):
         for program in inline_programs(name, command.args, command.redirects):
             direct = direct_shell_strings(program, interpreter_kind(name))
-            for literal in shell_strings(program):
+            for literal in dict.fromkeys([*shell_strings(program), *direct]):
                 # A string passed straight to a shell (`os.system("...")`) is a command;
                 # any other literal of the program may only be data
                 # (`subprocess.run(["echo", "rm -rf x"])` deletes nothing), so it asks.
@@ -119,7 +120,9 @@ def _parse_payloads(command: SimpleCommand, ctx: _Context, depth: int) -> None:
             _mapfile_callbacks(callback, _mapfile_option(args, "c") or "5000", ctx, nested, f"{name} -C")
     elif name in ("source", ".") and args:
         # `source <(printf CMD)`: the shell runs what the substitution prints.
-        _produced_script(args[0], command, ctx, nested, shares_shell=True, return_boundary=True)
+        operands = source_arguments(command.args)
+        if operands:
+            _produced_script(operands[0], command, ctx, nested, shares_shell=True, return_boundary=True)
     elif name in STRING_RUNNERS:
         spec = STRING_RUNNERS[name]
         if spec.command_options:
@@ -179,6 +182,8 @@ def _shell_payload(command: SimpleCommand, args: list[str], ctx: _Context,
     if command.name == "bash":
         # A non-interactive bash first runs the file $BASH_ENV names, `bash -c` included.
         for value in command.env_values("BASH_ENV"):
+            if _produced_script(value, command, ctx, nested):
+                continue
             for path in _startup_paths(value, command, ctx):
                 _run_file(path, command, ctx, nested)
     if command.name == "bash" and shell.interactive:
@@ -585,7 +590,7 @@ def _run_file(path: str, shell: SimpleCommand, ctx: _Context, nested: Callable[.
 def _script_arguments(command: SimpleCommand) -> tuple[str, ...]:
     """The arguments a script `command` runs is given as $1, $2, ..."""
     if command.name in ("source", "."):
-        return command.args[1:]
+        return source_arguments(command.args)[1:]
     if command.name in SHELLS:
         return shell_invocation(command.name, command.args).script_args
     if command.argv and "/" in command.argv[0]:

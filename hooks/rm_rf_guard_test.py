@@ -21,6 +21,11 @@ _GUARD = os.path.join(_HOOKS_DIR, "rm_rf_guard.py")
 _REPO_ROOT = os.path.dirname(_HOOKS_DIR)
 
 SHOULD_BLOCK = [
+    "BASH_ENV=<(printf 'rm -rf victim') bash -c :",
+    "ruby -e '%x(rm -rf victim)'",
+    "node --eval='require(\"child_process\").execSync(\"rm -rf victim\")'",
+    "source -- <(printf 'rm -rf victim')",
+    ". -- <(printf 'rm -rf victim')",
     "rm -rf build",
     "rm -fr build",
     "rm -Rf build",
@@ -410,6 +415,11 @@ def main() -> int:
         _check(bool(invocations), "source binds its arguments", failures)
         invocations, _ = find_recursive_force_invocations("source positional.sh echo", tmp, shell_sources.resolve)
         _check(not invocations, "source with harmless arguments", failures)
+        for builtin in ("source", "."):
+            for argument, expected in (("rm", True), ("echo", False)):
+                command = f"{builtin} -- positional.sh {argument}"
+                invocations, _ = find_recursive_force_invocations(command, tmp, shell_sources.resolve)
+                _check(bool(invocations) == expected, f"source terminator binds its arguments: {command}", failures)
         # Appends join byte for byte: no newline is added between printf outputs (PR review).
         command = "printf r > run.sh; printf m >> run.sh; printf ' -rf victim' >> run.sh; bash run.sh"
         invocations, _ = find_recursive_force_invocations(command, tmp, shell_sources.resolve)

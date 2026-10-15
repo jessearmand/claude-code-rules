@@ -104,7 +104,7 @@ class _Lexer:
             elif c == "#":
                 self._skip_comment()
             elif c in "<>" and self._peek(1) == "(":
-                self._process_substitution()
+                self._word()
             elif c == "(" and self._peek(1) == "(" and self._arithmetic_command():
                 pass
             elif c == "\n":
@@ -165,6 +165,9 @@ class _Lexer:
 
         while self.i < self.n:
             c = self.s[self.i]
+            if c in "<>" and self._peek(1) == "(":
+                add(self._process_substitution(word))
+                continue
             if c in _METACHARACTERS:
                 break
             if c == "\\":
@@ -465,13 +468,13 @@ class _Lexer:
         word.substitutions.extend(bodies)
         self.result.substitutions.extend(bodies)
 
-    def _process_substitution(self) -> None:
+    def _process_substitution(self, word: Word) -> str:
         start = self.i
         self.i += 2
         body = self._balanced(")", "(")
-        word = Word(self.s[start:self.i], dynamic=True)
+        word.dynamic = True
         self._substitute(word, [body])
-        self.result.tokens.append(word)
+        return self.s[start:self.i]
 
     # ------------------------------------------------------------------ #
     # Heredocs

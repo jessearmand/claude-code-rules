@@ -10,8 +10,11 @@ not complete command-spelling or product parity.
 
 The current follow-up fixes stay within existing contracts:
 
-- Destructive Git: direct ref replacement and URL-scoped program overrides.
-- Nested execution: known database-client stdin reaches the existing shell-escape scan.
+- Destructive Git: direct ref replacement, URL-scoped program overrides, and
+  bounded numbered environment configuration using the existing alias/override rules.
+- Nested execution: known database-client stdin, process-substitution assignments,
+  `source --` filenames and positional arguments, direct interpreter strings,
+  and equals-form long code options reach their existing scans.
 - Existing SQL controls: reuse bounded stdin resolution through pass-through
   `cat` stages and recognize destructive DROP operations across object types.
 - Existing publishing controls: retain confirmation for release asset uploads

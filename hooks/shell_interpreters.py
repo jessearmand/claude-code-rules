@@ -73,6 +73,10 @@ def inline_programs(name: str, args: tuple[str, ...], redirects: tuple = ()) -> 
             programs.append(args[index + 1])
             index += 2
             continue
+        if arg.startswith("--") and "=" in arg and arg.split("=", 1)[0] in code_flags:
+            programs.append(arg.split("=", 1)[1])
+            index += 1
+            continue
         attached = next((f for f in code_flags if f.startswith("-") and not f.startswith("--")
                          and arg.startswith(f) and len(arg) > len(f)), None)
         if attached:
