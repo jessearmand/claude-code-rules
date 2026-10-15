@@ -6,7 +6,7 @@ Each upstream literal goes through the four deterministic hooks in-process;
 nothing is executed and no decision model is called. Deferred commands are
 only checked for model eligibility (bash_risk_judge's pre-filter). The result
 is a label comparison, not a vulnerability rate; see
-hooks/cc-safety-net-coverage.md for how to read it.
+docs/cc-safety-net-coverage.md for how to read it.
 
 The upstream checkout is not vendored. Clone it at the pinned commit first:
 
