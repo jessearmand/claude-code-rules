@@ -28,14 +28,21 @@ The repository implements Claude Code's hook system for validating and enhancing
 - **file_protection.py** (PreToolUse): Prevents modification of sensitive files:
   - Blocks editing of `.env`, lock files (`package-lock.json`, `Package.resolved`, `bun.lock`, `Cargo.lock`), and `.git/` directory contents
 
-- **bash_risk_judge.py** (PreToolUse, opt-in): Model-assisted second opinion for Bash commands the regex guards do not enumerate (`git clean -xdf`, `find -delete`, `shutil.rmtree`, `curl -d @file`, ...). Asks TypeSafe's Jev evaluation model typed questions through `ai evaluate` (vercel-labs/ai-cli 0.5+) and escalates to an `ask` prompt when P(destructive) or P(exfiltrates) crosses a threshold. It can only escalate, never allow or deny, and every failure path (CLI missing, old `ai` without `evaluate`, no key, timeout, bad JSON) defers to the normal permission flow, so with `HOOK_JEV_ENABLE` unset it is a no-op. Credentials come from `AI_GATEWAY_API_KEY` in the environment or, failing that, `fnox exec` (optionally pointed at `HOOK_JEV_FNOX_CONFIG`). A verb pre-filter keeps most commands off the network and secret-looking values are redacted before anything is sent. Shared plumbing lives in `jev_client.py`. See [Jev-augmented hooks](#jev-augmented-hooks).
+- **rm_rf_guard.py**, **dangerous_commands.py**, **secrets_guard.py**, **config_guard.py** (PreToolUse): the deterministic guards. They own every `deny` and every deterministic `ask`:
+  - `rm_rf_guard` asks before any recursive forced `rm`. `dangerous_commands` covers destructive git (reset --hard, force push, branch -D, ...), downloads piped into a shell, disk writes, `chmod -R 777`, crontab, package publishing, cloud/Kubernetes/database deletes, and switching off security controls; its local file removals (`git clean -f`, `git rm -f`, `find -delete`, `shred`, `crontab -r`) ask rather than deny. `secrets_guard` blocks reading or exfiltrating credentials. `config_guard` stops the agent editing its own settings, hooks, MCP servers, other harnesses' config, the skills, subagents and global instructions loaded from the home directory, and persistence locations (shell rc files, git hooks and git config, launchd, cron), and asks about writes to a computed path (`cp x "$OUT"`) when the command copies, deletes or writes config-like text there.
+  - All four parse the command with a shared bash-subset parser (`shell_lexer.py`, `shell_parse.py` and the stage modules its docstring lists), so newlines, `sudo -u x`, `timeout 5`, `bash -c`, `eval`, `ssh host '...'`, `$(...)`, heredocs fed to a shell and interpreter one-liners such as `python -c "os.system(...)"` cannot hide a command. `shell_sources.py` also reads what a command runs from disk (shell scripts, `npm run` scripts, Makefile recipes with their variables expanded, the `$(shell …)`/`!=` commands Make runs while reading the file and the files its `$(file >…)` function writes, database command files such as `sqlite3 -init` and `psql -f`, and what a configured git alias expands to); a match found only there asks instead of denying. The targets of `git apply` are read from the patch's headers, and `git config -f FILE` counts as a write to FILE.
+  - Under `bypassPermissions` or `dontAsk`, where nobody can answer, their `ask` becomes `deny` (`HOOK_UNATTENDED_KEEP_ASK=1` opts out).
+  - Each has `*_DISABLE` and `*_ASK` switches, documented at the top of the script.
+  - `config_guard` asks (rather than denies) before writes into the directory the running hooks load from, the target of `~/.claude/hooks`, so developing these hooks with an agent prompts on each edit. `CONFIG_GUARD_LIVE_DIRS` adds other live checkouts.
+
+- **bash_risk_judge.py** (PreToolUse, opt-in): Model-assisted second opinion for Bash commands the regex guards do not enumerate (`git clean -xdf`, `find -delete`, `shutil.rmtree`, `curl -d @file`, ...). Asks a decision model on Vercel AI Gateway typed questions through `ai decide` (vercel-labs/ai-cli 0.6+): TypeSafe's Jev by default, or any other gateway decision model such as OpenAI's `openai/gpt-6-luna-decisions` via `HOOK_JEV_MODEL`. It escalates to an `ask` prompt when any concern (destruction, exfiltration, persistence, weakened controls, fetch-and-execute, privilege escalation, erased history or logs, credential-store reads, exposing the machine to the network, or off-task work) crosses a threshold. It can only escalate, never allow or deny, and every failure path (CLI missing, old `ai` without `decide`, no key, timeout, bad JSON) defers to the normal permission flow, so with `HOOK_JEV_ENABLE` unset it is a no-op. Credentials come from `AI_GATEWAY_API_KEY` (or `VERCEL_OIDC_TOKEN`) in the environment or, failing that, `fnox exec` (optionally pointed at `HOOK_JEV_FNOX_CONFIG`). A verb pre-filter keeps most commands off the network and secret-looking values are redacted (`judge_redact.py`) before anything is sent. Shared plumbing lives in `jev_client.py`. See [Jev-augmented hooks](#jev-augmented-hooks).
 - **marimo-check.sh** (PostToolUse): Automatically runs `uvx marimo check` after any Edit or Write operation on marimo notebooks. Blocks the tool if checks fail, prompting Claude to fix the issues. Located at `skills/marimo-check/scripts/marimo-check.sh` (co-located with the marimo-check skill for maintainability). See [Marimo Check: Hook vs Skill](#marimo-check-hook-vs-skill) for details.
 
 ### Jev-augmented hooks
 
 `bash_risk_judge.py` is the first hook that consults a model. The rules it follows:
 
-1. Deterministic hooks decide first and alone. `rm_rf_guard.py` and `secrets_guard.py` are unchanged and still emit `deny`; a `deny` from any hook wins over an `ask` from this one.
+1. Deterministic hooks decide first and alone. `rm_rf_guard.py` asks and `secrets_guard.py` denies; a `deny` from any hook wins over an `ask` from this one.
 2. The model can only raise the bar. The hook emits `ask` or `{}`; it never emits `allow` or `deny`.
 3. Fallback is the status quo. Any failure to get a well-formed answer inside the timeout produces `{}`.
 
@@ -43,23 +50,25 @@ Enable it per shell or in the `env` block of `settings.json`:
 
 ```bash
 export HOOK_JEV_ENABLE=1                  # off by default
+export HOOK_JEV_MODEL=openai/gpt-6-luna-decisions  # default typesafe-ai/jev
 export HOOK_JEV_TIMEOUT=5                 # seconds; hook timeout is 10
 export HOOK_JEV_FNOX_CONFIG=~/Develop/fnox.toml   # only if AI_GATEWAY_API_KEY is not exported
 export BASH_RISK_JUDGE_ASK_THRESHOLD=0.7  # P(true) that triggers an ask
 export HOOK_JEV_DEBUG=1                   # print why a call fell back
 ```
 
-Requirements: `ai` (ai-cli) 0.5.0 or newer on PATH, which adds the `evaluate` subcommand; `ai models jev` shows the model. Verify with:
+Requirements: `ai` (ai-cli) 0.6.0 or newer on PATH, which has the `decide` subcommand (`npm install -g ai-cli`); `ai models --type evaluation` lists the decision models. Behind an HTTPS proxy, Node's fetch ignores `HTTPS_PROXY`, so the hook runs `ai` with `NODE_USE_ENV_PROXY=1` (Node 22.21+) whenever a proxy variable is set. In a sandbox whose proxy injects the gateway key, set `AI_GATEWAY_API_KEY` to any placeholder. Verify with:
 
 ```bash
-printf 'cwd: /tmp\ncommand:\ngit clean -xdf\n' | fnox exec -- ai evaluate --boolean "d=Is this destructive?"
+printf 'cwd: /tmp\ncommand:\ngit clean -xdf\n' | fnox exec -- ai decide --boolean "d=Is this destructive?"
 python3 hooks/bash_risk_judge_test.py   # exercises every fallback with a shim, no network
 ```
 
 Two companions keep the evaluation honest:
 
 - `python3 hooks/settings_wiring_test.py` checks that `settings.template.json` routes every hook each tool it handles. The per-hook suites call scripts directly and cannot see a missing matcher.
-- `python3 hooks/jev_calibrate.py --repeat 3` replays the deterministic suites' 232 labelled cases through Jev. It reports agreement per corpus, which risky commands the pre-filter would actually send, and which verdicts flip between identical runs. It needs network access and is a benchmark, not a correctness test: labels are the regex hooks' policy, not ground truth.
+- `python3 hooks/jev_calibrate.py --repeat 3` replays the deterministic suites' 232 labelled cases through Jev. It reports agreement per corpus, which risky commands the pre-filter would actually send, and which verdicts flip between identical runs. `--model` picks the decision model. It needs network access and is a benchmark, not a correctness test: labels are the regex hooks' policy, not ground truth.
+- `python3 hooks/judge_probe.py --models typesafe-ai/jev,openai/gpt-6-luna-decisions --repeat 3` runs the labelled risky-action families in `judge_probe_cases.py` (and benign look-alikes) through the deterministic guards, the pre-filter and each model. Per family it reports how many cases each model catches on every repeat, how many of those no guard catches, and how many the pre-filter hides; it also gives per-question recall and the false-prompt rate on the benign set. It is how the questions above were chosen and worded.
 
 ### Configuration Files
 - **ast-grep-rule.md**: Comprehensive documentation for ast-grep pattern syntax, including meta variables, pattern matching, and advanced usage examples
@@ -198,6 +207,7 @@ All plugins are defined and maintained locally in this repository, making it eas
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/rm_rf_guard.py", "timeout": 10 },
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/dangerous_commands.py", "timeout": 10 },
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/bash_command_validator.py" },
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/bash_risk_judge.py", "timeout": 10 }
         ]
@@ -206,6 +216,12 @@ All plugins are defined and maintained locally in this repository, making it eas
         "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob|Bash",
         "hooks": [
           { "type": "command", "command": "python3 ${HOME}/.claude/hooks/secrets_guard.py", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 ${HOME}/.claude/hooks/config_guard.py", "timeout": 10 }
         ]
       },
       {
@@ -228,13 +244,14 @@ Wire the hooks in one place only, normally `~/.claude/settings.json`. Claude Cod
   "env": {
     "HOOK_JEV_ENABLE": "1",
     "HOOK_JEV_FNOX_CONFIG": "/absolute/path/to/fnox.toml",
-    "BASH_RISK_JUDGE_ASK_THRESHOLD": "0.5"
+    "HOOK_JEV_MODEL": "openai/gpt-6-luna-decisions"
   }
 }
 ```
 
 - `HOOK_JEV_FNOX_CONFIG` is needed whenever `AI_GATEWAY_API_KEY` is not exported. Without it `fnox` searches upward from the session's working directory, so the key is only found in projects under the directory holding `fnox.toml`, and the hook silently defers everywhere else.
-- The default threshold is 0.7. The hook sends the working directory and asks about scope along with the command, and Jev discounts commands confined to the working directory: `git clean -xdf` scores about 0.56 through the hook against 0.93 for a bare "is this destructive?". Use 0.5 to be prompted for that class of command. Scores for each call are in `~/.claude/hooks-logs/`.
+- Context: the model sees the user's latest prompt and the agent's last few commands (read from the session transcript), plus the body of any script, `npm run` script or Makefile recipe the command executes, all redacted and size-bounded. It is asked about destruction, exfiltration, persistence, weakened controls, fetch-and-execute, privilege escalation, erased history or logs, credential-store reads, exposing the machine to the network, and (when the prompt is known) whether the command is off task. Set `BASH_RISK_JUDGE_CONTEXT=0` to send the command alone. A script too long to send in full asks instead.
+- The default threshold is 0.7, and it suits both models. On the probe corpus neither model prompted on any benign look-alike at 0.7. `gpt-6-luna-decisions` is the more decisive: its highest benign score was 0.19 against Jev's 0.63, it returned identical probabilities on every repeat (Jev flipped 12 verdicts near 0.7 over two calibration runs), and it caught more destructive, persistence and exfiltration cases. Jev reads credential-file policy slightly better. Lowering the threshold to 0.5 is reasonable with Luna but would start prompting on ordinary commands with Jev. Both answer in about one second through the hook. Scores for each call are in `~/.claude/hooks-logs/`.
 
 The marimo check is a PostToolUse hook and is not part of the template. Add it if you work with marimo notebooks:
 

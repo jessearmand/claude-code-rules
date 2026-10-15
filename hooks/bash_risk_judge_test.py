@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bash_risk_judge import is_candidate, redact  # noqa: E402
 
+_PLACEHOLDER = "z" * 12  # stands in for the secret half of a credential
+
 _HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bash_risk_judge.py")
 
 CANDIDATES = [
@@ -40,8 +42,46 @@ NON_CANDIDATES = [
 ]
 
 REDACTIONS = [
+    ("password: correct horse battery staple", "password: <redacted>"),
+    ("password = correct horse battery staple", "password = <redacted>"),
+    ("passphrase: several secret words\nnext line", "passphrase: <redacted>\nnext line"),
+    # No-space `=` is the same prose when the value is a multi-word passphrase.
+    # An env-style assignment keeps the command after its single token, and a
+    # single trailing word stays that command. PASSWORD_FILE is where, not what.
+    ("password=correct horse battery staple", "password=<redacted>"),
+    ("password=correct horse battery staple for user42", "password=<redacted>"),
+    ("Here is my password=correct horse battery staple", "Here is my password=<redacted>"),
+    ("Here is my password=correct horse battery staple\nnext line",
+     "Here is my password=<redacted>\nnext line"),
+    ("password=secret cmd", "password=<redacted> cmd"),
+    ("PASSWORD_FILE=/path", "PASSWORD_FILE=/path"),
+    ("password: $PASSWORD", "password: $PASSWORD"),
     ("curl -H 'Authorization: Bearer abc.def-123' x", "curl -H 'Authorization: Bearer <redacted>' x"),
     ("export API_KEY=supersecretvalue123", "export API_KEY=<redacted>"),
+    # Private key blocks, whole or cut off by the source budget (PR review).
+    ("KEY='-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----'; echo ok",
+     "KEY='<redacted private key>'; echo ok"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA", "<redacted private key>"),
+    # Basic-auth credentials (PR review).
+    # The secret half is built at run time so secret scanners do not flag the fixture.
+    (f"curl -u alice:{_PLACEHOLDER} https://example.com", "curl -u alice:<redacted> https://example.com"),
+    (f"curl https://alice:{_PLACEHOLDER}@example.com/x", "curl https://alice:<redacted>@example.com/x"),
+    (f"curl --user=bob:{_PLACEHOLDER} x", "curl --user=bob:<redacted> x"),
+    # Quoted JSON/dict keys (PR review).
+    (f'{{"api_key":"{_PLACEHOLDER}"}}', '{"api_key":"<redacted>"}'),
+    (f"{{'token': '{_PLACEHOLDER}'}}", "{'token': '<redacted>'}"),
+    (f'{{"token": "{_PLACEHOLDER} with spaces"}}', '{"token": "<redacted>"}'),  # the whole quoted value
+    (f"curl -u 'alice:{_PLACEHOLDER} with spaces' x", "curl -u 'alice:<redacted>' x"),
+    (f'curl -u "alice:a\\"{_PLACEHOLDER} more" x', 'curl -u "alice:<redacted>" x'),  # an escaped quote (PR review)
+    (f'{{"token":"a\\"{_PLACEHOLDER} more"}}', '{"token":"<redacted>"}'),  # an escaped quote does not end it
+    # An auth scheme inside a quoted value, and credential terms inside longer names (PR review).
+    (f'{{"authorization":"Basic {_PLACEHOLDER}"}}', '{"authorization":"Basic <redacted>"}'),
+    (f"{{'Authorization': 'Bearer {_PLACEHOLDER}'}}", "{'Authorization': 'Bearer <redacted>'}"),
+    (f"AWS_SECRET_ACCESS_KEY={_PLACEHOLDER} aws s3 ls", "AWS_SECRET_ACCESS_KEY=<redacted> aws s3 ls"),
+    (f'{{"aws_secret_access_key": "{_PLACEHOLDER}"}}', '{"aws_secret_access_key": "<redacted>"}'),
+    ("PASSWORD_FILE=/run/secrets/db ./start", "PASSWORD_FILE=/run/secrets/db ./start"),  # where, not what
+    ("kubectl --token-file=/var/run/t get pods", "kubectl --token-file=/var/run/t get pods"),
+    ("ssh user@host", "ssh user@host"),
     ("gh auth login --with-token ghp_abcdefghijklmnopqrstuvwxyz0123", "gh auth login --with-token <redacted>"),
     ("rm -rf build", "rm -rf build"),
     # References and substitutions are not literals. Redacting them used to turn
@@ -52,6 +92,38 @@ REDACTIONS = [
     ("password=`cat p.txt`", "password=`cat p.txt`"),
     ("curl -H \"Authorization: Bearer $GH_TOKEN\" x", "curl -H \"Authorization: Bearer $GH_TOKEN\" x"),
     ("mysql --password=<(pass show db)", "mysql --password=<(pass show db)"),
+    # A shell quote that opens before the key holds the whole value (PR review):
+    # the value runs to the closing quote, not the first space.
+    (f"curl -H 'X-Api-Key: {_PLACEHOLDER} horse battery' https://x", "curl -H 'X-Api-Key: <redacted>' https://x"),
+    (f'curl -H "Authorization: Token {_PLACEHOLDER} more" x', 'curl -H "Authorization: Token <redacted>" x'),
+    (f"curl --header 'Cookie: session={_PLACEHOLDER}; other=1' x", "curl --header 'Cookie: <redacted>' x"),
+    (f"curl -d 'user=bob&password={_PLACEHOLDER} two&x=1' x", "curl -d 'user=bob&password=<redacted>' x"),
+    (f"bash -c \"curl -H 'X-Api-Key: {_PLACEHOLDER} b' x\"", "bash -c \"curl -H 'X-Api-Key: <redacted>' x\""),
+    (f'"password={_PLACEHOLDER} it\'s more"', '"password=<redacted>"'),  # `'` is literal inside "…"
+    (f"it\\'s -H 'X-Api-Key: {_PLACEHOLDER} b'", "it\\'s -H 'X-Api-Key: <redacted>'"),  # `\'` opens no quote
+    (f"curl --header=X-Api-Key:\\ {_PLACEHOLDER}\\ b x", "curl --header=X-Api-Key:<redacted> x"),
+    ('curl -H "Authorization: Bearer $GH_TOKEN" -H "X-Api-Key: ${KEY}" x',
+     'curl -H "Authorization: Bearer $GH_TOKEN" -H "X-Api-Key: ${KEY}" x'),
+    ("git commit -m 'rotate token handling'", "git commit -m 'rotate token <redacted>'"),  # bare rule, as before
+    # Credential names beyond token/secret/password, and webhook URLs (PR review).
+    (f"GITHUB_PAT={_PLACEHOLDER} gh auth status", "GITHUB_PAT=<redacted> gh auth status"),
+    (f"export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T0/B0/{_PLACEHOLDER}",
+     "export SLACK_WEBHOOK_URL=<redacted>"),
+    (f"curl -X POST https://hooks.slack.com/services/T0/B0/{_PLACEHOLDER} -d '{{}}'",
+     "curl -X POST https://hooks.slack.com/services/<redacted> -d '{}'"),
+    (f"curl https://discord.com/api/webhooks/1234/{_PLACEHOLDER}", "curl https://discord.com/api/webhooks/<redacted>"),
+    (f"AWS_ACCESS_KEY_ID=AKIA{_PLACEHOLDER.upper()}1234 aws sts get-caller-identity",
+     "AWS_ACCESS_KEY_ID=<redacted> aws sts get-caller-identity"),
+    (f"{{\"credentials\": \"{_PLACEHOLDER}\"}}", '{"credentials": "<redacted>"}'),
+    (f"http --auth user:{_PLACEHOLDER} :8000", "http --auth user:<redacted> :8000"),
+    ("gh auth login --web", "gh auth login --web"),
+    (f"SIGNING_KEY={_PLACEHOLDER} make release", "SIGNING_KEY=<redacted> make release"),
+    (f"gh auth login --with-token github_pat_{_PLACEHOLDER}AbCd", "gh auth login --with-token <redacted>"),
+    ("PATH=/usr/bin:$PATH make", "PATH=/usr/bin:$PATH make"),  # not a PAT
+    ("grep -r PATTERN=foo src/", "grep -r PATTERN=foo src/"),
+    ("python -c 'import expat'", "python -c 'import expat'"),
+    ("CREDENTIALS_FILE=/run/creds ./app", "CREDENTIALS_FILE=/run/creds ./app"),  # where, not what
+    ("git log --author=me", "git log --author=me"),
 ]
 
 # Answers that parse as JSON but must not be trusted. Each voids the whole
@@ -89,7 +161,13 @@ def _shim(directory: str, body: str) -> None:
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
-def _run(command: str, shim_body: str | None, extra_env: dict[str, str] | None = None, cwd: str = "/tmp/proj") -> dict:
+def _run(
+    command: str,
+    shim_body: str | None,
+    extra_env: dict[str, str] | None = None,
+    cwd: str = "/tmp/proj",
+    extra_payload: dict | None = None,
+) -> dict:
     with tempfile.TemporaryDirectory() as bindir:
         env = {**os.environ, "HOOK_JEV_ENABLE": "1", "AI_GATEWAY_API_KEY": "test-key", "HOOK_JEV_TIMEOUT": "2"}
         env["BASH_RISK_JUDGE_LOG_DIR"] = os.path.join(bindir, "logs")
@@ -99,10 +177,137 @@ def _run(command: str, shim_body: str | None, extra_env: dict[str, str] | None =
             _shim(bindir, shim_body)
             env["PATH"] = bindir + os.pathsep + env["PATH"]
         env.update(extra_env or {})
-        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd})
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd, **(extra_payload or {})}
+        )
         completed = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, env=env, check=False)
         assert completed.returncode == 0, completed.stderr
         return json.loads(completed.stdout)
+
+
+def _context_tests(failures: list[str]) -> None:
+    """Task context, script bodies and the extra concern questions."""
+    with tempfile.TemporaryDirectory() as work:
+        state_file, args_file = os.path.join(work, "state.txt"), os.path.join(work, "args.txt")
+        capture = f"printf '%s\\n' \"$@\" > '{args_file}'; cat > '{state_file}'; printf '%s' '{SAFE_JSON}'"
+
+        def sent() -> tuple[str, str]:
+            with open(state_file, encoding="utf-8") as state, open(args_file, encoding="utf-8") as args:
+                return state.read(), args.read()
+
+        transcript = os.path.join(work, "session.jsonl")
+        records = [
+            {"type": "user", "message": {"role": "user", "content": "Bump the version in pyproject.toml"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "git status"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "clean"}]}},
+        ]
+        with open(transcript, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(json.dumps(r) for r in records) + "\n")
+        _run("git clean -xdf", capture, cwd=work, extra_payload={"transcript_path": transcript})
+        state, args = sent()
+        if "Bump the version" not in state or "$ git status" not in state:
+            failures.append(f"task and recent commands should reach the model: {state!r}")
+        if "off_task=" not in args:
+            failures.append("off_task question should be asked when the task is known")
+
+        _run("git clean -xdf", capture, cwd=work, extra_env={"BASH_RISK_JUDGE_CONTEXT": "0"},
+             extra_payload={"transcript_path": transcript})
+        state, args = sent()
+        if "Bump the version" in state or "off_task=" in args:
+            failures.append("BASH_RISK_JUDGE_CONTEXT=0 should send the command alone")
+
+        _run("git clean -xdf", capture, cwd=work, extra_payload={"user_prompt": "token=hunter2hunter2 please"})
+        if "hunter2" in sent()[0]:
+            failures.append("the user prompt must be redacted like the command")
+        _run("git clean -xdf", capture, cwd=work, extra_payload={
+            "user_prompt": "Here is my password=correct horse battery staple\nPASSWORD_FILE=/path"})
+        state, _ = sent()
+        if any(word in state for word in ("correct", "horse", "battery", "staple")) or "PASSWORD_FILE=/path" not in state:
+            failures.append("no-space prose secrets must be redacted in the actual model payload")
+
+        # The outbound payload: a PAT in the prompt and a webhook URL in an earlier
+        # command must not reach the model either (PR review).
+        leaky = os.path.join(work, "leaky.jsonl")
+        records = [
+            {"type": "user", "message": {"role": "user", "content": f"Use GITHUB_PAT={_PLACEHOLDER}pat1 for the API"}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {
+                "command": f"export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T0/B0/{_PLACEHOLDER}hook"}}]}},
+        ]
+        with open(leaky, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(json.dumps(r) for r in records) + "\n")
+        _run("git clean -xdf", capture, cwd=work, extra_payload={"transcript_path": leaky})
+        state, _ = sent()
+        if f"{_PLACEHOLDER}pat1" in state or f"{_PLACEHOLDER}hook" in state or state.count("<redacted>") < 2:
+            failures.append(f"PAT and webhook URL in the context must be redacted before sending: {state!r}")
+
+        with open(os.path.join(work, "deploy.sh"), "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nrsync -a dist/ prod:/srv/app/\n")
+        _run("./deploy.sh", capture, cwd=work)
+        state, _ = sent()
+        if "this command executes (script ./deploy.sh)" not in state or "rsync -a dist/" not in state:
+            failures.append(f"script body should be judged: {state!r}")
+
+        marker = os.path.join(work, "called")
+        with open(os.path.join(work, "big.sh"), "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\n" + "echo filler line\n" * 900)
+        out = _run("./big.sh", f"touch '{marker}'; printf '%s' '{SAFE_JSON}'", cwd=work)
+        if _decision(out) != "ask" or os.path.exists(marker):
+            failures.append(f"a script too long to send should ask without a model call, got {out}")
+
+    for question_id, wording in (("persistence", "persistence"), ("weakens_controls", "safety control"),
+                                 ("fetch_and_execute", "downloaded code"), ("off_task", "outside")):
+        verdict = json.dumps({"answers": {question_id: {"probability": 0.9}}})
+        out = _run("crontab -e", f"cat >/dev/null; printf '%s' '{verdict}'")
+        reason = out.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        if _decision(out) != "ask" or wording not in reason:
+            failures.append(f"{question_id} >= threshold should ask naming it, got {out}")
+
+    out = _run("crontab -e", f"cat >/dev/null; printf '%s' '{SUCCESS_JSON}'",
+               extra_payload={"permission_mode": "bypassPermissions"})
+    if _decision(out) != "ask":
+        failures.append("the model's ask must stay an ask by default, even when unattended")
+    out = _run("crontab -e", f"cat >/dev/null; printf '%s' '{SUCCESS_JSON}'",
+               {"BASH_RISK_JUDGE_UNATTENDED_DENY": "1"}, extra_payload={"permission_mode": "bypassPermissions"})
+    if _decision(out) != "deny":
+        failures.append("BASH_RISK_JUDGE_UNATTENDED_DENY=1 should turn an unattended ask into deny")
+
+
+def _client_tests(failures: list[str]) -> None:
+    """How the hook invokes `ai`: subcommand, credentials and proxy environment."""
+    def _invoke(extra_env: dict[str, str], drop: tuple[str, ...]) -> tuple[dict, list[str]]:
+        with tempfile.TemporaryDirectory() as bindir:
+            capture = os.path.join(bindir, "ai-call.txt")
+            _shim(bindir, f'printf "%s\\n" "proxy=$NODE_USE_ENV_PROXY" "$@" > "{capture}"; cat >/dev/null; '
+                          f"printf '%s' '{SUCCESS_JSON}'")
+            env = {**os.environ, "HOOK_JEV_ENABLE": "1", "PATH": bindir, **extra_env}
+            for name in drop:
+                env.pop(name, None)
+            env["BASH_RISK_JUDGE_LOG_DIR"] = os.path.join(bindir, "logs")
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git clean -xdf"}, "cwd": "/tmp/proj"})
+            completed = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, env=env, check=False)
+            call = open(capture, encoding="utf-8").read().split("\n") if os.path.exists(capture) else []
+            return json.loads(completed.stdout), call
+
+    proxies = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NODE_USE_ENV_PROXY")
+    # A Vercel OIDC token is a credential too: no fnox wrapper needed.
+    out, call = _invoke({"VERCEL_OIDC_TOKEN": "oidc"}, ("AI_GATEWAY_API_KEY", *proxies))
+    if _decision(out) != "ask" or call[1:2] != ["decide"]:
+        failures.append(f"VERCEL_OIDC_TOKEN should call `ai decide` directly, got {out} / {call}")
+    if call[:1] != ["proxy="]:
+        failures.append(f"without a proxy NODE_USE_ENV_PROXY must stay unset, got {call[:1]}")
+    # Node's fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set.
+    out, call = _invoke({"AI_GATEWAY_API_KEY": "k", "HTTPS_PROXY": "http://127.0.0.1:9"}, proxies[1:])
+    if call[:1] != ["proxy=1"]:
+        failures.append(f"with HTTPS_PROXY set the CLI should get NODE_USE_ENV_PROXY=1, got {call[:1]}")
+    # An explicit setting wins.
+    out, call = _invoke({"AI_GATEWAY_API_KEY": "k", "HTTPS_PROXY": "http://127.0.0.1:9", "NODE_USE_ENV_PROXY": "0"}, ())
+    if call[:1] != ["proxy=0"]:
+        failures.append(f"an explicit NODE_USE_ENV_PROXY must be kept, got {call[:1]}")
+    # The model is configurable, e.g. OpenAI's decisions model through the gateway.
+    out, call = _invoke({"AI_GATEWAY_API_KEY": "k", "HOOK_JEV_MODEL": "openai/gpt-6-luna-decisions"}, proxies)
+    if "openai/gpt-6-luna-decisions" not in call:
+        failures.append(f"HOOK_JEV_MODEL should be passed as -m, got {call}")
 
 
 def _decision(output: dict) -> str | None:
@@ -200,18 +405,18 @@ def main() -> None:
             if decision not in (None, "ask"):
                 failures.append(f"judge emitted {decision!r} for {command!r}; only ask/defer are permitted")
 
-    # Combined: a "safe" model verdict must not soften the deterministic deny.
+    # Combined: a "safe" model verdict must not soften the deterministic ask.
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}, "cwd": "/tmp/proj"})
     guard = os.path.join(os.path.dirname(_HOOK), "rm_rf_guard.py")
-    denied = subprocess.run([sys.executable, guard], input=payload, capture_output=True, text=True, check=False)
+    asked = subprocess.run([sys.executable, guard], input=payload, capture_output=True, text=True, check=False)
     judged = _run("rm -rf build", f"cat >/dev/null; printf '%s' '{SAFE_JSON}'")
-    if _decision(json.loads(denied.stdout)) != "deny" or judged != {}:
-        failures.append(f"rm -rf must stay denied while the judge defers, got {denied.stdout!r} / {judged}")
+    if _decision(json.loads(asked.stdout)) != "ask" or judged != {}:
+        failures.append(f"rm -rf must stay asked while the judge defers, got {asked.stdout!r} / {judged}")
 
     # Fallbacks: every one of these must defer with `{}`.
     fallbacks = {
         "ai missing from PATH": ("rm -rf build", None, {}),
-        "old ai without evaluate": ("rm -rf build", "echo \"error: unknown command 'evaluate'\" >&2; exit 1", {}),
+        "old ai without decide": ("rm -rf build", "echo \"error: unknown command 'decide'\" >&2; exit 1", {}),
         "non-zero exit": ("rm -rf build", "exit 1", {}),
         "malformed JSON": ("rm -rf build", "cat >/dev/null; echo 'not json'", {}),
         "JSON without answers": ("rm -rf build", "cat >/dev/null; echo '{\"usage\": {}}'", {}),
@@ -256,6 +461,9 @@ def main() -> None:
     completed = subprocess.run([sys.executable, _HOOK], input=payload, capture_output=True, text=True, check=False)
     if json.loads(completed.stdout) != {}:
         failures.append("non-Bash tool should defer")
+
+    _context_tests(failures)
+    _client_tests(failures)
 
     if failures:
         print("FAILURES:")

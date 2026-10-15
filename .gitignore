@@ -334,3 +334,7 @@ dist
 
 # Temporary work files
 scratchpad/
+
+# Python bytecode from running the hook tests
+__pycache__/
+*.py[co]

@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -21,6 +22,8 @@ from secrets_guard import (  # noqa: E402
     DEFAULT_LEVEL,
     check_command,
     check_path,
+    evaluate,
+    find_command_rule,
     is_allowlisted,
 )
 from secrets_guard_rules import CRITICAL, HIGH, STRICT  # noqa: E402
@@ -29,6 +32,14 @@ _GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "secrets_guard
 
 # (path, expected rule_id or None) at the default "high" level
 PATH_CASES = [
+    # --- coding-agent and CLI login tokens ---
+    ("~/.claude/.credentials.json", "agent-credentials"),
+    ("/Users/me/.codex/auth.json", "agent-credentials"),
+    ("~/.pi/agent/auth.json", "agent-credentials"),
+    ("~/.local/share/opencode/auth.json", "agent-credentials"),
+    ("~/.config/gh/hosts.yml", "agent-credentials"),
+    ("~/.git-credentials", "agent-credentials"),
+    ("src/auth.json", None),
     # --- from read_env_protection_hook.py ---
     (".env", "env-file"),
     (".env.local", "env-file"),
@@ -210,6 +221,19 @@ COMMAND_CASES = [
     ("grep -r password src/", None),
     ("base64 .env", None),
     ("history | grep ssh", None),
+    # --- coding-agent tokens ---
+    ("cat ~/.codex/auth.json", "read-agent-credentials"),
+    ("jq -r .accessToken ~/.claude/.credentials.json", "read-agent-credentials"),
+    ("ls ~/.codex", None),
+    # --- strings a shell parses again ---
+    ("bash -c 'cat .env'", "read-env"),
+    ("eval 'cat .env'", "read-env"),
+    ("ssh host 'cat .env'", "read-env"),
+    ("echo 'cat .env' | sh", "read-env"),
+    ("python3 -c \"import os; os.system('cat ~/.ssh/id_rsa')\"", "read-private-key"),
+    # Any other literal may only be data: found, but asked about (below).
+    ("python3 -c \"import subprocess; subprocess.run(['echo', 'cat ~/.ssh/id_rsa'])\"", None),
+    ("cat <<'EOF' > notes.md\ncat .env\nEOF", None),
 ]
 
 LEVEL_COMMAND_CASES = [
@@ -272,6 +296,18 @@ def main() -> int:
         rule = check_command(command, level)
         actual = rule.rule_id if rule else None
         _check(actual == expected, f"{command:<52} -> {actual}", failures)
+
+    found = find_command_rule("python3 -c \"import subprocess; subprocess.run(['echo', 'cat ~/.ssh/id_rsa'])\"", level)
+    _check(found is not None and found[0].rule_id == "read-private-key" and found[2],
+           "a secret read in an interpreter string is found and asked about", failures)
+
+    print("\nSecret files named in interpreter code (asked about):")
+    for command in ("python3 -c \"print(open('/home/u/.ssh/id_rsa').read())\"",
+                    "node -e 'require(\"fs\").readFileSync(process.env.HOME + \"/.aws/credentials\")'"):
+        found = evaluate("Bash", {"command": command}, level, "/tmp")
+        _check(found is not None and found[2], f"{command[:60]} -> {found and found[0].rule_id}", failures)
+    _check(evaluate("Bash", {"command": "python3 -c 'print(1)'"}, level, "/tmp") is None,
+           "interpreter code without a secret path -> nothing", failures)
 
     print("\nLevel gating:")
     for threshold, command, expected in LEVEL_COMMAND_CASES:
@@ -352,6 +388,12 @@ def main() -> int:
         [sys.executable, _GUARD], input="not json", capture_output=True, text=True, check=False
     )
     _check(result.returncode == 1 and "invalid JSON" in result.stderr, "bad stdin -> exit 1", failures)
+
+    # A long word (an inline base64 blob) is checked well inside the hook timeout (live-session review).
+    started = time.perf_counter()
+    code, out, _ = _run({"tool_name": "Bash", "tool_input": {"command": "echo " + "QUJD" * 20_000 + " | wc -c"}},
+                        base_env)
+    _check(code == 0 and out == {} and time.perf_counter() - started < 5, "a 80 kB word is checked quickly", failures)
 
     logged = os.path.isdir(log_dir) and any(n.endswith(".jsonl") for n in os.listdir(log_dir))
     _check(logged, "writes a JSONL audit log", failures)

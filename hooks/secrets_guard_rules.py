@@ -73,8 +73,10 @@ ALLOWLIST = _rx(
 
 # Same idea, but usable mid-command so `cat .env.example; cat .env` still trips
 # the second half instead of the whole command being waved through.
+# Anchored at the start of a word: tried from every position, `\S*` takes
+# quadratic time on a long word (an inline base64 blob).
 ALLOWLIST_IN_COMMAND = _rx(
-    r"\S*(?:\.env\.(?:example|sample|template|schema|defaults|dist)|env\.example|example\.env)\b"
+    r"(?<!\S)\S*(?:\.env\.(?:example|sample|template|schema|defaults|dist)|env\.example|example\.env)\b"
 )
 
 # Commands that can only ever mention a secret path as literal text.
@@ -96,7 +98,23 @@ _SECRET_NAME = r"(?<![\w.-])(?:secrets?|credentials?)(?:\.(?:json|ya?ml|toml|ini
 # would otherwise fire on entirely innocent pipelines.
 _SECRET_TOKEN = (
     rf"(?:\.envrc\b|\.env\b|{_SECRET_NAME}|id_rsa\b|id_ed25519\b|id_ecdsa\b"
-    r"|id_dsa\b|\.pem\b|\.key\b|\.netrc\b|authorized_keys\b|\.p12\b|\.pfx\b|\.pgpass\b)"
+    r"|id_dsa\b|\.pem\b|\.key\b|\.netrc\b|authorized_keys\b|\.p12\b|\.pfx\b|\.pgpass\b"
+    r"|\.git-credentials\b|\.credentials\.json\b)"
+)
+
+# Coding-agent and developer-CLI login tokens. Path list follows
+# cc-safety-net's coding-CLI credential rules (MIT, kenryu42/cc-safety-net).
+_AGENT_CREDENTIALS = (
+    r"\.claude/\.credentials\.json"
+    r"|\.codex/(?:auth\.json|\.credentials\.json|secrets|\.sandbox-secrets)"
+    r"|\.(?:pi|omp)/agent/auth\.json"
+    r"|\.local/share/(?:opencode/(?:auth|mcp-auth)\.json|amp/secrets\.json|devin/credentials\.toml)"
+    r"|\.gemini/(?:oauth_creds|mcp-oauth-tokens|a2a-oauth-tokens|gemini-credentials)\.json"
+    r"|\.copilot/(?:mcp-oauth-config|mcp-secrets)"
+    r"|\.(?:cursor|config/cursor|grok)/(?:auth|mcp_credentials)\.json"
+    r"|\.factory/auth\.(?:encrypted|v2\.file|v2\.key)"
+    r"|\.config/gh/hosts\.yml"
+    r"|\.git-credentials"
 )
 _READERS = r"(?:cat|bat|less|more|head|tail|view|nl|od|xxd|strings|open)"
 _EDITORS = r"(?:nano|vi|vim|nvim|emacs|code|codium|subl|atom|gedit|micro|helix|hx)"
@@ -147,6 +165,8 @@ SECRET_FILES: tuple[FileRule, ...] = (
     FileRule("key-file", CRITICAL, _rx(r"\.key$"), "Key file"),
     FileRule("pkcs12-key", CRITICAL, _rx(r"\.(?:p12|pfx)$"), "PKCS#12 key file"),
     FileRule("age-key", CRITICAL, _rx(r"(?:^|/)(?:key\.txt|keys\.txt|age\.key)$"), "age/sops key material"),
+    FileRule("agent-credentials", CRITICAL, _rx(rf"(?:^|/)(?:{_AGENT_CREDENTIALS})$"),
+             "coding-agent or CLI login token (Claude, Codex, pi, opencode, gh, git credentials)"),
 
     # ---- high ----
     # Tool-specific rules come first so their id appears in the message; the
@@ -200,6 +220,9 @@ SECRET_COMMANDS: tuple[CommandRule, ...] = (
     CommandRule("read-cloud-creds", CRITICAL,
                 _rx(rf"{_HEAD}{_READERS}\s+{_SEG}(?:\.aws/credentials|\.kube/config|\.azure/)"),
                 "Reading cloud credentials"),
+    CommandRule("read-agent-credentials", CRITICAL,
+                _rx(rf"{_HEAD}(?:{_READERS}|grep|rg|jq|base64|xxd|cp|scp|rsync)\b{_SEG}(?:{_AGENT_CREDENTIALS})\b"),
+                "Reading a coding-agent or CLI login token"),
     CommandRule("edit-env", CRITICAL, _rx(rf"{_HEAD}{_EDITORS}\s+{_SEG}\.env\b"),
                 "Opening a .env file in an editor", _ENV_WRITE_HINT),
 

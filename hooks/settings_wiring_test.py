@@ -29,6 +29,8 @@ HANDLED_TOOLS = {
     "bash_risk_judge.py": {"Bash"},
     "secrets_guard.py": READ_TOOLS | WRITE_TOOLS | {"Bash"},
     "file_protection.py": set(WRITE_TOOLS),
+    "dangerous_commands.py": {"Bash"},
+    "config_guard.py": WRITE_TOOLS | {"Bash"},
 }
 
 
