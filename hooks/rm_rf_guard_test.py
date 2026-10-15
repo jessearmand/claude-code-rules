@@ -54,6 +54,7 @@ SHOULD_BLOCK = [
     "sudo -u root rm -rf /",
     "sudo -Eu root rm -rf /",
     "timeout 5 rm -rf build",
+    "strace -o /dev/null rm -rf victim",
     "nice -n 5 rm -rf build",
     "xargs -I{} rm -rf {}",
     "busybox rm -rf build",

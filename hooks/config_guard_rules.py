@@ -8,7 +8,7 @@ the next session (the CHAINDROP npm worm persisted through
 configures (Claude Code, Codex, omp, pi, opencode), the instructions they
 load into every session from the user's home (skills, subagents, commands,
 global AGENTS.md), and the places a process can make itself run again later
-(shell startup files, git hooks and git config, launchd and systemd user units).
+(shell startup files, git hooks and git config, launchd, systemd, and cron).
 
 Patterns are matched against a `/`-separated path. Most are anchored on a
 path suffix (`(?:^|/)\\.claude/settings...`) so they hold for `~/...`,
@@ -122,7 +122,9 @@ CONFIG_RULES: tuple[ConfigRule, ...] = (
 )
 
 # Directories whose removal, move or permission change would take a protected
-# path with it. `~` is expanded by the guard.
+# path with it. `~` is expanded by the guard. The system entries are the
+# persistence locations outside the home directory: the file rules match a
+# unit or crontab, not an ancestor such as `/etc` or `/Library`.
 PROTECTED_ROOTS: tuple[str, ...] = (
     "~/.claude",
     "~/.codex",
@@ -133,6 +135,18 @@ PROTECTED_ROOTS: tuple[str, ...] = (
     "~/.ssh",
     "~/Library/LaunchAgents",
     "~/.config/systemd/user",
+    "/etc/systemd",
+    "/etc/crontab",
+    "/etc/cron.d",
+    "/etc/cron.hourly",
+    "/etc/cron.daily",
+    "/etc/cron.weekly",
+    "/etc/cron.monthly",
+    "/etc/gitconfig",
+    "/Library/LaunchAgents",
+    "/Library/LaunchDaemons",
+    "/System/Library/LaunchAgents",
+    "/System/Library/LaunchDaemons",
 )
 # Relative to the session's working directory.
 PROJECT_PROTECTED_ROOTS: tuple[str, ...] = (".claude", ".git/hooks")

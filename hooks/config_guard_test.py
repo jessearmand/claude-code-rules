@@ -27,6 +27,7 @@ BASH_CASES = [
     ("sed -i 's/deny/allow/' ~/.claude/settings.json", "deny", "claude-settings"),
     ("jq '.permissions.allow += [\"Bash\"]' s.json | sponge ~/.claude/settings.local.json", "deny", "claude-settings"),
     ("cp evil.json .claude/settings.local.json", "deny", "claude-settings"),
+    ("strace -o /dev/null cp evil ~/.claude/settings.json", "deny", "claude-settings"),
     ("ln -sf /tmp/x ~/.claude/settings.json", "deny", "claude-settings"),
     ("bash -c 'cat x > $HOME/.claude/settings.json'", "deny", "claude-settings"),
     ("echo '{}' > ~/.claude.json", "deny", "claude-user-state"),
@@ -43,6 +44,13 @@ BASH_CASES = [
     ("echo 'ProxyCommand sh' >> ~/.ssh/config", "deny", "ssh-config"),
     # Removing, moving or re-permissioning a directory that holds protected paths.
     ("rm -r ~/.claude", "deny", None),
+    # An ancestor of a system persistence location takes it with it (PR review).
+    ("sudo rm -r /etc/systemd", "deny", "systemd-units"),
+    ("sudo rm -r /etc", "deny", "systemd-units"),
+    ("sudo chmod -R 755 /etc", "deny", "systemd-units"),
+    ("sudo rm -r /Library", "deny", "launch-agents"),
+    ("sudo rm -r /usr/share", None, None),
+    ("sudo rm -r /etc/hostname", None, None),
     ("mv ~/.claude ~/.claude.bak", "deny", None),
     ("chmod -R 000 ~/.codex", "deny", None),
     # A mode that starts with a dash reads as an option (live-session review).

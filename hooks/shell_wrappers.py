@@ -73,6 +73,18 @@ PREFIX_WRAPPERS: dict[str, WrapperSpec] = {
     "setsid": WrapperSpec(),
     "stdbuf": WrapperSpec(_opts("-i", "--input", "-o", "--output", "-e", "--error")),
     "time": WrapperSpec(_opts("-f", "--format", "-o", "--output")),
+    # strace runs the command after its options (strace's getopt table). Only
+    # required arguments are listed. Optional ones (`--quiet`, `--daemonize`)
+    # stay flags, so `strace --quiet git status` still reaches git.
+    "strace": WrapperSpec(_opts(
+        "-a", "--columns", "-b", "--detach-on", "-e", "-E", "--env",
+        "-I", "--interruptible", "-o", "--output", "-O", "--summary-syscall-overhead",
+        "-p", "--attach", "-P", "--trace-path", "-s", "--string-limit",
+        "-S", "--summary-sort-by", "-u", "--user", "-U", "--summary-columns",
+        "-X", "--const-print-style", "--argv0", "--color", "--syscall-limit",
+        "--stack-trace-frame-limit", "--trace", "--trace-fds", "--signals", "--signal",
+        "--status", "--abbrev", "--verbose", "--raw", "--read", "--write",
+        "--fault", "--inject", "--kvm", "--decode-pids")),
     "command": WrapperSpec(no_exec=_opts("-v", "-V")),
     "builtin": WrapperSpec(),
     "exec": WrapperSpec(_opts("-a")),

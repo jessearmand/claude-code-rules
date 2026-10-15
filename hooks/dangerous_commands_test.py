@@ -117,6 +117,8 @@ CASES = [
     ("echo $TRANSACTION | git update-ref --stdin", "ask", "git-update-ref-delete"),
     # ---- git: discarding work ----
     ("git reset --hard HEAD~3", "deny", "git-reset-hard"),
+    ("strace -o /dev/null git reset --hard", "deny", "git-reset-hard"),
+    ("strace -o trace git status", None, None),
     ("git reset --merge", "deny", "git-reset-hard"),
     ("git -C ../other reset --hard", "deny", "git-reset-hard"),
     # A signal handler runs when the signal arrives, with the state then (PR review).
