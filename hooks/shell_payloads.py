@@ -14,6 +14,7 @@ import shlex
 from collections.abc import Callable
 
 import db_client_files
+from command_stdin import known_stdin
 from shell_expand import (
     _echoed_text,
 )
@@ -408,6 +409,9 @@ def _client_shell_commands(command: SimpleCommand, ctx: _Context) -> list[tuple[
     pattern = _CLIENT_SHELL[db_client_files.DIALECTS[command.name]]
     inputs = [db_client_files.ClientInput(text, True) for text in _client_texts(command)]
     inputs += _client_file_texts(command, ctx)
+    source = known_stdin(command, ctx.result, ctx.written_files)
+    if source is not None:
+        inputs.append(source)
 
     def unknown(_name: str) -> None:
         ctx.result.truncated = True  # an included file that cannot be followed

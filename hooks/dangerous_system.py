@@ -431,6 +431,17 @@ def _publish(command: SimpleCommand, ctx: RuleContext) -> str | None:
         return None
     if command.name == "yarn" and words[0] == "npm" and (len(words) < 2 or words[1] != "publish"):
         return None
+    if (command.name, words[0]) in (("cargo", "owner"), ("gem", "owner")) and not (
+            short_flag(command.args, "ar", with_value="ar") or has(command.args, "--add", "--remove")
+            or any(a.startswith(("--add=", "--remove=")) for a in command.args)):
+        return None
+    if command.name == "npm" and words[0] == "dist-tag" and words[1:2] in ([], ["ls"], ["list"]):
+        return None
+    if command.name == "pod" and words[0] == "trunk" and words[1:2] not in (
+            ["push"], ["delete"], ["deprecate"], ["add-owner"], ["remove-owner"]):
+        return None
+    if command.name == "dotnet" and words[0] == "nuget" and words[1:2] not in (["push"], ["delete"]):
+        return None
     if has(command.args, "--dry-run", "-n") or long_flag(command.args, "--dry-run"):
         return None
     return f"{command.name} {words[0]}"
@@ -440,7 +451,8 @@ def _push_artifact(command: SimpleCommand, ctx: RuleContext) -> str | None:
     words = positional_words(command)
     if command.name in ("docker", "podman", "buildah") and words[:1] == ["push"]:
         return f"{command.name} push"
-    if command.name == "gh" and words[:2] in (["release", "create"], ["release", "delete"], ["repo", "delete"]):
+    if command.name == "gh" and words[:2] in (["release", "create"], ["release", "delete"],
+                                               ["release", "upload"], ["repo", "delete"]):
         return "gh " + " ".join(words[:2])
     return None
 

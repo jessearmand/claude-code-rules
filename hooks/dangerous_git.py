@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 
 from command_stdin import known_stdin
@@ -47,17 +48,21 @@ class Git:
     # Where git works: the command's possible directories, then each `-C DIR`
     # in turn. Empty when no directory is known.
     directories: tuple[str, ...] = ()
+    repository_options: tuple[str, ...] = ()
 
 
 def git_invocation(command: SimpleCommand) -> Git | None:
     if command.name != "git" or command.dynamic_head:
         return None
     args, config, from_env = list(command.args), [], []
+    repository_options: list[str] = []
     directories = [d for d in command.possible_cwds if d is not None]
     index = 0
     while index < len(args):
         arg = args[index]
         if arg in _GLOBAL_WITH_VALUE:
+            if arg in ("--git-dir", "--work-tree", "--namespace") and index + 1 < len(args):
+                repository_options.extend((arg, args[index + 1]))
             if arg == "-C" and index + 1 < len(args):
                 # `git -C a -C b`: b is relative to a.
                 target = os.path.expanduser(args[index + 1])
@@ -73,6 +78,8 @@ def git_invocation(command: SimpleCommand) -> Git | None:
             config.append(arg[2:])
         elif arg.startswith("--config-env="):
             from_env.append(arg.split("=", 1)[1])
+        elif arg.startswith(("--git-dir=", "--work-tree=", "--namespace=")):
+            repository_options.append(arg)
         if arg.startswith("-"):
             index += 1
             continue
@@ -91,7 +98,7 @@ def git_invocation(command: SimpleCommand) -> Git | None:
         return None
     rest = tuple(args[index + 1:]) if arg else ()
     return Git(arg, rest, tuple(_normalize_config(c) for c in config), tuple(unresolved),
-               tuple(dict.fromkeys(os.path.normpath(d) for d in directories)))
+               tuple(dict.fromkeys(os.path.normpath(d) for d in directories)), tuple(repository_options))
 
 
 def _normalize_config(item: str) -> str:
@@ -414,11 +421,43 @@ def _update_ref_delete(command: SimpleCommand, ctx: RuleContext) -> str | MatchD
     git = git_invocation(command)
     if git is None or git.subcommand != "update-ref":
         return None
-    if short_flag(git.args, "d") or long_flag(git.args, "--delete"):
+    if short_flag(git.args, "d", with_value="m") or long_flag(git.args, "--delete"):
         return "git update-ref -d"
     if "--stdin" not in git.args:
+        refs = operands(git.args, frozenset({"-m"}))
+        if len(refs) < 2:
+            return None
+        # An all-zero old value explicitly requires creation, never replacement.
+        if len(refs) >= 3 and re.fullmatch(r"0{40}|0{64}", refs[2]):
+            return None
+        unknown = False
+        lookup_env = dict(os.environ)
+        for key in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_NAMESPACE"):
+            values = command.env_values(key)
+            if len(values) > 1:
+                return MatchDetail("git update-ref (ambiguous repository)", indirect=True,
+                                   origin="unresolved git repository")
+            if values:
+                lookup_env[key] = values[0]
+        for directory in git.directories or (ctx.cwd,):
+            try:
+                # Read refs through Git to support packed refs and linked worktrees.
+                result = subprocess.run(
+                    ["git", "-C", directory, *git.repository_options,
+                     "show-ref", "--verify", "--quiet", "--", refs[0]],
+                    capture_output=True, timeout=2, check=False, env=lookup_env,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                unknown = True
+                continue
+            if result.returncode == 0:
+                return "git update-ref (replace existing ref)"
+            unknown |= result.returncode != 1
+        if unknown:
+            return MatchDetail("git update-ref (unresolved target ref)", indirect=True,
+                               origin="unresolved git ref lookup")
         return None
-    source = known_stdin(command, ctx)
+    source = known_stdin(command, ctx.parsed)
     if source is None:
         return MatchDetail("git update-ref --stdin (unresolved transaction)", indirect=True,
                            origin="unresolved git update-ref stdin")
@@ -479,7 +518,8 @@ _PROGRAM_KEYS = frozenset({"core.sshcommand", "core.fsmonitor", "core.pager", "c
 # Per-driver keys whose value is a command git runs through the shell:
 # `filter.X.clean`/`smudge`/`process`, `diff.X.textconv`/`command`, `merge.X.driver`.
 _PROGRAM_KEY_PATTERN = re.compile(r"filter\.[^=]+\.(?:clean|smudge|process)|diff\.[^=]+\.(?:textconv|command)"
-                                  r"|merge\.[^=]+\.driver|gpg(?:\.[^=]+)?\.program|core\.gitproxy")
+                                  r"|merge\.[^=]+\.driver|gpg(?:\.[^=]+)?\.program|core\.gitproxy"
+                                  r"|credential\..+\.helper")
 
 
 # `protocol.ext.allow=always` lets any URL run a program through git-remote-ext;
@@ -579,7 +619,7 @@ GIT_RULES: tuple[DangerRule, ...] = (
                _HISTORY_HINT, _reflog_delete),
     DangerRule("git-filter-history", HIGH, "history rewriting tools rewrite every commit", _HISTORY_HINT,
                _filter_history),
-    DangerRule("git-update-ref-delete", HIGH, "git update-ref -d deletes a ref directly", _HISTORY_HINT,
+    DangerRule("git-update-ref-delete", HIGH, "git update-ref deletes or replaces refs", _HISTORY_HINT,
                _update_ref_delete),
     DangerRule("git-hooks-path", HIGH, "core.hooksPath redirects or disables git hooks",
                "Hooks are a control point; leave hook configuration to the user.", _hooks_path),

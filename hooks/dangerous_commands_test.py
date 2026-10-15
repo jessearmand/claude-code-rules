@@ -19,6 +19,48 @@ _CWD = os.path.dirname(_HOOKS_DIR)
 
 # (command, expected decision or None, expected rule id or None)
 CASES = [
+    # Follow-up review: existing rule families, with risky and read-only controls.
+    ("git -c 'credential.https://example.com.helper=!touch marker' credential fill", "deny", "git-unsafe-override"),
+    ("git -c 'credential.https://example.com.username=alice' credential fill", None, None),
+    ("git --config-env=credential.https://example.com.helper=HELPER credential fill", "ask", "git-config-env-unknown"),
+    ("printf '.shell git reset --hard\\n' | sqlite3 :memory:", "deny", "git-reset-hard"),
+    ("printf '.shell git reset --hard\\n' | cat | sqlite3 :memory:", "deny", "git-reset-hard"),
+    ("printf 'DROP TABLE users;' | cat | psql", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' | cat | cat | psql", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' | cat - | psql", "deny", "sql-destructive"),
+    ("printf 'DROP TABLE users;' | cat | psql <<< 'SELECT 1;'", None, None),
+    ("printf 'DROP TABLE users;' > out.sql | cat | psql", None, None),
+    ("printf 'SELECT 1;' | cat | psql", None, None),
+    ("printf 'SELECT 1;' | sqlite3 :memory:", None, None),
+    ("cargo owner --list serde", None, None),
+    ("cargo owner -l serde", None, None),
+    ("cargo owner serde", None, None),
+    ("cargo owner --add alice serde", "deny", "publish-package"),
+    ("cargo owner --remove alice serde", "deny", "publish-package"),
+    ("cargo owner -aalice serde", "deny", "publish-package"),
+    ("cargo owner --list --add alice serde", "deny", "publish-package"),
+    ("gem owner --add alice serde", "deny", "publish-package"),
+    ("gem owner serde", None, None),
+    ("npm dist-tag ls package", None, None),
+    ("npm dist-tag add package@1 latest", "deny", "publish-package"),
+    ("dotnet nuget list source", None, None),
+    ("dotnet nuget push app.nupkg", "deny", "publish-package"),
+    ("pod trunk info AFNetworking", None, None),
+    ("pod trunk push App.podspec", "deny", "publish-package"),
+    ("gh release upload v1.0 dist/app.tar.gz", "ask", "push-artifact"),
+    ("gh release upload v1.0 dist/app.tar.gz --clobber", "ask", "push-artifact"),
+    ("gh release view v1.0", None, None),
+    ("sqlite3 prod.db 'DROP VIEW active_users'", "deny", "sql-destructive"),
+    ("psql -c 'DROP FUNCTION f()'", "deny", "sql-destructive"),
+    ("mysql -e 'DROP PROCEDURE p'", "deny", "sql-destructive"),
+    ("sqlite3 prod.db 'DROP INDEX users_idx'", "deny", "sql-destructive"),
+    ("psql -c 'DROP TYPE mood'", "deny", "sql-destructive"),
+    ("psql -c 'DROP EXTENSION hstore'", "deny", "sql-destructive"),
+    ("psql -c 'DROP MATERIALIZED VIEW active_users'", "deny", "sql-destructive"),
+    ("sqlite3 prod.db 'CREATE VIEW active_users AS SELECT 1'", None, None),
+    ("sqlite3 prod.db \"SELECT 'DROP VIEW active_users'\"", None, None),
+    ("psql -c 'SELECT $$DROP FUNCTION f()$$'", None, None),
+    ("psql -c '/* DROP TYPE mood */ SELECT 1'", None, None),
     ("aws s3 sync empty/ s3://prod --delete", "deny", "aws-delete"),
     ("aws s3 sync empty/ s3://prod --delete --dryrun", None, None),
     ("aws s3 sync empty/ s3://prod", None, None),
@@ -541,6 +583,27 @@ def main() -> int:
 
     print("\nEnd-to-end and configuration:")
     with tempfile.TemporaryDirectory() as project:
+        # Real refs, including packed refs and a linked worktree; no risky command is run.
+        repo = os.path.join(project, "refsrepo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        subprocess.run(["git", "-C", repo, "-c", "user.name=Guard Test", "-c", "user.email=guard@example.invalid",
+                        "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+        subprocess.run(["git", "-C", repo, "branch", "victim"], check=True)
+        subprocess.run(["git", "-C", repo, "pack-refs", "--all"], check=True)
+        linked = os.path.join(project, "linked")
+        subprocess.run(["git", "-C", repo, "worktree", "add", "-q", "--detach", linked], check=True)
+        for command, cwd, expected in (
+            ("git update-ref refs/heads/victim HEAD~5", repo, "deny"),
+            ("git update-ref -m 'ref move' refs/heads/victim HEAD", linked, "deny"),
+            ("git -C refsrepo update-ref refs/heads/victim HEAD", project, "deny"),
+            ("git --git-dir=refsrepo/.git update-ref refs/heads/victim HEAD", project, "deny"),
+            ("GIT_DIR=refsrepo/.git git update-ref refs/heads/victim HEAD", project, "deny"),
+            ("git update-ref refs/heads/new HEAD", repo, None),
+            ("git update-ref -m -description refs/heads/new HEAD", repo, None),
+            ("git update-ref refs/heads/victim HEAD " + "0" * 40, repo, None),
+        ):
+            decision = _decision(_run_hook(command, cwd))
+            _check(decision == expected, f"direct ref update: {command} -> {decision}", failures)
         with open(os.path.join(project, "deploy.sh"), "w", encoding="utf-8") as handle:
             handle.write("#!/bin/sh\ngit push --force origin main\n")
         _check(_decision(_run_hook("git push -f", project)) == "deny", "hook denies typed command", failures)
@@ -644,6 +707,9 @@ def main() -> int:
             _check(decision == expected, f"included file: {command} -> {decision}", failures)
         for command, expected in (
             ("psql -f drop.sql", "ask"),
+            ("cat drop.sql | cat | psql", "ask"),
+            ("cat select.sql | cat | psql", None),
+            ("printf 'DROP TABLE users;' > typed.sql; cat typed.sql | cat | psql", "deny"),
             ("psql < drop.sql", "ask"),
             ("cat drop.sql | psql", "ask"),
             ("cat < drop.sql | psql", "ask"),

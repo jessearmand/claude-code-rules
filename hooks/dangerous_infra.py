@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 
 import db_client_files
+from command_stdin import known_stdin
 from danger_rule import (
     HIGH,
     DangerRule,
@@ -26,7 +27,7 @@ from danger_rule import (
     positional_words,
     short_flag,
 )
-from shell_parse import SimpleCommand, echoed_text
+from shell_parse import SimpleCommand
 
 # --------------------------------------------------------------------------- #
 # Terraform / OpenTofu
@@ -254,7 +255,9 @@ _SQL_DESTRUCTIVE = re.compile(
     # A DELETE is whole-table when no WHERE follows before the statement ends
     # (`DELETE FROM t;`, `DELETE FROM t RETURNING id;`, `DELETE u FROM users AS u;`),
     # and so is SQL Server's `DELETE t` without FROM, ending the statement.
-    rf"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|USER|ROLE)|TRUNCATE\b"
+    # DROP always removes a database object. Quoted data is blanked before matching;
+    # matching the verb avoids an incomplete list of dialect-specific object names.
+    rf"\b(?:DROP\s+[A-Z]+\b|TRUNCATE\b"
     rf"|DELETE\s+{_DELETE_MODIFIERS}(?:{_DELETE_TARGETS}\s+)?FROM\s+{_SQL_NAME}{_NO_WHERE}"
     rf"|DELETE\s+(?!(?:FROM|CASCADE|RESTRICT|NO|SET|ON|TO|AS|OR|USING|TOP)\b){_SQL_NAME}\s*(?:;|$)"
     rf"|ALTER\s+TABLE\s+{_SQL_NAME}\s+DROP\b)",
@@ -313,29 +316,13 @@ def _sql_texts(command: SimpleCommand, ctx: RuleContext) -> list[db_client_files
                 # The client sees stdin, not the filename: psql's \ir uses its cwd.
                 inputs.append(db_client_files.ClientInput(entry.text, entry.typed))
     # `printf 'DROP TABLE t;' | sqlite3 db`, `cat <<SQL | psql`: statements piped in.
-    feeder = ctx.parsed.previous_stage(command)
-    if feeder is not None and not feeder.dynamic_head:
-        inputs += _piped_texts(feeder, ctx)
+    source = known_stdin(command, ctx.parsed)
+    if source is not None:
+        inputs.append(source)
     # `.read q.sql`, `\i q.sql`, `source q.sql`: files the statements include (PR review).
     # Only a file the client opened itself has a directory for psql's `\ir`; on stdin it is the cwd's.
     inputs += db_client_files.included(command.name, inputs, command.possible_cwds, ctx.parsed.written_files)
     return inputs
-
-
-def _piped_texts(feeder: SimpleCommand, ctx: RuleContext) -> list[db_client_files.ClientInput]:
-    """What a pipeline stage prints when it is literal: echo/printf text, or
-    `cat` of its heredoc, here-string or files."""
-    if feeder.name in ("echo", "printf"):
-        return [db_client_files.ClientInput(echoed_text(feeder), not feeder.indirect)]
-    if feeder.name != "cat":
-        return []
-    inputs = [db_client_files.ClientInput(r.body or r.target, not feeder.indirect)
-              for r in feeder.redirects if r.op in ("<<", "<<-", "<<<")]
-    inputs += [r for r in (_command_file(r.target, feeder, ctx) for r in feeder.redirects
-                          if r.op == "<" and not r.dynamic) if r]
-    inputs += [t for t in (_command_file(a, feeder, ctx) for a in operands(feeder.args) if a != "-") if t]
-    return [db_client_files.ClientInput(entry.text, entry.typed and not feeder.indirect)
-            for entry in inputs]
 
 
 # MySQL `/*! … */` and `/*!80000 … */`, MariaDB `/*M! … */`: comments the server

@@ -220,6 +220,11 @@ def _context_tests(failures: list[str]) -> None:
         _run("git clean -xdf", capture, cwd=work, extra_payload={"user_prompt": "token=hunter2hunter2 please"})
         if "hunter2" in sent()[0]:
             failures.append("the user prompt must be redacted like the command")
+        _run("git clean -xdf", capture, cwd=work, extra_payload={
+            "user_prompt": "Here is my password=correct horse battery staple\nPASSWORD_FILE=/path"})
+        state, _ = sent()
+        if any(word in state for word in ("correct", "horse", "battery", "staple")) or "PASSWORD_FILE=/path" not in state:
+            failures.append("no-space prose secrets must be redacted in the actual model payload")
 
         # The outbound payload: a PAT in the prompt and a webhook URL in an earlier
         # command must not reach the model either (PR review).
