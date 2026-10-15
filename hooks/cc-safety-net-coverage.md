@@ -46,11 +46,20 @@ deterministic hooks, then checked model eligibility only for deferred commands.
 The saved comparison column is `work/standard`; local checks used an empty
 workspace, default/high policy, and normal interactive permission mode. No
 literal was executed, no decision model was called, and there were no guard
-exceptions. Reproduce from this checkout with:
+exceptions. Reproduce from this checkout with
+[`scripts/replay_ccsafety.py`](../scripts/replay_ccsafety.py); the upstream
+checkout is not vendored, so clone it at the pinned commit first:
 
 ```sh
-python3 scratchpad/replay_ccsafety.py
+git clone https://github.com/kenryu42/cc-safety-net.git scratchpad/cc-safety-net
+git -C scratchpad/cc-safety-net checkout 0626be7a791c17a0daa67ae90a899372c667056d
+python3 scripts/replay_ccsafety.py
 ```
+
+Re-run on 2026-10-15 at claude-code-rules `a8d7345` (agent-config `d3d89bb`),
+the deny-labelled row was 696 deny / 254 ask / 486 defer (380 model candidates,
+106 neither) and the allow-labelled row 69 / 215 / 5,240 (1,381 candidates),
+still with no guard exceptions. The tables below keep the `f31b4ef` figures.
 
 | Upstream label | Inputs | Our deny | Our ask | Our defer |
 |---|---:|---:|---:|---:|
@@ -72,9 +81,10 @@ path-sensitive cases differ with the filesystem, home, repository and policy.
 For example, a patch header naming `.env` is labelled as sensitive by upstream's
 raw-text handling; treating that same literal as Bash does not exercise our
 actual patch/file-tool adapter. This prevents interpreting 7.4% as 106 genuine
-Bash bypasses. The exact pipeline mismatch data is saved in
-`cc-safety-net-replay.jsonl` and its aggregate in
-`cc-safety-net-replay-summary.json`.
+Bash bypasses. The replay writes the per-literal results to
+`scratchpad/cc-safety-net-replay.jsonl` and the aggregate to
+`scratchpad/cc-safety-net-replay-summary.json` (both gitignored; pass `--out`
+to write elsewhere).
 
 Official rulebook fixture comparison, using the same deterministic workflow:
 
