@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bebimfox0</task-id>
+<tool-use-id>toolu_014waLXk6B9hV3VmeD4dhaPs</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jessearmand-Develop-claude-code-rules/b2e1e148-4e87-4213-857f-54ddc7b21f7a/tasks/bebimfox0.output</output-file>
+<status>completed</status>
+<summary>Background command "Run calibration corpus for the four new models" completed (exit code 0)</summary>
+</task-notification>
