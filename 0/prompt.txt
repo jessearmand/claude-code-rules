@@ -1,0 +1,1 @@
+Next, we should commit the changes here, while in agent-config they're being compared with what has changed in remote origin. Also there are changes in claude-code-rules remote origin, examine if there are any conflicts
