@@ -1,0 +1,1 @@
+<bash-input> python3 scratchpad/apply_live_guards.py</bash-input>
