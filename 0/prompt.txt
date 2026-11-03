@@ -1,0 +1,26 @@
+Here is a note offered by a side agent:
+
+> Heads up · The security-review loop keeps widening the guards beyond the PR's original rules, even though you asked to keep the scope tight.
+>
+> **Review fixes are widening the guard rules**
+> * You asked to keep the rules as the PR wrote them and change them only to fix a bug.
+> * Each automatic security review finds new ways past the guards. The main agent fixes each one, and the fixes now catch more than the PR ever did. Examples:
+> * Several chmod forms that were never blocked before are now blocked.
+> * The latest change, still being tested, blocks a command that downloads a Python file and then runs Python from that same folder.
+> * Your live hooks run this branch, so each change applies to every session right away. Some everyday commands may start getting blocked.
+> * **Consider telling the main agent where to stop**, so it doesn't keep chasing every new review finding.
+
+The security review can be ignored for now, apply your recommendation first
+
+```
+
+
+<pasted_content id="8d52">
+1. json.tool. I recommend bringing the exception back, now that the module-file check exists. The tricks the reviews found are closed. The one left is a fake json/tool.py downloaded in an earlier, separate command, and that can already run as an ordinary script. If you prefer to keep the deny, curl URL | jq . does the same job and is allowed.
+2. Sync. I recommend using agent-config's python_argv.py as the one Python parser. Then:
+   - Copy my folded chmod, cat and module-file fixes into agent-config.
+   - Copy e53063f, f31b4ef and 46d3a61 into claude-code-rules.
+   - Make the shared files identical again and push both branches.
+</pasted_content id="8d52">
+
+```
