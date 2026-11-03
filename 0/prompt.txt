@@ -1,0 +1,3 @@
+<bash-stdout>settings /Users/jessearmand/.claude/settings.json: added dangerous_commands.py, config_guard.py (backup: /Users/jessearmand/.claude/backups/settings.json.bak-2026-10-15-guards)
+linked   /Users/jessearmand/.claude/hooks/dangerous_commands.py -&gt; /Users/jessearmand/Develop/claude-code-rules/hooks/dangerous_commands.py
+linked   /Users/jessearmand/.claude/hooks/config_guard.py -&gt; /Users/jessearmand/Develop/claude-code-rules/hooks/config_guard.py</bash-stdout><bash-stderr></bash-stderr>
