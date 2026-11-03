@@ -1,0 +1,3 @@
+@"/Users/jessearmand/.claude/uploads/699f1381-0859-4c2f-aab0-8e0832124035/cc109216-replay_ccsafety.py" Here’s the python script to replay it, verify if it’s as expected and we can add it to the claude-code-rules
+
+Then we can fix the broken links
