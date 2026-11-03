@@ -1,0 +1,3 @@
+To prevent editing both guard-scope.md and cc-safety-net-coverage.md move them to docs/ instead 
+
+Then we can push to PR #1 of claude-code-rules
