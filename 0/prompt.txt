@@ -1,0 +1,8 @@
+The bash risk judge has been migrated to ~/Develop/claude-decisions-mod/
+
+What we need to do here is to benchmark and understand clef and clef-flash model from cloudflare for the same purpose as Jev, before integrating it to decisions guard mod
+
+https://developers.cloudflare.com/workers-ai/models/clef/index.md
+https://developers.cloudflare.com/workers-ai/models/clef-flash/index.md
+
+WORKERS_AI_API_TOKEN has been set via fnox
