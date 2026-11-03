@@ -1,0 +1,8 @@
+The next models to test is from perplexity, they can be accessed via vercel's ai-cli 
+
+perplexity/pplx-decider-v1.2
+perplexity/pplx-decider-flash-v1.2
+liquid/d1-ultra
+liquid/d1
+
+References: https://vercel.com/ai-gateway/models?modality=decision
