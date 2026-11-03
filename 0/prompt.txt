@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8a6o860r</task-id>
+<tool-use-id>toolu_018BjoowGx1zQX6GUCC2hTBX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jessearmand-Develop-claude-code-rules/b2e1e148-4e87-4213-857f-54ddc7b21f7a/tasks/b8a6o860r.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the calibration corpus for each model" completed (exit code 0)</summary>
+</task-notification>
