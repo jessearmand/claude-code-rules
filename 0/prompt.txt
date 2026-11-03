@@ -1,0 +1,3 @@
+That seem to require a manual MCP server entry. Try editing "~/Library/Application Support/Claude/claude_desktop_config.json"
+
+Might explain why mcp-server-fetch failed as well
