@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpp2n3sva</task-id>
+<tool-use-id>toolu_01AtzbAKc1VbU585DhzDMQra</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jessearmand-Develop-claude-code-rules/b2e1e148-4e87-4213-857f-54ddc7b21f7a/tasks/bpp2n3sva.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the full probe benchmark for clef, clef-flash and Jev" completed (exit code 0)</summary>
+</task-notification>
