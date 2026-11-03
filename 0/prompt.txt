@@ -1,0 +1,2 @@
+Review what's the problem with docling MCP running on Claude Desktop as an extensions
+@docling-mcp-logs.txt
