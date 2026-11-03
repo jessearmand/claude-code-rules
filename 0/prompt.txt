@@ -1,0 +1,3 @@
+<task-notification>
+<summary>Commit security review found 2 issues: allowlist-semantic-escape in hooks/dangerous_system.py; parser-differential in hooks/dangerous_system.py</summary>
+</task-notification>
