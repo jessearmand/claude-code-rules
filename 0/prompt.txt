@@ -1,0 +1,3 @@
+Review the changes in this PR, regarding all the hooks setup, dangerous or desctructive commands guard, and apply it in the current hooks. Perform some test to verify that it's working as expected. 
+
+Limit the scope to what has been implemented, we shouldn't expand the rules, unless if there's a bug
