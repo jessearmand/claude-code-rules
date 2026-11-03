@@ -1,0 +1,4 @@
+Fetch the latest commits from agent-config repo on this PR
+https://github.com/jessearmand/agent-config/pull/1
+
+We’re synchronizing the changes there if it’s relevant in claude-code-rules, and do not make changes on agent-config, because it’s being worked on by other agents
