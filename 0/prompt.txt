@@ -1,0 +1,1 @@
+Draft an issue description in markdown that I can copy directly to Github and relevant feedback channels for Claude Desktop
